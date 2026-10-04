@@ -1,0 +1,29 @@
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 运行产物
+snapshots/
+*.log
+
+# 本地测试工具与中间产物（mediamtx、wheel 缓存、测试视频、截图）
+.tools/
+.wheelcache/
+
+# libmpv 动态库（可选后端用，约 115 MB，不适合进版本库）
+mpv/
+*.dll
+
+# 打包产物（由 packaging/build.py 生成）
+dist/
+build/
+
+# PyInstaller 的临时分析文件
+*.manifest

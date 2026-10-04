@@ -1,0 +1,46 @@
+{
+  "_comment": "vendor 溯源清单。由 scripts/build_vendor_testerSunshine.py 生成，不要手改。",
+  "upstream": {
+    "repo": "testerSunshine/12306",
+    "commit": "a495af88346a0d794493c6030f6a6207debb5824",
+    "commit_date": "2021-01-04",
+    "license": "MIT"
+  },
+  "sources": {
+    "ConfirmHB.py": {
+      "sha256": "820f5db358514fd78bbc96dba69ae97447478e838acb8968c94f5b74b4eae910"
+    },
+    "GetPassengerDTOs.py": {
+      "sha256": "1a975078d8488d6b6ca36e2bd3f33c4a7dd3acdce4dce8c9c9945c60f391ac36"
+    },
+    "TickerConfig.py": {
+      "sha256": "c332f0e5389c392b38ee80d206443140e06c7454fc472775ae28131b0f8d691c"
+    }
+  },
+  "output": {
+    "file": "vendor/testerSunshine/standby.py",
+    "sha256": "94f3f98a400b71a854c90234b5b616ee00f571c852989dd0ba24775b571a6694"
+  },
+  "modifications": [
+    {
+      "where": "ConfirmHB.py",
+      "what": "删除了 sendChechFace 方法",
+      "why": "它级联 import inter.GetQueueCount → verify/ → tensorflow/keras/cv2，Python 3.13 装不上；且它属于传输层，本项目传输层不换"
+    },
+    {
+      "where": "ConfirmHB.py",
+      "what": "新增 _TickerConfig 垫片承载 PASSENGER_TICKER_STR / SET_TYPE",
+      "why": "上游用 157 行的全局 config 模块；这里只搬 data_apr 真正用到的两个常量，值逐字取自上游"
+    },
+    {
+      "where": "GetPassengerDTOs.py",
+      "what": "把候补分支的 for 循环原样移入 build_passenger_info，去掉了行首多余缩进（上游嵌套更深，原样搬进函数体会 IndentationError），并在循环前补参数校验",
+      "why": "循环体内的字符逐字未改；补校验是安全底线（缺 allEncStr 官方必拒）"
+    }
+  ],
+  "unchanged": [
+    "ConfirmHB.data_apr 的方法体（字段名/顺序/拼接格式）逐字未改",
+    "GetPassengerDTOs 候补分支的 f-string 逐字未改",
+    "TickerConfig.PASSENGER_TICKER_STR / SET_TYPE 的值逐字未改"
+  ]
+}

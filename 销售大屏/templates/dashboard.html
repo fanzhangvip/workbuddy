@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>美妆销售数据可视化大屏</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css" />
+</head>
+<body>
+  <!-- 固定 1920x1080 舞台，由 JS 按窗口等比缩放 -->
+  <div class="stage" id="stage">
+
+    <!-- 顶部标题栏 -->
+    <header class="topbar">
+      <div class="topbar-side">
+        <span class="dot dot-up"></span><span class="side-label">数据实时接入</span>
+      </div>
+      <!-- 标题两侧的斜切装饰 -->
+      <h1 class="title">美妆销售数据可视化大屏</h1>
+      <div class="topbar-side topbar-right">
+        <span class="side-label">最近更新</span><span id="updatedAt" class="clock">--:--:--</span>
+        <!-- AI 数据分析师入口 -->
+        <a class="topbar-btn" href="/analyst" target="_blank" rel="noopener" title="打开 AI 数据分析师">
+          <span class="topbar-btn-icon">🤖</span>AI 分析师
+        </a>
+        <!-- 右上角入口：跳转数据管理后台（新标签打开，大屏不中断） -->
+        <a class="topbar-btn" href="/admin" target="_blank" rel="noopener" title="打开数据管理后台">
+          <span class="topbar-btn-icon">⚙</span>数据管理
+        </a>
+      </div>
+    </header>
+
+    <!-- 顶部核心指标 -->
+    <section class="kpi-row" id="kpiRow"></section>
+
+    <!-- 主体：三栏布局 -->
+    <main class="body">
+
+      <!-- 左栏：销售明细 / 地区占比 / 产品排行 -->
+      <div class="col col-left">
+        <section class="card" style="flex:1.5">
+          <h2 class="card-title">销售明细<span class="card-sub">实时滚动</span></h2>
+          <div class="list-head detail-grid">
+            <span>日期</span><span>省份</span><span>产品</span><span>渠道</span><span>销量</span><span>销售额</span>
+          </div>
+          <div class="scroll-viewport" id="detailViewport">
+            <div class="scroll-track" id="detailTrack"></div>
+          </div>
+        </section>
+
+        <section class="card" style="flex:1">
+          <h2 class="card-title">地区占比<span class="card-sub">按销售额</span></h2>
+          <div class="chart" id="chartProvince"></div>
+        </section>
+
+        <section class="card" style="flex:1">
+          <h2 class="card-title">产品排行<span class="card-sub">Top 10</span></h2>
+          <div class="chart" id="chartProduct"></div>
+        </section>
+      </div>
+
+      <!-- 中栏：中国销售地图 / 月度趋势 -->
+      <div class="col col-center">
+        <section class="card" style="flex:1.6">
+          <h2 class="card-title">中国销售地图<span class="card-sub">销售额分布</span></h2>
+          <div class="chart" id="chartMap"></div>
+        </section>
+
+        <section class="card" style="flex:1">
+          <h2 class="card-title">月度趋势<span class="card-sub">销售额 / 利润</span></h2>
+          <div class="chart" id="chartTrend"></div>
+        </section>
+      </div>
+
+      <!-- 右栏：渠道占比 / 利润进度 / 地区热榜 -->
+      <div class="col col-right">
+        <section class="card" style="flex:1.1">
+          <h2 class="card-title">渠道占比<span class="card-sub">按销售额</span></h2>
+          <div class="chart" id="chartChannel"></div>
+        </section>
+
+        <section class="card" style="flex:1.1">
+          <h2 class="card-title">利润进度<span class="card-sub">产品利润率</span></h2>
+          <div class="profit-list" id="profitList"></div>
+        </section>
+
+        <section class="card" style="flex:1.1">
+          <h2 class="card-title">地区热榜<span class="card-sub">Top 8</span></h2>
+          <div class="scroll-viewport" id="hotViewport">
+            <div class="scroll-track" id="hotTrack"></div>
+          </div>
+        </section>
+      </div>
+
+    </main>
+
+    <!-- 暂无数据遮罩：删除数据文件后显示 -->
+    <div class="empty-mask" id="emptyMask">
+      <div class="empty-box">
+        <div class="empty-icon">📭</div>
+        <div class="empty-title">暂无数据</div>
+        <div class="empty-reason" id="emptyReason">尚未上传数据文件</div>
+        <a class="empty-link" href="/admin" target="_blank" rel="noopener">前往数据管理后台上传数据 →</a>
+      </div>
+    </div>
+
+    <!-- 右下角 AI 悬浮机器人 -->
+    <div class="robot" id="robot">
+
+      <!-- 收起状态：悬浮入口球 -->
+      <button class="robot-fab" id="robotFab" type="button" title="打开 AI 数据分析助手">
+        <span class="robot-fab-icon">🤖</span>
+        <span class="robot-fab-ring"></span>
+      </button>
+
+      <!-- 展开状态：对话面板 -->
+      <section class="robot-panel" id="robotPanel">
+        <header class="robot-head">
+          <span class="robot-avatar">🤖</span>
+          <div class="robot-title">
+            <b>AI 数据分析助手</b>
+            <small id="robotState">已就绪</small>
+          </div>
+          <button class="robot-min" id="robotMin" type="button" title="最小化">—</button>
+        </header>
+
+        <div class="robot-msgs" id="robotMsgs">
+          <div class="robot-hint">
+            我可以查询销售数据、给出结论与数据依据，并展示实际执行的 Pandas 操作。<br />
+            试着问：<b>各省份销售额排名前三？</b>
+          </div>
+        </div>
+
+        <form class="robot-input" id="robotForm">
+          <input id="robotText" type="text" placeholder="输入你的问题…" autocomplete="off" />
+          <button class="robot-send" id="robotSend" type="submit">发送</button>
+        </form>
+      </section>
+    </div>
+
+  </div>
+
+  <script src="/static/lib/echarts.min.js"></script>
+  <script src="/static/js/charts.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+  <script src="/static/js/robot.js"></script>
+</body>
+</html>

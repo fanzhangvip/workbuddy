@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 数据分析师 · 美妆销售大屏</title>
+  <link rel="stylesheet" href="/static/css/analyst.css" />
+</head>
+<body>
+  <div class="app">
+
+    <!-- 顶部 -->
+    <header class="head">
+      <div class="head-left">
+        <div class="logo">🤖</div>
+        <div>
+          <h1>AI 数据分析师</h1>
+          <p class="head-sub">基于真实数据表作答 · 模型 <code>{{ model }}</code></p>
+        </div>
+      </div>
+      <div class="head-right">
+        <a class="btn btn-ghost" href="/" target="_blank" rel="noopener">数据大屏 ↗</a>
+        <a class="btn btn-ghost" href="/admin" target="_blank" rel="noopener">数据管理 ↗</a>
+      </div>
+    </header>
+
+    {% if not configured %}
+    <div class="warn">
+      ⚠️ 未检测到 <code>DEEPSEEK_API_KEY</code>。请在项目根目录的 <code>.env</code> 中填写后重启服务。
+    </div>
+    {% endif %}
+
+    <!-- 对话区 -->
+    <main class="chat" id="chat">
+      <div class="welcome" id="welcome">
+        <div class="welcome-icon">📊</div>
+        <h2>问我任何销售数据问题</h2>
+        <p>所有数字都来自真实数据表统计，我不会编造；数据查不到时会直接告诉你。</p>
+        <div class="samples" id="samples"></div>
+      </div>
+    </main>
+
+    <!-- 输入区 -->
+    <footer class="composer">
+      <textarea id="input" rows="1" placeholder="输入问题，Enter 发送 / Shift+Enter 换行"></textarea>
+      <button class="btn btn-primary" id="send">发送</button>
+    </footer>
+
+  </div>
+
+  <script src="/static/lib/marked.min.js"></script>
+  <script src="/static/js/analyst.js"></script>
+</body>
+</html>

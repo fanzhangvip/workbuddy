@@ -1,0 +1,79 @@
+# 运行依赖（核心，必装）
+requests>=2.31.0
+Flask>=3.0.0
+flask-cors>=4.0.0
+flask-sock>=0.7.0
+cryptography>=42.0.0
+
+# ---------------------------------------------------------------------------
+# 上游内核（vendor/pjialin/py12306）的 import 前置 —— **硬依赖，不可省**
+#
+# 这三项是实测出来的（不是「大概需要」）：上游是配置驱动的独立应用，
+# 模块之间无条件互相 import，即使对应功能不启用也照样 import。
+#
+#   requests-html   helpers/request.py 的基类（Request(HTMLSession)）
+#                   → 被 OCR.py / auth_code.py / 几乎所有网络模块依赖
+#   redis           cluster/cluster.py → 被 query/query.py、user/job.py、
+#                   helpers/cdn.py **无条件** import
+#                   ⚠️ 即使集群关闭（CLUSTER_ENABLED=0）也必须装上
+#   pyppeteer       order/order.py 的滑块风控（真浏览器拖拽）
+#                   ⚠️ 首次运行会联网下载 Chromium（约 150MB）
+#   lxml_html_clean ⚠️ 容易漏：requests-html 0.10.0 仍 `from lxml.html.clean import Cleaner`，
+#                   而该模块在新版 lxml 里已被拆成独立包；
+#                   缺它会在 import 阶段直接报 ImportError。
+# ---------------------------------------------------------------------------
+requests-html>=0.10.0
+lxml_html_clean>=0.4.0
+redis>=5.0.0
+pyppeteer>=2.0.0
+
+# 桌面客户端（可选，需打包 .exe 时必装）
+# PySide6>=6.7.0
+#   ↑ `pip install PySide6` 会同时装 Essentials + Addons。
+#
+# 实时通道（桌面端「已连接（WebSocket）」）——**容易漏**：
+# QtWebSockets **不在 PySide6-Essentials 里**，它在 PySide6-Addons 里。
+# 只装了 Essentials 时，桌面端会静默降级为轮询（功能不受影响，延迟约 2 秒），
+# 状态栏显示「轮询模式（未安装 QtWebSockets）」。
+#   pip install PySide6-Addons          # 版本要与 PySide6 严格一致，例如 ==6.11.2
+# 校验：python main.py doctor  → 应出现
+#   [√] 实时通道  WebSocket 推送可用（QtWebSockets 已就绪）
+#
+# 注意两点：
+#   1) QtWebSockets 依赖 PySide6.QtNetwork，打包时两者都要在 hiddenimports 里，
+#      且**不能**把 PySide6.QtNetwork 放进 excludes（会报
+#      "libshiboken: could not import module 'PySide6.QtNetwork'"）。
+#   2) Addons 整包约 500MB，但本项目只需要 4 个文件（约 400KB）：
+#      Qt6WebSockets.dll / QtWebSockets.pyd / QtWebSockets.pyi /
+#      metatypes/qt6websockets_metatypes.json
+#      —— 离线环境可以只解压这几个文件到 site-packages/PySide6/。
+# PySide6-Addons==6.11.2
+
+# 验证码本地识别（可选）。三种路线任选其一即可，不装也能用（会走人工兜底）：
+#   A) 现成本地模型：pip install ddddocr
+#   B) 自备 onnx 模型：pip install onnxruntime  （把路径填到 codec.local_model_path）
+#   C) 云打码：codec.mode=cloud + cloud_api_key
+#
+# 适用边界（2026-09-28 实测，别高估）：
+#   - 对**字符型**（下单）验证码有效 -> kind="order" 走整图分类，返回 "3A5B"
+#   - 对**点击型**（登录）验证码作用有限 -> kind="login" 走检测框取坐标
+#     实测通用检测模型把顶部提示文字整行当成了目标（10 框里 9 个是提示文字），
+#     已加"剔除顶部提示文字行"处理，但题型/字符集仍不匹配，命中率不可指望。
+#   另外：官方**登录验证码接口本身**已不接受程序化请求（旧路径被 WAF 挡、
+#   新路径回"系统忙"），所以登录请用**扫码登录**，本地模型不解决这个问题。
+#
+# 已知装出来的版本：ddddocr 1.6.1 / onnxruntime 1.30.0 / opencv-python 5.0.0.93
+# 注意：testerSunshine/12306 的 .h5 模型需要 TensorFlow 1.14（仅支持 Python<=3.7），
+#      在本项目的 Python 版本上无法加载，因此不再沿用那套模型。
+# ddddocr>=1.5.0
+# onnxruntime>=1.17.0
+# pillow>=10.0.0
+
+# 打包（可选）
+# pyinstaller>=6.0.0
+
+# 测试（开发用）
+# pytest>=8.0.0
+# pytest-cov>=5.0.0
+# requests-mock>=1.12.0
+# freezegun>=1.4.0

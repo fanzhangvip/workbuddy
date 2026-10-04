@@ -1,0 +1,454 @@
+{
+  "_comment": "证据等级台账（闭环③）。每条「正确性声明」都要回答「你凭什么这么说」。只有 V1/V6 证据的声明会被 scripts/verify.py 标为「未验证」，并禁止在文档/UI 里写成「已正确」。",
+  "_levels": {
+    "V0": "静态纪律门",
+    "V1": "冻结回归（只证明自洽）",
+    "V2": "契约测试",
+    "V3": "变异检验（撤掉实现必须变红）",
+    "V4": "差分验证（双实现逐字段比对）",
+    "V5": "协议基线（上游出处 / 溯源 sha256）",
+    "V6": "mock 端到端（效度有界）",
+    "V7": "真机探针（唯一能判「对不对」）"
+  },
+  "claims": [
+    {
+      "subject": "vendor/pjialin 与上游 commit 逐字节一致",
+      "claim": "vendor 目录里的 90 个文件确实来自 pjialin/py12306 @ 52ccae8b，没有被手改、没有混入我们自己的文件",
+      "evidence": [
+        "V5:build_vendor_pjialin.py --check",
+        "V5:PROVENANCE.json 逐文件 sha256",
+        "V3:篡改检测 3 条（改字节/多文件/删合规）"
+      ],
+      "level": "V5",
+      "open_questions": []
+    },
+    {
+      "subject": "候补请求体与上游 testerSunshine/12306 一致",
+      "claim": "confirmHB 的字段名/顺序/拼接格式来自上游源码，而不是我们自己写的",
+      "evidence": [
+        "V5:build_vendor_testerSunshine.py --check",
+        "V4:kernel_diff 4 项差异 = 文档 4 项",
+        "V3:mutation -k 内核 4/4"
+      ],
+      "level": "V5",
+      "open_questions": []
+    },
+    {
+      "subject": "官方接受候补请求体（confirmHB / passengerInfo）",
+      "claim": "12306 真的接受我们发出的 confirmHB 表单",
+      "evidence": [],
+      "level": "none",
+      "open_questions": [
+        "F1：hbTrain 的 train_no 该用官方返回值还是本地推算值",
+        "F2：jzParam 该发空串还是 ④ passengerInitApi 返回的日期",
+        "F3：passengerInfo 是 5 段还是 6 段",
+        "F4：confirmHB 该发 4 个字段还是 10 个字段"
+      ],
+      "deadline_signal": "V7：真机跑一次候补，读 _log_hb_evidence 的 INFO 日志"
+    },
+    {
+      "subject": "候补的兑现结果",
+      "claim": "候补单能真的兑现并出现在订单里",
+      "evidence": [],
+      "level": "none",
+      "open_questions": [
+        "候补兑现是异步的，只在「我的订单」里体现；尚未真机观察过兑现"
+      ],
+      "deadline_signal": "V7：真机提交候补后观察订单"
+    },
+    {
+      "subject": "内核切换开关真的改变发出的请求体",
+      "claim": "把 TICKET_HELPER_KERNEL_STANDBY_PAYLOAD 切到 self / testerSunshine，线上请求体确实随之改变",
+      "evidence": [
+        "V6:test_kernel_facade C8 / C8b（看的是真发出去的请求体）",
+        "V3:mutation 4/4"
+      ],
+      "level": "V3",
+      "open_questions": []
+    },
+    {
+      "subject": "打码能力",
+      "claim": "打码链路真的能拿到**坐标**：本机服务出「格子编号」→ 上游 get_image_position_by_offset 换算成 x,y",
+      "evidence": [
+        "V4:test_kernel_captcha::test_cell_size_equals_the_upstream_spacing（本地格边长 == 上游相邻格中心间距，防自证）",
+        "V4:test_kernel_captcha::test_upstream_backend_coordinates_come_from_upstream_code（同随机种子下与上游直算逐字节一致）",
+        "V2:test_kernel_captcha::test_upstream_backend_sends_the_upstream_field_name（回声服务证明请求真的发出、字段名是上游的 img、图片未被截断）",
+        "V2:test_kernel_captcha::test_local_service_end_to_end_gives_upstream_coordinates（真起 HTTP 服务，端到端出坐标）",
+        "V3:mutation 8/8（含「不再编码图片」「CELL 改掉」「装配处不再注入」等）"
+      ],
+      "level": "V4",
+      "open_questions": [
+        "**真机未验证**：12306 的点击型验证码到底接不接受这些坐标（V7 才能判）。本域的证据链只到「协议与换算正确」，不等于「识别准确」。",
+        "识别精度本身不可断言：ddddocr 通用检测模型对 12306 点击型实测不适用（顶部提示文字被当目标），人工兜底必须保留。",
+        "⚠️ 上游 HTTP 层会把**连接失败吞成空响应**，所以「服务不可达」与「协议不对」在离线无法区分（已在 last_error 里如实说明两种可能）。",
+        "上游的验证码下载/校验端点已被 WAF 挡，需换成 passcodeNew 那两条（决策 §10-4）—— 这一步还没做。"
+      ],
+      "deadline_signal": "V7：真机触发一次验证码"
+    },
+    {
+      "subject": "mock 端到端流程",
+      "claim": "抢票 / 候补 / 订单的流程与状态机能走通",
+      "evidence": [
+        "V6:test_e2e + test_standby"
+      ],
+      "level": "V6",
+      "open_questions": [
+        "**效度有界**：mock 由本项目编写，字段名来自我们的假设 —— 它只证明流程自洽"
+      ]
+    },
+    {
+      "subject": "分层依赖方向",
+      "claim": "kernel 不依赖 inter；业务层不依赖 kernel/vendor；适配层不含协议细节",
+      "evidence": [
+        "V0:test_discipline 适配层检查",
+        "V2:test_kernel_facade C1/C2"
+      ],
+      "level": "V2",
+      "open_questions": []
+    },
+    {
+      "subject": "登录链路（扫码）",
+      "claim": "扫码登录在真机可用",
+      "evidence": [
+        "V6:mock 端到端",
+        "V7:历史真机实测（21 秒换码、appid=otn 等，见 memory）"
+      ],
+      "level": "V7",
+      "open_questions": [
+        "密码登录真机走不通（已确认）；扫码是否长期稳定需持续观察"
+      ]
+    },
+    {
+      "subject": "站点表域：上游表可直接使用",
+      "claim": "把站点表切到上游（pjialin 2021 快照）后，站名→电报码的结果与本项目一致",
+      "evidence": [
+        "V4:test_kernel_station 全量交集比对（3148 站）",
+        "V2:边界用例一致性 7 条",
+        "V3:mutation"
+      ],
+      "level": "V4",
+      "open_questions": [
+        "**否决**：上游快照里有 11 个站的电报码与官方现值不同（信阳 XYN/XUN、抚顺 FET/FST、乌海 IAC/WVC、天门 TKN/TMN、宜城 YYN/YIN、五原 IYC/WYC、乌拉特前旗 IQC/WQC、乌鲁木齐南 WNR/WMR、烟台西 DCK/YTK、石嘴山 OZJ/QQJ、黄陵 KLY/ULY）→ 切过去会给这 11 站发错码，现象是「查不到车」",
+        "上游表比我们少 216 个站名、多 171 个（切换后使用者会选不到原来的站）",
+        "检索**顺序**会变（self 用 StationMap 自己的排序，pjialin 用共享 rank_candidates）",
+        "⇒ 默认保持 self；只有清掉那 11 个错码后才允许改默认（由测试守住）"
+      ]
+    },
+    {
+      "subject": "通知渠道（serverchan / 钉钉 / 企微 / Telegram / 语音）",
+      "claim": "这些渠道真的把请求发出去了，且失败可观测",
+      "evidence": [
+        "V2:test_capability_witness 14 条（本地回声服务，5 渠道 × 发送/失败两向）",
+        "V3:mutation 2/2（撤销失败原因记录 → 变红）"
+      ],
+      "level": "V2",
+      "open_questions": [
+        "真机未验证：各渠道的真实回执（真实 webhook / bot token 未测）"
+      ]
+    },
+    {
+      "subject": "内核化的两个方向（upstream / self）都被实测过",
+      "claim": "TICKET_HELPER_KERNEL_BACKENDS 能按功能域切换后端，且切换后的实现真的不同（不是「配置改了但跑的还是同一套」）",
+      "evidence": [
+        "V2:test_kernel_captcha::test_switch_actually_swaps_the_implementation",
+        "V2:test_kernel_captcha::test_endpoint_is_part_of_the_cache_key（换了地址必须换实例）",
+        "V2:test_kernel_captcha::test_composition_root_injects_the_upstream_solver",
+        "V2:test_kernel_captcha::test_hot_reload_replaces_the_solver_instance",
+        "V3:mutation 6/6（装配处不再注入、热更新不换实例、默认后端改回 self 都会变红）"
+      ],
+      "level": "V3",
+      "open_questions": [
+        "站点域默认仍是 self（上游表有 11 个错电报码，见 test_kernel_station）",
+        "打码域默认已切 pjialin；站点表等其余域尚未开始（P2 只读域）"
+      ]
+    },
+    {
+      "subject": "余票字段下标与上游一致（V5 参数级基线）",
+      "claim": "本项目解析余票结果用的字段下标，与上游 pjialin/py12306 的 INDEX_* 逐项一致（这是本项目此前缺的那块**参数级**基线）",
+      "evidence": [
+        "V5:vendor/pjialin/ticket_facts.py（从上游原件逐字切出，--check 会重新生成比对）",
+        "V5:test_query_baseline::test_our_field_indexes_match_upstream（10 项逐项比对）",
+        "V5:test_query_baseline::test_the_contract_table_covers_every_shared_field（防契约表漏项）",
+        "V3:mutation 1/1（把 IDX_CAN_WEB_BUY 从 11 改成 12 → 变红）"
+      ],
+      "level": "V5",
+      "open_questions": [
+        "上游只覆盖了 10 个字段；本项目另有 20+ 个下标（席别等）**没有上游锚点**，只能靠「长度校验 + 行为用例」兜（见 test_length_check_covers_every_seat_index_we_read）",
+        "上游 `INDEX_TICKET_NUM` 名字与实际语义不一致（名字=余票数，用法==可否网订）；本项目按语义命名为 IDX_CAN_WEB_BUY，并由测试钉住上游的**用法**"
+      ]
+    },
+    {
+      "subject": "余票查询路径的取法可切换",
+      "claim": "「先试哪条查询路径」可切换：self=固定候选列表盲试；pjialin=读余票页给出的官方路径（不多发请求）",
+      "evidence": [
+        "V4:scripts/query_route_diff.py（同一张页面下两家各要几次请求）",
+        "V6:test_kernel_query::test_the_strategy_decides_which_path_is_requested（mock 记下的**真实请求路径**：页面说 queryA 时，只有 pjialin 先打 queryA）",
+        "V3:mutation 4/4（不再归一形态 / 取了没用上 / 旁路漏传 / 默认值被改）"
+      ],
+      "level": "V4",
+      "open_questions": [
+        "**默认仍是 self**：上游那套更省请求，但换默认值 = 换行为，需真机证据（v3 §10-17）",
+        "真机未验证：官方余票页里 `var CLeftTicketUrl` 的**当前取值**没实测过（该字段名有上游出处，但真机页面没抓过）",
+        "两后端返回的**形态**差异（上游=URL 模板片段，本项目=完整站内路径）已按上游自己的 URL 模板归一，但那条模板是否仍与真机一致未验证"
+      ]
+    },
+    {
+      "subject": "用户域端点与响应结构（V5 参数级基线）",
+      "claim": "用户信息 / 乘车人 / 二维码两条端点与上游**逐字一致**；登录态检测与上游**不同**（本项目 POST /otn/login/checkUser，上游 GET /otn/login/conf），差异已显式记录并可切换",
+      "evidence": [
+        "V5:vendor/pjialin/ticket_facts.py 的 USER_ENDPOINTS / USER_RESPONSE_FIELDS（逐字切出，--check 重生成比对）",
+        "V5:test_user_baseline::test_endpoints_match_upstream（4 项参数化，含「一致」也断言）",
+        "V5:test_user_baseline::test_login_check_endpoint_differs_and_that_is_recorded（差异不许悄悄变成一致）",
+        "V4:scripts/login_check_diff.py（4 处差异 + 「同一份响应喂两套规格」对照表）",
+        "V3:mutation -k 登录态 6/6、-k 用户 1/1"
+      ],
+      "level": "V5",
+      "open_questions": [
+        "**真机未验证**：上游那条 `/otn/login/conf` 在真机上是否真能当登录态检测用（字段名有上游出处，但没在真机抓过）；它**不带 Referer**，真机上很可能被 WAF 拒。",
+        "两套实现的判活字段**互不认得**（结构事实）→ 切后端必须连响应结构一起换。",
+        "默认仍是 self —— 见 test_kernel_user.py 的最后一条。"
+      ]
+    },
+    {
+      "subject": "用户信息的嵌套层数（修掉一个静默缺口）",
+      "claim": "用户类响应的三种嵌套结构（扁平 data / data.userDTO / data.userDTO.loginUserDTO）都能解析出相同结果",
+      "evidence": [
+        "V2:test_user_baseline::test_three_nesting_shapes_give_the_same_profile（三条参数化）",
+        "V2:test_user_baseline::test_user_info_field_is_unwrapped_by_our_parser（锚点是上游 `result.get('data.userDTO.loginUserDTO')` 的字面出处）",
+        "V3:mutation 1/1（不再剥 loginUserDTO 那层 → 变红）"
+      ],
+      "level": "V2",
+      "open_questions": [
+        "**曾是静默缺口**：只剥一层时解析结果全为空串，不报错 ——见 docs/缺陷回流台账.md #20。真机返回的是哪种结构**未记录**（只见过其中一种）。",
+        "`_verify_flag_from_user_info` 与 `parse_user_profile` 现在共用同一个剥层函数；人证核验字段若取不到会落到「无法判定」——那条路径的语义见 account/verify.py。"
+      ]
+    },
+    {
+      "subject": "构造完整性与失败可见性（2026-09-30 静默死循环事故）",
+      "claim": "`TicketApi.__init__` 里声明的每个属性都真的挂在实例上；候补监控里「查订单失败」以 WARNING 留痕，不会被静默吞掉",
+      "evidence": [
+        "V2:test_kernel_user::test_every_attribute_declared_in_init_actually_exists（AST 取 __init__ 声明的属性名，逐个 hasattr）",
+        "V2:test_standby::test_order_query_failure_is_visible_instead_of_swallowed（caplog 断言 WARNING）",
+        "V3:mutation 2/2（把属性挤走 / 把 warning 降回 debug）"
+      ],
+      "level": "V2",
+      "open_questions": [
+        "**这起事故的形态值得记住**：属性未被初始化 → 只在订单查询这条低频路径上被读 → 异常被 log.debug 吞 → 同步监控循环**永不兑现且不报错** → 用例卡死 20 分钟。「卡住」不会变红，比「失败」更难发现（`docs/缺陷回流台账.md` #23）。",
+        "「异常被吞」在本项目已是第 4 处同类放大器（云打码 / FreeSolver / notify 渠道 / 这里）——新增的 try/except 都应问一句「失败之后谁能看见」。"
+      ]
+    },
+    {
+      "subject": "扫码轮询请求体可切换（qr_check）",
+      "claim": "`checkqr` 的请求体可切换：self=uuid+appid+_json_att；pjialin=额外带 RAIL_DEVICEID/RAIL_EXPIRATION（从 Cookie 取）",
+      "evidence": [
+        "V5:test_qr_baseline::test_qr_endpoints_match_upstream（两条端点与上游逐字一致）",
+        "V5:test_qr_baseline::test_result_code_semantics_match_upstream（四个码的语义与上游分支一致，且逐个码钉住映射 —— 只比集合抓不到「1/2 对调」）",
+        "V6:test_kernel_qr::test_the_strategy_decides_what_is_posted（mock 记下的**完整表单**：只有切到上游时才出现设备指纹）",
+        "V3:mutation 6/6"
+      ],
+      "level": "V5",
+      "open_questions": [
+        "**默认仍是 self**：上游多带两个设备指纹 Cookie，而本项目不带也真机跑通了 ——「更接近上游」不是换行为的理由。",
+        "真机未验证：`RAIL_DEVICEID` 在真机 Cookie 里的实际取值未抓过（字段名有上游出处，值来自运行时会话）。",
+        "⚠️ mock 原先只记 3 个字段 → 本域判据在离线**不可观测**；已改为记录完整表单（`docs/缺陷回流台账.md` #26）。"
+      ]
+    },
+    {
+      "subject": "登录验证码端点归属（决策 §10-4 只换端点）",
+      "claim": "登录验证码的下载与校验都用真机可用的 passcodeNew 两条路径；被 WAF 挡的旧路径（上游 API_AUTH_CODE_* 用的那条）无运行时引用",
+      "evidence": [
+        "V2:test_captcha_endpoint::test_login_captcha_verification_uses_the_working_endpoint（判据是**真实请求路径**，不是返回值）",
+        "V2:test_captcha_endpoint::test_old_endpoint_constant_has_no_runtime_reference（AST 静态守卫）",
+        "V3:mutation 2/2（退回旧端点 / 只带 answer）"
+      ],
+      "level": "V2",
+      "open_questions": [
+        "**曾经恒返回 False**：`check_login_captcha` 单押被 WAF 挡的旧端点，而「端点选错」与「验证码填错」返回值完全同形 → 回流台账 #27。",
+        "真机未验证：passcodeNew 那条在真机上是否接受程序化请求（真机现状是「两条都可能拿不到图」，且登录本就该走扫码）。",
+        "决策 §10-4 只授权换端点；算法/渠道/换算仍全用上游（打码域已落地）。"
+      ]
+    },
+    {
+      "subject": "下单六步的请求规格与上游一致（order_submit 域）",
+      "claim": "本项目下单六步的路径 / 字段名 / 字段顺序 / 固定取值，与上游 pjialin/py12306 逐项对得上，差异**只有**文档里列出的那 7 处（Referer、undefined、back_train_date、cancel_flag 类型、滑块三件套、random 取值来源、purpose_codes 静态与否）",
+      "evidence": [
+        "V5:vendor/pjialin/ticket_facts.py::ORDER_PATHS/ORDER_FORM_FIELDS/ORDER_FORM_CONST（从上游原件逐字切出，--check 可复现）",
+        "V5:tests/test_order_baseline.py（42 条：路径/方法/字段名/顺序/固定取值/取值来源逐项比对）",
+        "V4:scripts/order_diff.py（差异表**带预期差异断言**，多一处少一处都退出码 1）",
+        "V3:contract_mutation_check.py -k 下单 11/11"
+      ],
+      "level": "V5",
+      "open_questions": [
+        "「表单编码后 getQueueCount/confirmSingleForQueue 的 purpose_codes 是不是 \"00\"」只有间接证据（本项目写死 \"00\"，上游是动态的）；真机值需 V7 确认"
+      ]
+    },
+    {
+      "subject": "下单链路的重构没有改变本项目真正发出的表单",
+      "claim": "把六份写死的表单改成「规格 + build_form」组装之后，本项目后端组装出来的表单与改造前**逐字段、按顺序**完全相同（含 `undefined=\"\"` 这个上游没有的字段）",
+      "evidence": [
+        "V2:tests/test_kernel_order.py::test_self_forms_reproduce_the_legacy_literals（六份表单 vs 改造前字面量）",
+        "V2:tests/test_kernel_order.py::test_wire_forms_of_all_six_steps_are_recorded（mock 记下的真实表单字段集合一致）",
+        "V3:mutation「undefined 被顺手改了值」→ 变红",
+        "V3:mutation「bed_level_order_num 被清理成 0」→ 变红"
+      ],
+      "level": "V2",
+      "open_questions": [
+        "「行为不变」只在**表单这一层**被证明；对官方响应的影响仍属 V7（判定逻辑没改，但响应怎么变只有真机知道）"
+      ]
+    },
+    {
+      "subject": "官方接受我们的下单表单（本项目的与上游的两种形态）",
+      "claim": "**前 5 步真机通过**：会话预热 → 余票查询 → submitOrderRequest（锁票成功） → initDc 取到 REPEAT_SUBMIT_TOKEN → 带 token 取到乘车人。**第 6 步 checkOrderInfo 被拒**（官方回「余票不足！」）—— 是业务消息不是 4xx，疑似与上游乘客串形状差异有关，**尚未证实**。",
+      "evidence": [
+        "V7:2026-09-30 真机 `scripts/diagnose_order.py --restore --task 2 --date 2026-10-03`（默认只到 initDc：锁票、不建待支付单）",
+        "V7:第 ③ 步判据通过（官方接受该单）；修复 secretStr URL 解码前为「提交失败，请重试...」",
+        "V7:第 ④ 步拿到 32 字符 REPEAT_SUBMIT_TOKEN；第 ⑤ 步带 token 取回乘车人",
+        "V2/V3:tests/test_kernel_order.py::test_submitted_secret_str_is_the_decoded_one + 变异 1 条"
+      ],
+      "level": "V7",
+      "open_questions": [
+        "第 ⑥ 步 checkOrderInfo 回「余票不足！」：需先排除「选车时目标席别已无票」（探针已加该判据，改后仍复现），再验证上游乘客串形状差异 ——`passengerTicketStr` 每人是 9 段（末尾 `enc_str`）而我们是 8 段；`oldPassengerStr` 上游结尾补 `'__ _ _'`（其注释称不加会出错）而我们是 `…,1_`。",
+        "第 ⑦ 步及以后（getQueueCount / confirmSingleForQueue 会**真的建待支付订单**）**从未在真机执行过**，需要 `--yes-create-order` 与用户显式同意。",
+        "`purpose_codes` 在本项目写死 `\"00\"` 是否被官方接受：未证实（上游从 initDc 页面动态读，而该变量现代页面已不下发）。"
+      ],
+      "deadline_signal": "V7：`python scripts/diagnose_order.py --restore --task N`（默认只到 initDc：锁票但不建单）；要走到 confirm 必须显式 --yes-create-order（会真的建待支付订单）"
+    },
+    {
+      "subject": "滑块风控：判读同源、回退不引入新失败点、结果真的进了 checkOrderInfo",
+      "claim": "两套后端的「这一单要不要过滑块」判读来自同一个正则；本项目那套（无程序化解法）不做事**也不报错**、流程照旧；上游那套拿到 sessionId/sig 后确实填进了 checkOrderInfo 的表单",
+      "evidence": [
+        "V5:vendor/pjialin/ticket_facts.py::ORDER_SLIDE_*（正则源码/选择器/scene 逐字切出）",
+        "V5:tests/test_kernel_slide.py::test_the_two_backends_compile_the_same_pattern（两边编译结果一致）",
+        "V2:tests/test_kernel_slide.py::test_rollback_keeps_the_order_flow_alive（回退后端不抛、只留 WARNING）",
+        "V2:tests/test_kernel_slide.py::test_slide_values_reach_check_order_info（真实表单里出现 sessionId/sig/scene）",
+        "V3:contract_mutation_check.py -k 滑块 9/9"
+      ],
+      "level": "V2",
+      "open_questions": [
+        "**「pyppeteer 拖拽真的能过滑块」不在上述证据内** —— 本机起不了浏览器，这条能力本身见下一条"
+      ]
+    },
+    {
+      "subject": "上游 pyppeteer 滑块在真机上真的能过风控",
+      "claim": "调上游 `Browser.request_init_slide` 能真的拖过 `#slide_passcode` 并拿回可用的 sessionId/sig",
+      "evidence": [],
+      "level": "none",
+      "open_questions": [
+        "本机无法验证：沙箱里连 `open` 都被 SIGTERM，更没有 Chromium",
+        "首次运行需联网下载 Chromium（~150MB）—— 下载失败时的出路文案已写好，但**未实测**"
+      ],
+      "deadline_signal": "V7：`python scripts/diagnose_order.py --restore --task N` 跑一单；initDc 那一步会打印 `这一单要不要过滑块` 与「滑块结果：已拿到/没拿到」"
+    },
+    {
+      "subject": "节奏参数（pacing / heartbeat）与上游一致且真的接上了",
+      "claim": "查询间隔区间由**上游函数本身**算出（0.5~1.0s）、超时取上游常量（5s）、心跳取上游常量（120s，且上游没有地板）；切换后端后这些数字真的传到了限速器 / 心跳 / 传输层超时",
+      "evidence": [
+        "V5:vendor/pjialin/ticket_facts.py::QUERY_INTERVAL/TIME_OUT_OF_REQUEST/USER_HEARTBEAT_INTERVAL + 两个上游函数的源码文本",
+        "V5:tests/test_pacing_baseline.py（**自己 exec 上游函数重算一遍**再比对，证明用了上游实现）",
+        "V2:tests/test_kernel_pacing.py::test_the_switch_actually_changes_the_limiter / ..._heartbeat_and_the_timeout",
+        "V2:tests/test_kernel_pacing.py::test_composition_root_hands_the_specs_to_the_account_manager",
+        "V4:scripts/pacing_diff.py（差异表带预期差异断言）",
+        "V3:contract_mutation_check.py -k 节奏 5/5、-k 心跳 5/5"
+      ],
+      "level": "V5",
+      "open_questions": [
+        "本项目地板 30s 与 `UserConfig.validate`(>=30) 是同一条语义的两处实现 —— 已有测试钉住两者一致，但根治应合并成一处（结构决策，未做）"
+      ]
+    },
+    {
+      "subject": "上游那套节奏在真机上会不会触发限流",
+      "claim": "把 pacing 切到上游（0.5~1.0s 一次）之后，12306 不会因此把我们限流",
+      "evidence": [],
+      "level": "none",
+      "open_questions": [
+        "上游那套比本项目激进一倍以上（本项目 1~8s 且自适应）—— 方向是「更容易被限流」",
+        "上游心跳没有地板（配 10 秒就真 10 秒一次）—— 切过去等于去掉一层防护"
+      ],
+      "deadline_signal": "V7：真机上把 pacing 切到 pjialin 跑一轮查询，看是否出现 HTML 错误页 / 风控信号"
+    },
+    {
+      "subject": "打包产物里确实带着上游内核（vendor/pjialin）",
+      "claim": "冻结后的 exe 能真的 `import py12306.config` 与 `import ticket_facts`，且 `VENDOR_ROOT` 指到包内的 `vendor/pjialin`；缺了它会**静默回退**到 self 后端",
+      "evidence": [
+        "V0:scripts/check_packaging.py（读**真实 spec** 的 datas/hiddenimports，再对 vendor 做可达性分析后逐项对账）",
+        "V2:tests/test_packaging.py::test_spec_ships_the_vendor_tree_where_the_shim_looks_for_it（把 `bundle_landing(datas, VENDOR_ROOT) == 'vendor/pjialin'` 变成算得出来的）",
+        "V3:contract_mutation_check.py -k 打包 4/4（撤掉 datas 条目 / 撤掉一条依赖 / 混进不可达的豁免名 / onefile 另拼参数）",
+        "V7:dist/TicketHelper/TicketHelper-CLI.exe doctor → 「[√] 上游内核 py12306 已加载（打包产物）」",
+        "V7 对照实验:移走 _internal/vendor 后同一命令报「[×] 上游内核 vendor 未就位」"
+      ],
+      "level": "V7",
+      "open_questions": []
+    },
+    {
+      "subject": "onefile 与 onedir 共用同一份打包定义",
+      "claim": "`--onefile` 不再自己拼 PyInstaller 参数，两种形态都走 TicketHelper.spec，因此都带着上游内核",
+      "evidence": [
+        "V2:tests/test_packaging.py::test_onefile_mode_goes_through_the_same_spec（AST 查字符串常量；两种形态都读一遍 spec 并核对 vendor 落点）",
+        "V0:scripts/check_packaging.py --quiet（TICKET_HELPER_ONEFILE=1 下同样通过）"
+      ],
+      "level": "V2",
+      "open_questions": [
+        "onefile 形态只做了「配置层面」的验证；**没有真的构建过 onefile 产物**跑一遍（onedir 已构建并实跑）。要不要专门构建一次由用户定。"
+      ]
+    },
+    {
+      "subject": "上游第三方依赖在打包配置里有得可查的归属",
+      "claim": "上游可达路径上用到的 7 个第三方包（requests_html / pyquery / redis / pyppeteer / png / …）要么写进 hiddenimports，要么在豁免清单里写明理由；不可达的（上游自带 web 后台的 flask_jwt_extended）不进包",
+      "evidence": [
+        "V0:scripts/check_packaging.py::dependency_report + check()",
+        "V2:tests/test_packaging.py::test_no_reachable_upstream_dependency_is_left_without_a_home",
+        "V2:tests/test_packaging.py::test_upstream_web_backend_is_kept_out_of_the_bundle（同时钉住「豁免清单里的名字必须真的可达」）"
+      ],
+      "level": "V2",
+      "open_questions": [
+        "可达性分析是**静态**的（AST + 字符串引用），上游若用 importlib 动态导入某个包，这里看不见。已知上游没有这种写法，但这属于「依赖当前源码形态」的假设。"
+      ]
+    },
+    {
+      "subject": "可选能力（滑块）故障不会打断账号恢复",
+      "claim": "滑块后端取不到判读规格时（vendor 缺失 / 依赖没收全）退回内置规格并留 WARNING，账号照常恢复；不再出现「界面显示 0 个账号」",
+      "evidence": [
+        "V2:tests/test_kernel_slide.py::test_a_broken_solver_cannot_break_account_restore",
+        "V3:contract_mutation_check.py -k 滑块 11/11（含「不再兜底」这一条）",
+        "V7:移走产物里的 _internal/vendor 后 doctor 仍报「账号配置 2 个账号」，并打印 `WARNING 滑块后端 pjialin 的判读规格取不到（ModuleNotFoundError: No module named 'ticket_facts'）`"
+      ],
+      "level": "V7",
+      "open_questions": []
+    },
+    {
+      "subject": "两端导航逐项一致（键 + 标题 + 顺序）",
+      "claim": "桌面端 PAGES 与网页端 data-page 的**键、标题、顺序三项全等**；「系统设置」在两端都是独立一页（桌面端原先把限速/打码塞在「通知设置」页里当第三个 tab）",
+      "evidence": [
+        "V2:tests/test_contracts.py::test_desktop_and_web_navigation_are_identical",
+        "V2:tests/test_desktop.py::test_settings_page_owns_the_ratelimit_and_codec_controls",
+        "V3:contract_mutation_check.py -k 两端导航 1/1、-k 限速控件 1/1"
+      ],
+      "level": "V2",
+      "open_questions": []
+    },
+    {
+      "subject": "状态值只有一处定义，且未知状态不得入库",
+      "claim": "DDL 不含任何 status 默认值（列一律 NOT NULL）；storage 通过 `_require_status` 按各域词表校验后写入，未知状态当场 `ValueError`；SQL 里不出现状态字面量。僵尸状态 `STANDBY_SUBMITTED` 已删除",
+      "evidence": [
+        "V2:tests/test_contracts.py::test_ddl_holds_no_status_semantics",
+        "V2:tests/test_contracts.py::test_storage_sql_holds_no_standby_status_literals",
+        "V2:tests/test_contracts.py::test_every_standby_state_has_a_producer（改为遍历 STANDBY_STATES 声明）",
+        "V2:tests/test_storage.py::test_unknown_status_is_rejected_at_the_persistence_boundary",
+        "V3:contract_mutation_check.py -k 状态 10/10、-k 僵尸 1/1、-k 字面量 2/2、-k 词汇 1/1"
+      ],
+      "level": "V2",
+      "open_questions": []
+    },
+    {
+      "subject": "验收工具能区分「测试全过」与「退出码非 0」",
+      "claim": "`verify.py` 按 junitxml 的失败/错误数分类，不拿退出码当判据；「全过但退出码非 0」单列并附原始输出（本机实测为沙箱拦下 pytest 收尾清理）",
+      "evidence": [
+        "V2:tests/test_verify_tool.py::test_batch_outcome_classification（5 例）",
+        "V3:contract_mutation_check.py -k 全过但 1/1",
+        "V7:test_desktop.py 连跑 3 轮 —— junitxml 均 85/85、0 失败 0 错误，每轮日志末行均为 [safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]"
+      ],
+      "level": "V2",
+      "open_questions": []
+    }
+  ]
+}

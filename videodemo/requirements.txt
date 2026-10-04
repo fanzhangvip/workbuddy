@@ -1,0 +1,68 @@
+# GUI + 播放内核
+# 注意：QtMultimedia **不在** PySide6-Essentials 里（那里只有 .pyi 存根），
+# 必须同时安装 PySide6-Addons 才有 QMediaPlayer / QVideoWidget。
+# 两者版本必须一致，且都不锁小版本会带来 FFmpeg 后端行为漂移，故锁死。
+PySide6-Essentials==6.11.2
+PySide6-Addons==6.11.2
+
+# ---------------------------------------------------------------
+# P4（下载）/ P5（本地反向代理）共用：
+#   - src/core/downloader.py  直链流式下载、Range 断点续传
+#   - src/core/local_proxy.py 转发请求并补发 Referer/User-Agent
+# 两处都是顶层 import，缺了程序起不来。
+requests>=2.31.0
+
+# ---------------------------------------------------------------
+# 打包用（只有打 exe 时需要，运行程序本身不需要）：
+#   ./.venv/Scripts/python.exe -m pip install pyinstaller \
+#       -i https://mirrors.aliyun.com/pypi/simple
+# 已实测 6.22.3 可用。安装后执行：
+#   ./.venv/Scripts/python.exe packaging/build.py --fresh-work
+# ---------------------------------------------------------------
+# pyinstaller==6.22.3
+
+# ---------------------------------------------------------------
+# P2（网页地址解析）——已启用，src/core/resolver.py 直接 import yt_dlp：
+#   1. 不锁版本：站点 extractor 需跟随网站改版周更，锁死会让解析很快失效。
+#   2. 打包版会把它一起收进产物（yt-dlp 自带 PyInstaller hook，无需额外配置）。
+#   3. P4 的网页地址下载同样走 yt-dlp（src/core/downloader.py 里函数内 import）。
+# 不装的话程序仍能跑，只是「粘贴视频网站页面地址」会明确报不可用。
+yt-dlp>=2025.1.1
+
+# curl_cffi —— 让 yt-dlp 能伪装成真实浏览器的 TLS 指纹。
+#   yt-dlp 用它在必要时刻发出与 Chrome 一致的 TLS 握手，过掉一类
+#   "按指纹拒绝"的站点（Cloudflare 等）；这类拦截换 UA 是没用的。
+#   装了**不会**改变普通请求的走法（yt-dlp 给 curl_cffi 的默认优先级最低，
+#   只有站点明确要求伪装时才启用），所以对已有站点零影响。
+#   不装则少一条"换指纹重试"，其余照常。
+curl_cffi>=0.7
+
+# streamlink —— yt-dlp 解析失败后的降级解析器。
+#   覆盖约 130 个站点（Twitch / YouTube / Dailymotion 等），与 yt-dlp 有
+#   重叠也有互补。yt-dlp 报"不支持该网站 / 被拒 / 结构变了"时，程序会自动
+#   再试 streamlink，尽量拿到播放地址。
+#   不装则解析失败后直接报错（少一道降级）。
+#   src/core/resolver.py::_streamlink_info() 负责调用。
+streamlink>=7.0
+
+# ---------------------------------------------------------------
+# 以下两个都是**可选**依赖，缺了程序会优雅降级，不装也能跑全功能：
+#
+# imageio-ffmpeg==0.6.0
+#   wheel 内自带 ffmpeg.exe。装了以后网页地址下载（P4）才能：
+#     - 把 B 站这类「音视频分离」的流合流成一个文件
+#     - 下载 DASH/HLS 分片并合并
+#   不装则退化成「只能下无声的画面流」，或给出可读的失败说明。
+#   src/core/downloader.py::find_ffmpeg() 的查找顺序：
+#     设置里的路径 → PATH 上的 ffmpeg → imageio-ffmpeg 自带的 → 都没有
+#
+# python-mpv（P6）
+#   libmpv 内核，用于 Qt 后端搞不定的流媒体场景（如自定义 RTSP 传输方式）。
+#   注意：装了 python-mpv 还需要本机有 mpv-2.dll 才真正可用。
+#   不装则后端工厂自动回退 Qt，界面功能完全不受影响。
+#   src/core/backends/mpv_backend.py::find_mpv_dll() 的查找顺序：
+#     环境变量 → 设置里的路径 → 程序目录 → 找不到
+#
+# imageio-ffmpeg==0.6.0
+# python-mpv==1.0.7
+# ---------------------------------------------------------------

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>数据管理后台 · 美妆销售大屏</title>
+  <link rel="stylesheet" href="/static/css/admin.css" />
+</head>
+<body>
+  <div class="wrap">
+
+    <!-- 顶部 -->
+    <header class="head">
+      <div>
+        <h1>数据管理后台</h1>
+        <p class="head-sub">管理大屏使用的销售数据文件</p>
+      </div>
+      <a class="btn btn-ghost" href="/" target="_blank" rel="noopener">打开大屏 ↗</a>
+    </header>
+
+    <!-- 操作结果提示 -->
+    <div class="toast" id="toast"></div>
+
+    <!-- 1. 数据文件信息 -->
+    <section class="panel">
+      <h2 class="panel-title">数据文件信息</h2>
+      <div class="info-grid" id="infoGrid">
+        <div class="info-item skeleton"></div>
+      </div>
+    </section>
+
+    <!-- 2. 字段完整性 -->
+    <section class="panel">
+      <h2 class="panel-title">字段完整性校验</h2>
+      <div class="chips" id="fieldChips"></div>
+      <p class="hint" id="fieldHint"></p>
+    </section>
+
+    <!-- 3. 文件操作 -->
+    <section class="panel">
+      <h2 class="panel-title">文件操作</h2>
+
+      <div class="drop" id="dropZone">
+        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" hidden />
+        <div class="drop-icon">📁</div>
+        <p class="drop-text">点击选择文件，或把文件拖到这里</p>
+        <p class="drop-sub">
+          支持 CSV / XLSX / XLS；必须包含：
+          <b>日期、省份、产品、渠道、销量、销售额、利润</b>
+        </p>
+        <p class="drop-file" id="dropFile">未选择文件</p>
+        <button class="btn btn-ghost" id="pickBtn">选择文件</button>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-primary" id="uploadBtn" disabled>上传并覆盖</button>
+        <button class="btn btn-danger" id="deleteBtn">删除数据文件</button>
+      </div>
+      <p class="hint">
+        上传成功后会覆盖当前的 <code>data/data.csv</code>，并自动刷新大屏数据；
+        删除后大屏将显示「暂无数据」，重新上传即可恢复。
+      </p>
+    </section>
+
+    <!-- 4. 数据预览 -->
+    <section class="panel">
+      <h2 class="panel-title">
+        数据预览
+        <span class="panel-sub" id="previewMeta"></span>
+      </h2>
+      <div class="table-wrap" id="previewWrap"></div>
+    </section>
+
+  </div>
+
+  <script src="/static/js/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# 密钥与本地配置
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运行时数据（按需保留 data/data.csv 可自行调整）
+data/uploads/
+data/.meta.json
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

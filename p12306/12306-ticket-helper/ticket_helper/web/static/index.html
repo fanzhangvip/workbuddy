@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12306 抢票助手 · 管理后台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- 登录遮罩 -->
+<div id="login-mask" class="mask">
+  <form class="login-card" id="login-form" autocomplete="off">
+    <h1>12306 抢票助手</h1>
+    <p class="muted">个人自用 · 仅供学习交流</p>
+    <label>后台账号<input id="login-user" name="user" value="admin" autocomplete="username"></label>
+    <label>后台密码<input id="login-pass" name="pass" type="password" autocomplete="current-password"></label>
+    <button type="submit" class="primary">登录</button>
+    <p id="login-tip" class="tip"></p>
+    <p class="muted small">密码在用户目录 <code>env.py</code> 的 <code>web.auth_pass</code> 中（首次运行自动生成）。</p>
+  </form>
+</div>
+
+<!-- 主界面 -->
+<div id="app" class="hidden">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo">12306</span>
+      <span class="brand-text">抢票助手</span>
+    </div>
+    <!-- 导航按「用户实际会走的顺序」分组：先看总览，再配任务，账号与记录随后 -->
+    <nav>
+      <div class="nav-group">
+        <button class="nav-item active" data-page="dashboard">总览</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">抢票</div>
+        <button class="nav-item" data-page="tasks">任务配置</button>
+        <button class="nav-item" data-page="board">余票看板</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">账号</div>
+        <button class="nav-item" data-page="accounts">账号管理</button>
+        <button class="nav-item" data-page="profile">个人中心</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">记录</div>
+        <button class="nav-item" data-page="orders">订单记录</button>
+        <button class="nav-item" data-page="logs">实时日志</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">系统</div>
+        <button class="nav-item" data-page="notify">通知设置</button>
+        <button class="nav-item" data-page="settings">系统设置</button>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="conn-status" class="conn off">未连接</div>
+      <button id="logout" class="link">退出登录</button>
+    </div>
+  </aside>
+
+  <div class="main-col">
+    <!-- 顶栏：左侧当前页名，右侧常驻全局状态（点一下就去对应页，不用自己找） -->
+    <header class="topbar">
+      <h1 id="topbar-title">总览</h1>
+      <div class="top-status">
+        <button type="button" class="ts-item" id="ts-hit" data-goto="dashboard" title="去看是哪个任务抢到的">
+          <span class="ts-k">已抢到</span><span class="ts-v" id="ts-hit-v">-</span>
+        </button>
+        <button type="button" class="ts-item" id="ts-running" data-goto="tasks" title="去任务配置页启停任务">
+          <span class="ts-k">运行中任务</span><span class="ts-v" id="ts-running-v">-</span>
+        </button>
+        <button type="button" class="ts-item" id="ts-accounts" data-goto="accounts" title="去账号管理页扫码登录">
+          <span class="ts-k">账号在线</span><span class="ts-v" id="ts-accounts-v">-</span>
+        </button>
+        <button type="button" class="ts-item" id="ts-risk" data-goto="logs" title="去实时日志看风控/错误明细">
+          <span class="ts-k">风控次数</span><span class="ts-v" id="ts-risk-v">-</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="content">
+      <!-- 总览 -->
+      <section class="page active" id="page-dashboard">
+        <div class="hero" id="dash-hero"></div>
+        <div class="toolbar">
+          <button id="btn-start-all" class="primary">一键启动全部任务</button>
+          <button id="btn-stop-all">停止全部任务</button>
+          <button id="btn-refresh-dash">刷新</button>
+        </div>
+        <div class="cards cards-primary" id="dash-cards"></div>
+        <h3>进行中的任务</h3>
+        <div id="dash-tasks" class="grid"></div>
+        <details class="fold" id="dash-metrics-fold">
+          <summary>运行指标（查询量 / 延迟 / 风控）</summary>
+          <div class="cards" id="dash-metrics"></div>
+        </details>
+      </section>
+
+      <!-- 账号管理 -->
+      <section class="page" id="page-accounts">
+        <h2>账号管理</h2>
+        <div id="acct-empty" class="empty-state hidden">
+          <h3>先登录一个 12306 账号</h3>
+          <p class="muted">
+            抢票必须用你自己的 12306 账号。<strong>扫码登录</strong>是唯一可靠的路径 ——
+            密码登录目前会被官方风控挡住。登录成功后会把这个账号的会话加密记住，
+            重启程序通常不需要重新扫。
+          </p>
+          <button type="button" class="primary" id="acct-empty-qr">扫码登录</button>
+        </div>
+        <form id="user-form" class="form-row">
+          <input id="user-name" placeholder="12306 用户名 / 手机号" required>
+          <input id="user-pass" type="password" placeholder="密码（加密存储）">
+          <input id="user-heartbeat" type="number" value="120" min="30" title="心跳间隔（秒）">
+          <button class="primary" type="submit">添加 / 更新账号</button>
+          <button type="button" id="qr-login-btn" title="用 12306 App 扫码登录，无需输入密码">扫码登录</button>
+        </form>
+        <p class="muted small">
+          密码使用本机密钥加密后存入 SQLite，不回显、不写入日志。
+          扫码登录创建的账号不保存密码，但<strong>会把登录会话加密记住</strong>，
+          所以正常情况下重启后不必重新扫码；会话过期时才需要再扫一次。
+        </p>
+        <!-- 候补被拒的最常见原因就是这一项。做成常驻的折叠说明，
+             未核验的账号存在时由 app.js 自动展开并高亮，不用人去翻文档。 -->
+        <details class="verify-guide" id="verify-guide">
+          <summary>人证核验怎么做？（候补购票的前置条件）</summary>
+          <p class="muted small">
+            12306 规定：申请候补购票前需完成<strong>人证一致性核验</strong>。
+            已通过核验的账号、以及已激活的「铁路畅行」会员自动满足该条件。
+            核验要人脸识别，<strong>必须本人</strong>在手机上做，程序不能代做。
+          </p>
+          <ol class="verify-steps">
+            <li>手机上打开「铁路 12306」App（未安装请到应用商店搜索安装，认准官方）</li>
+            <li>登录账号，点右下角「我的」</li>
+            <li>在名字下方找到「人证核验」，点进去</li>
+            <li>勾选同意后点「开始核验」，按提示做人脸识别</li>
+            <li>核验通过后回到本页面，点该行账号的「<strong>重测核验</strong>」刷新状态</li>
+          </ol>
+          <p class="muted small">官方说明：<a href="https://kyfw.12306.cn/otn/gonggao/checkIdentity.html?no=3" target="_blank" rel="noreferrer">铁路互联网购票身份信息核验问答</a></p>
+        </details>
+        <div id="verify-alert" class="alert alert-warn hidden"></div>
+        <table class="data-table" id="users-table">
+          <thead><tr><th>ID</th><th>账号</th><th>状态</th><th>登录方式</th><th>人证核验</th><th>最后活跃</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="muted small">
+          点账号行的「详情」可以查看该账号的个人中心；也可以直接从左侧导航进入「个人中心」。
+        </p>
+      </section>
+
+      <!-- 个人中心（账号信息 / 乘车人 / 我的订单 / 待支付） -->
+      <section class="page" id="page-profile">
+        <h2>个人中心</h2>
+        <div class="toolbar">
+          <label>账号
+            <select id="acct-account"></select>
+          </label>
+          <span class="muted small" id="acct-account-hint">选择账号后自动拉取（实时来自 12306）</span>
+          <button id="acct-reload-accounts" class="tiny">刷新账号列表</button>
+        </div>
+        <div id="acct-banner" class="acct-banner hidden">
+          <span id="acct-banner-text"></span>
+          <button type="button" id="acct-banner-login" class="tiny">扫码登录</button>
+        </div>
+        <div class="acct-tabs" id="acct-tabs">
+          <button data-tab="profile" class="active">账号信息</button>
+          <button data-tab="passengers">乘车人</button>
+          <button data-tab="orders">我的订单</button>
+          <button data-tab="pending">待支付</button>
+        </div>
+        <div id="acct-body">
+          <div class="acct-pane active" id="acct-pane-profile">
+            <div class="acct-grid" id="acct-profile"></div>
+            <p class="acct-status" id="acct-profile-status"></p>
+          </div>
+          <div class="acct-pane" id="acct-pane-passengers">
+            <div class="toolbar">
+              <span class="muted small">乘车人变动少，默认使用 5 分钟缓存</span>
+              <button id="acct-pass-refresh" class="tiny">强制刷新</button>
+            </div>
+            <div class="acct-table-wrap">
+              <table class="data-table" id="acct-pass-table">
+                <thead><tr><th>姓名</th><th>证件类型</th><th>证件号</th><th>票种</th><th>手机</th><th>核验状态</th><th>本人</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p class="acct-status" id="acct-pass-status"></p>
+          </div>
+          <div class="acct-pane" id="acct-pane-orders">
+            <div class="toolbar">
+              <label>范围
+                <select id="acct-order-where">
+                  <option value="G">未出行订单</option>
+                  <option value="H">历史订单</option>
+                </select>
+              </label>
+              <input id="acct-order-kw" placeholder="订单号 / 车次 / 乘客姓名（可留空）" style="flex:1;min-width:180px">
+              <button id="acct-order-query" class="primary">查询</button>
+              <button id="acct-order-prev" class="tiny">上一页</button>
+              <button id="acct-order-next" class="tiny">下一页</button>
+              <span class="acct-page-info" id="acct-order-info"></span>
+            </div>
+            <div class="acct-table-wrap">
+              <table class="data-table" id="acct-orders-table">
+                <thead><tr><th>订单号</th><th>订票时间</th><th>车次</th><th>乘车日期</th><th>行程</th><th>席别</th><th>乘客</th><th>金额</th><th>状态</th><th>座位</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p class="acct-status" id="acct-orders-status"></p>
+          </div>
+          <div class="acct-pane" id="acct-pane-pending">
+            <p class="muted small">
+              本工具<strong>不代扣款</strong>：出票后请点「去官方支付」到 12306 完成支付，超时未支付的订单会被官方自动取消。
+            </p>
+            <div class="acct-table-wrap">
+              <table class="data-table" id="acct-pending-table">
+                <thead><tr><th>订单号</th><th>车次</th><th>乘车日期</th><th>乘客</th><th>金额</th><th>状态</th><th>操作</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p class="acct-status" id="acct-pending-status"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 任务配置 -->
+      <section class="page" id="page-tasks">
+        <h2>任务配置</h2>
+        <p class="muted small page-lead">
+          按「① 行程 → ② 车次 → ③ 席别与乘客 → ④ 运行参数」从上往下填，只填前三组就能存。
+          带 <span class="req">*</span> 的是必填。
+        </p>
+        <div class="task-layout">
+          <form id="task-form" class="task-form" novalidate>
+            <input type="hidden" id="task-id">
+
+            <fieldset class="form-group">
+              <legend><span class="step">1</span>行程</legend>
+              <p class="group-hint">
+                日期和站点都可以填多个：点按钮从 12306 里<b>选</b>，别手敲 ——
+                站名差一个字，任务跑半天也查不到一条，还很难看出是哪里错了。
+              </p>
+              <label class="field-inline">
+                <span class="field-title">任务名称 <span class="req">*</span></span>
+                <input id="t-name" required placeholder="例如 广州→长沙 国庆">
+              </label>
+
+              <div class="field-block" data-field="dates">
+                <span class="field-label">乘车日期 <span class="req">*</span></span>
+                <div class="chips" id="dates-chips"></div>
+                <div class="chips-tools">
+                  <input type="date" id="date-pick" title="点这里选日期，然后按「添加日期」">
+                  <button type="button" class="tiny" id="date-add">添加日期</button>
+                  <button type="button" class="tiny" id="date-add-3" title="从上面选的日期起连加 3 天">连加 3 天</button>
+                </div>
+                <input type="hidden" id="t-dates">
+                <p class="field-error"></p>
+              </div>
+
+              <div class="field-block" data-field="from">
+                <span class="field-label">出发站 <span class="req">*</span></span>
+                <div class="chips" id="from-chips"></div>
+                <div class="chips-tools">
+                  <input id="from-search" placeholder="站名关键字，如 广州 / 长沙">
+                  <button type="button" class="tiny" id="from-search-btn">搜索站点</button>
+                </div>
+                <div class="station-options hidden" id="from-options"></div>
+                <input type="hidden" id="t-from">
+                <p class="field-error"></p>
+              </div>
+
+              <div class="field-block" data-field="to">
+                <span class="field-label">到达站 <span class="req">*</span></span>
+                <div class="chips" id="to-chips"></div>
+                <div class="chips-tools">
+                  <input id="to-search" placeholder="站名关键字，如 长沙 / 武汉">
+                  <button type="button" class="tiny" id="to-search-btn">搜索站点</button>
+                </div>
+                <div class="station-options hidden" id="to-options"></div>
+                <input type="hidden" id="t-to">
+                <p class="field-error"></p>
+              </div>
+            </fieldset>
+
+            <fieldset class="form-group">
+              <legend><span class="step">2</span>车次</legend>
+              <p class="group-hint">
+                不知道该坐哪趟？点「从 12306 拉取车次」，会按你上面的日期与起止站
+                拉出当天真实存在的车次，勾选即可，<strong>不用自己敲车次号</strong>。
+                留空表示不限车次。
+              </p>
+
+              <!-- 白/黑名单本来就互斥（同一趟车不能同时在两边），一次看一个就好。
+                   数量写在按钮上，另一边的状态一眼可知，也不用自己比对两串车次号。 -->
+              <div class="segment" id="train-segment" role="tablist" aria-label="车次名单">
+                <button type="button" class="seg-btn active" data-pane="white" role="tab">只抢这些 · 不限</button>
+                <button type="button" class="seg-btn" data-pane="black" role="tab">不抢这些 · 无</button>
+              </div>
+
+              <div class="seg-pane" data-pane="white">
+                <div class="field-block" data-field="white">
+                  <span class="field-label">留空表示什么车次都抢；<b>列表顺序就是抢票优先级</b></span>
+                  <div class="chips" id="white-chips"></div>
+                  <div class="chips-tools">
+                    <input id="t-white-search" placeholder="也可手动输入车次号后回车，如 G6102">
+                    <button type="button" class="tiny" id="btn-pick-trains"
+                            title="按上面的乘车日期与起止站，从 12306 拉取当天车次后勾选">从 12306 拉取车次</button>
+                  </div>
+                  <input type="hidden" id="t-white">
+                </div>
+              </div>
+
+              <div class="seg-pane hidden" data-pane="black">
+                <div class="field-block" data-field="black">
+                  <span class="field-label">这些车次一律不抢（留空表示没有排除任何车次）</span>
+                  <div class="chips" id="black-chips"></div>
+                  <div class="chips-tools">
+                    <input id="t-black-search" placeholder="也可手动输入车次号后回车，如 G9999">
+                    <button type="button" class="tiny" id="btn-pick-trains-black"
+                            title="按上面的乘车日期与起止站，从 12306 拉取当天车次后勾选">从 12306 拉取车次</button>
+                  </div>
+                  <input type="hidden" id="t-black">
+                </div>
+              </div>
+
+              <div class="field-block">
+                <span class="field-label">车次类型（不勾表示不限）</span>
+                <div class="check-group" id="train-types-box"></div>
+                <input type="hidden" id="t-types">
+              </div>
+            </fieldset>
+
+            <fieldset class="form-group">
+              <legend><span class="step">3</span>席别与乘客</legend>
+              <div class="field-block" data-field="seats">
+                <span class="field-label">
+                  席别优先级 <span class="req">*</span>
+                  —— 左边是<strong>会抢的席别</strong>（从上到下就是优先级，用 ↑↓ 调整），右边是可选席别
+                </span>
+                <div class="prio">
+                  <div class="prio-col">
+                    <div class="prio-col-head">会抢的席别（有票就按这个顺序要）</div>
+                    <div class="prio-list" id="seat-picked"></div>
+                  </div>
+                  <div class="prio-col">
+                    <div class="prio-col-head">可选席别（点一下加进去）</div>
+                    <div class="prio-list available" id="seat-available"></div>
+                  </div>
+                </div>
+                <input type="hidden" id="t-seats">
+                <p class="field-error"></p>
+              </div>
+
+              <div class="field-grid">
+                <label class="field-inline">
+                  <span class="field-title">乘客姓名</span>
+                  <input id="t-passengers" placeholder="留空则用账号下全部乘车人">
+                </label>
+                <label class="field-inline">
+                  <span class="field-title">出发时间</span>
+                  <input id="t-time" placeholder="06:00,23:00（可留空）">
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="form-group" id="adv-group">
+              <legend><span class="step">4</span>运行参数</legend>
+              <p class="group-hint">
+                这一组全都有默认值，<b>不确定就别改</b>；点右边的按钮展开。
+              </p>
+              <button type="button" class="fold-toggle" id="adv-toggle" aria-expanded="false">展开设置</button>
+              <div class="group-body hidden" id="adv-body">
+                <div class="field-grid">
+                  <label class="field-inline">
+                    <span class="field-title">抢票策略</span>
+                    <select id="t-strategy">
+                      <option value="direct">direct · 直接抢（有余票立即下单）</option>
+                      <option value="standby">standby · 仅候补</option>
+                      <option value="dual">dual · 候补 + 捡漏双轨</option>
+                    </select>
+                  </label>
+                  <label class="field-inline">
+                    <span class="field-title">查询间隔</span>
+                    <input id="t-interval" type="number" step="0.1" value="1.0" min="0.3" title="调小抢得快，但更容易被官方限流">
+                  </label>
+                  <label class="field-inline">
+                    <span class="field-title">准点开售</span>
+                    <input id="t-sale" placeholder="2026-10-01 08:00:00（可留空）">
+                  </label>
+                  <label class="field-inline">
+                    <span class="field-title">开售前提前</span>
+                    <input id="t-prepare" type="number" value="30">
+                  </label>
+                </div>
+                <label class="field-inline">
+                  <span class="field-title">指定账号</span>
+                  <input id="t-accounts" placeholder="账号A,账号B（留空则自动分配在线账号）">
+                </label>
+                <label class="inline"><input type="checkbox" id="t-enabled" checked> 启用该任务</label>
+              </div>
+            </fieldset>
+
+            <div class="form-actions">
+              <button type="submit" class="primary" id="task-submit">保存任务</button>
+              <button type="button" id="task-reset">清空表单</button>
+            </div>
+          </form>
+          <div class="task-list">
+            <h3>已有任务</h3>
+            <div id="task-items"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 余票看板 -->
+      <section class="page" id="page-board">
+        <h2>余票看板</h2>
+        <div class="toolbar">
+          <label>任务
+            <select id="board-task"></select>
+          </label>
+          <button id="btn-board-refresh" class="primary">刷新</button>
+          <label class="inline"><input type="checkbox" id="board-auto" checked> 自动刷新（3s）</label>
+        </div>
+        <div id="board-body" class="board"></div>
+      </section>
+
+      <!-- 实时日志 -->
+      <section class="page" id="page-logs">
+        <h2>实时日志</h2>
+        <div class="toolbar">
+          <label>级别
+            <select id="log-level">
+              <option value="">全部</option><option>DEBUG</option><option>INFO</option>
+              <option>WARNING</option><option>ERROR</option>
+            </select>
+          </label>
+          <label class="inline"><input type="checkbox" id="log-auto" checked> 自动滚动</label>
+          <button id="log-clear">清屏</button>
+          <a class="btn" href="/api/logs/export" id="log-export">导出日志</a>
+        </div>
+        <div id="log-view" class="log-view"></div>
+      </section>
+
+      <!-- 通知设置 -->
+      <section class="page" id="page-notify">
+        <h2>通知设置</h2>
+        <p class="page-lead">
+          下面每个渠道显示「是否启用」与最近的收发计数；点「测试这个渠道」会立刻发一条测试通知，
+          失败原因记在下方「通知记录」里。
+          <strong>渠道凭据（SMTP / Webhook / Bot Token）在桌面客户端的「通知设置 → 通知渠道」里填写</strong>，
+          保存后这里会自动变成「已启用」。
+        </p>
+        <div class="channel-grid" id="notify-cards"></div>
+        <h3>通知记录</h3>
+        <table class="data-table" id="notify-table">
+          <thead><tr><th>时间</th><th>类型</th><th>标题</th><th>渠道</th><th>结果</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- 订单记录 -->
+      <section class="page" id="page-orders">
+        <h2>订单记录</h2>
+        <div class="toolbar">
+          <button id="btn-orders-refresh">刷新</button>
+          <button id="btn-orders-unfinished">拉取待支付订单</button>
+          <span class="muted small">本工具不代扣款，出票后请到 12306 官方渠道支付。</span>
+        </div>
+        <table class="data-table" id="orders-table">
+          <thead><tr><th>时间</th><th>任务</th><th>车次</th><th>日期</th><th>席别</th><th>乘客</th><th>状态</th><th>订单号</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <!-- 系统设置 -->
+      <section class="page" id="page-settings">
+        <h2>系统设置</h2>
+        <div class="cards" id="settings-cards"></div>
+        <h3>限速与反检测</h3>
+        <form id="ratelimit-form" class="form-row">
+          <label class="inline"><input type="checkbox" id="rl-adaptive"> 自适应降频</label>
+          <label>最小间隔<input id="rl-min" type="number" step="0.1"></label>
+          <label>最大间隔<input id="rl-max" type="number" step="0.1"></label>
+          <label>代理池<input id="rl-proxy" placeholder="http://ip:port,http://ip2:port"></label>
+          <button class="primary" type="submit">保存并热生效</button>
+        </form>
+        <h3>验证码识别</h3>
+        <form id="codec-form" class="form-row">
+          <label>模式
+            <select id="cd-mode">
+              <option value="free">free 外部打码服务</option>
+              <option value="local">local 本地模型</option>
+              <option value="manual">manual 人工兜底</option>
+            </select>
+          </label>
+          <label>打码服务地址<input id="cd-endpoint" placeholder="留空 = 本机 127.0.0.1:8899/check"><span class="muted small">启动本机服务：python -m ticket_helper.verify.captcha_server</span></label>
+          <label>本地模型路径<input id="cd-model" placeholder=".../captcha.onnx"></label>
+          <label>重试上限<input id="cd-retry" type="number" min="1"></label>
+          <label class="inline"><input type="checkbox" id="cd-fallback"> 失败自动切换数据源</label>
+          <button class="primary" type="submit">保存并热生效</button>
+        </form>
+        <h3>配置变更历史</h3>
+        <table class="data-table" id="history-table">
+          <thead><tr><th>时间</th><th>配置节</th><th>新值</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<!-- 车次选择器：改成弹窗。它是一张几十行的表，塞在表单里会把表单撑得很长 -->
+<div id="train-picker" class="mask hidden">
+  <div class="picker-card">
+    <div class="picker-head">
+      <h3>从 12306 拉取车次</h3>
+      <span class="muted small" id="tp-status"></span>
+      <button type="button" class="tiny" id="tp-close">关闭</button>
+    </div>
+    <div class="tp-toolbar">
+      <span class="tp-label">勾选的车次加入：</span>
+      <label class="inline"><input type="radio" name="tp-target" value="white" checked>白名单</label>
+      <label class="inline"><input type="radio" name="tp-target" value="black">黑名单</label>
+      <span class="tp-sep"></span>
+      <button type="button" class="tiny" id="tp-select-all">全选</button>
+      <button type="button" class="tiny" id="tp-clear">清空勾选</button>
+      <button type="button" class="tiny" id="tp-refresh">重新拉取</button>
+      <button type="button" class="tiny primary" id="tp-apply">应用并关闭</button>
+      <span class="tp-count muted small" id="tp-count"></span>
+    </div>
+    <div class="tp-body" id="tp-body"></div>
+  </div>
+</div>
+
+<div id="qr-modal" class="mask hidden">
+  <div class="login-card">
+    <h3>扫码登录</h3>
+    <p class="muted small">
+      打开手机 <strong>12306 App</strong> →「我的」→ 右上角扫一扫，扫描下方二维码并确认登录。
+    </p>
+    <div id="qr-box" class="qr-box">
+      <img id="qr-img" alt="登录二维码" class="qr-img">
+      <div id="qr-overlay" class="qr-overlay hidden"></div>
+    </div>
+    <p id="qr-status" class="qr-status">正在获取二维码…</p>
+    <p id="qr-remaining" class="muted small"></p>
+    <div class="form-actions">
+      <button class="primary" id="qr-refresh">刷新二维码</button>
+      <button id="qr-close">关闭</button>
+    </div>
+  </div>
+</div>
+<div id="captcha-modal" class="mask hidden">
+  <div class="login-card">
+    <h3>需要人工识别验证码</h3>
+    <p class="muted small">自动识别失败，请在下方输入验证码坐标（形如 <code>112,45</code>），或直接到 12306 完成本次操作。</p>
+    <img id="captcha-img" alt="验证码" class="captcha-img">
+    <input id="captcha-answer" placeholder="如 112,45">
+    <div class="form-actions">
+      <button class="primary" id="captcha-ok">提交</button>
+      <button id="captcha-skip">跳过</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

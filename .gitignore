@@ -1,15 +1,84 @@
 # ============================================================
-# 忽略目录本身：C:\zero\workbuddy 及其全部子目录
-# 根级 `*` 会匹配任意层级下的所有文件与目录
+# C:\zero\workbuddy —— 仓库根忽略规则
+# 目标：排除依赖、构建产物、大体积二进制与本地临时文件，
+#       其余源码与文档全部纳入版本库。
 # ============================================================
-*
 
-# 例外：保留 .gitignore 自身，方便后续继续维护忽略规则
-!.gitignore
+# ---- Python 依赖 / 虚拟环境 ----
+.venv/
+venv/
+ENV/
+env/
+.wheelcache/
+*.egg-info/
+.eggs/
+.conda/
 
-# ============================================================
-# build.old 开头的各类目录
-# 例：build.old / build.old.1 / build.old-20241004 / build.old_backup
-# （上面的 `*` 已覆盖，这里显式保留，防止日后放宽 `*` 规则时漏掉）
-# ============================================================
+# ---- Python 缓存 ----
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ---- Node / 前端依赖 ----
+node_modules/
+.pnpm-store/
+
+# ---- 构建产物 ----
+build/
+dist/
 build.old*/
+dist.old*/
+build.stale*/
+dist.stale*/
+*.old-*/
+
+# ---- 本地工具与大型二进制（不适合进版本库）----
+.tools/
+*.dll
+*.so
+*.dylib
+*.exe
+
+# ---- 本地临时 / 测试残留（skills 运行时产生，非源码）----
+# 注意：中间带 "/" 的规则会被锚定到本文件所在目录，
+#       要匹配任意层级必须加 **/ 前缀
+**/.workbuddy/scratch-stale/
+**/.workbuddy/scratch/
+.stale-artifacts/
+.verify/
+.smoke-home/
+
+# ---- 日志 / 临时文件 ----
+*.log
+*.tmp
+.tmp*
+*.bak
+*.swp
+*.spec.bak
+stderr.txt
+stdout.txt
+
+# ---- 敏感配置：绝不进版本库 ----
+.env
+*.env
+!*.env.example
+!**/.env.example
+env.py
+secret.key
+*token*
+!scripts/*token*
+
+# ---- IDE / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

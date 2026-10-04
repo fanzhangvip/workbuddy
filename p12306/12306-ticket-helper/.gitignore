@@ -1,0 +1,83 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---- 测试与覆盖率 ----
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 打包产物 ----
+dist.stale*/
+build.stale*/
+# 打包脚本用「改名让路」代替删除（企业沙箱里批量删除会被拦），
+# 所以会留下带时间戳的旧产物目录。
+dist.old-*/
+build.old-*/
+dist/TicketHelper.old-*/
+build/TicketHelper.old-*/
+*.spec.bak
+*.manifest
+*.log
+
+# ---- 本地测试/冒烟产生的临时目录与报告 ----
+.smoke-home/
+.th_*/
+.th-*/
+th_*.xml
+results.xml
+pytest_out.txt
+pytest_output.txt
+file_list.txt
+.stale-artifacts/
+
+# ---- 一次性补丁/探针脚本（用完即删）----
+# 为什么单单忽略 `.tmp*`：本仓库里写补丁脚本是常规动作（见 MEMORY.md
+# 「多行内容一律用 Write 写独立脚本」），漏删一个就会混进提交。
+.tmp*
+.tmp-*
+
+# ---- 敏感配置：绝不能进版本库（CF-02）----
+env.py
+*.env
+!.env.example
+!py12306/.env.example
+secret.key
+*token*
+!scripts/*token*
+
+# ---- 运行期数据（默认写在用户目录，这里兜底防呆）----
+data/
+logs/
+runtime/
+export/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

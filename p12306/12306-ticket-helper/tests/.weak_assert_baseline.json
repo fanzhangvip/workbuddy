@@ -1,0 +1,386 @@
+{
+  "_comment": "弱断言棘轮基线（只减不增）。重建：python scripts/verify.py --update-baseline。新增弱断言会让 tests/test_discipline.py 失败。",
+  "total": 89,
+  "entries": [
+    [
+      "tests/test_account.py",
+      "manager.allocate(task) is None",
+      2
+    ],
+    [
+      "tests/test_account.py",
+      "user._heartbeat_thread is None",
+      1
+    ],
+    [
+      "tests/test_config.py",
+      "persisted",
+      1
+    ],
+    [
+      "tests/test_config.py",
+      "render_env_content(bare, 'x') is None",
+      1
+    ],
+    [
+      "tests/test_config.py",
+      "render_env_content(example, 'has\"quote') is None",
+      1
+    ],
+    [
+      "tests/test_config.py",
+      "render_env_content(tmp_path / 'nope.py', 'x') is None",
+      1
+    ],
+    [
+      "tests/test_config.py",
+      "rendered is not None",
+      1
+    ],
+    [
+      "tests/test_contracts.py",
+      "match",
+      2
+    ],
+    [
+      "tests/test_contracts.py",
+      "status_assignments",
+      1
+    ],
+    [
+      "tests/test_contracts.py",
+      "used",
+      1
+    ],
+    [
+      "tests/test_contracts.py",
+      "with_port.host is None",
+      1
+    ],
+    [
+      "tests/test_desktop.py",
+      "_button_by_text(page.table.cellWidget(0, 7), '详情') is not None",
+      1
+    ],
+    [
+      "tests/test_desktop.py",
+      "app_context.accounts.get_qr_session(uuid) is not None",
+      1
+    ],
+    [
+      "tests/test_desktop.py",
+      "bar is not None",
+      1
+    ],
+    [
+      "tests/test_desktop.py",
+      "client.ping(timeout=0.5) is None",
+      1
+    ],
+    [
+      "tests/test_desktop.py",
+      "dialogs",
+      1
+    ],
+    [
+      "tests/test_desktop.py",
+      "login_btn is not None",
+      1
+    ],
+    [
+      "tests/test_desktop.py",
+      "page.editing_id is None",
+      3
+    ],
+    [
+      "tests/test_desktop.py",
+      "received",
+      2
+    ],
+    [
+      "tests/test_desktop.py",
+      "saved is not None",
+      1
+    ],
+    [
+      "tests/test_desktop.py",
+      "session is not None",
+      1
+    ],
+    [
+      "tests/test_desktop.py",
+      "tasks",
+      1
+    ],
+    [
+      "tests/test_e2e.py",
+      "restored_task is not None",
+      1
+    ],
+    [
+      "tests/test_e2e.py",
+      "risk_seen",
+      1
+    ],
+    [
+      "tests/test_e2e.py",
+      "wrapper.standby_engine is not None",
+      1
+    ],
+    [
+      "tests/test_grab.py",
+      "engine._parse_sale_time() is None",
+      2
+    ],
+    [
+      "tests/test_grab.py",
+      "engine._parse_sale_time() is not None",
+      2
+    ],
+    [
+      "tests/test_grab.py",
+      "strategy.next_candidate(candidates, exclude={strategy.key_of(candidates[0])}) is None",
+      1
+    ],
+    [
+      "tests/test_kernel_facade.py",
+      "captured",
+      1
+    ],
+    [
+      "tests/test_notify_verify.py",
+      "DdddocrSolver().solve(b'image') is None",
+      1
+    ],
+    [
+      "tests/test_notify_verify.py",
+      "errors",
+      1
+    ],
+    [
+      "tests/test_notify_verify.py",
+      "received",
+      1
+    ],
+    [
+      "tests/test_notify_verify.py",
+      "solver.solve(_png(120, 40), kind='order') is None",
+      1
+    ],
+    [
+      "tests/test_notify_verify.py",
+      "solver.solve(_png(293, 190), kind='login') is None",
+      1
+    ],
+    [
+      "tests/test_notify_verify.py",
+      "solver.solve(b'image') is None",
+      1
+    ],
+    [
+      "tests/test_notify_verify.py",
+      "solver.solve(b'img') is None",
+      1
+    ],
+    [
+      "tests/test_order.py",
+      "pending",
+      1
+    ],
+    [
+      "tests/test_parser.py",
+      "missing['total_number'] is None",
+      2
+    ],
+    [
+      "tests/test_profile.py",
+      "profile['verified'] is None",
+      1
+    ],
+    [
+      "tests/test_profile.py",
+      "user is not None",
+      1
+    ],
+    [
+      "tests/test_protocol_baseline.py",
+      "const",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "app_context.accounts.get('qr_user_001') is None",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "app_context.accounts.get(final.username) is not None",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "app_context.qr_login_status('not-a-real-uuid') is None",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "calls",
+      3
+    ],
+    [
+      "tests/test_qr_login.py",
+      "first_uuid",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "message",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "order",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "qr_state_of(None) is None",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "qr_state_of({'result_code': '9'}) is None",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "qr_state_of({'status': False}) is None",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "qr_state_of({}) is None",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "row is not None",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "seen",
+      2
+    ],
+    [
+      "tests/test_qr_login.py",
+      "sent",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "session is not None",
+      2
+    ],
+    [
+      "tests/test_qr_login.py",
+      "user is not None",
+      1
+    ],
+    [
+      "tests/test_qr_login.py",
+      "user.id is not None",
+      1
+    ],
+    [
+      "tests/test_query.py",
+      "filt.depart_range is None",
+      1
+    ],
+    [
+      "tests/test_query.py",
+      "tickets",
+      1
+    ],
+    [
+      "tests/test_ratelimit.py",
+      "pool.get() is None",
+      1
+    ],
+    [
+      "tests/test_ratelimit.py",
+      "pool.rotate() is None",
+      1
+    ],
+    [
+      "tests/test_scheduler.py",
+      "ctx.db.get_state(f'task_runtime:{task.id}') is None",
+      1
+    ],
+    [
+      "tests/test_scheduler.py",
+      "scheduler.get(task.id) is None",
+      1
+    ],
+    [
+      "tests/test_session.py",
+      "other.load('u1') is None",
+      1
+    ],
+    [
+      "tests/test_session.py",
+      "store.load('u1') is None",
+      2
+    ],
+    [
+      "tests/test_session.py",
+      "store.load('u1') is not None",
+      1
+    ],
+    [
+      "tests/test_storage.py",
+      "database.get_state('task_runtime:1') is None",
+      1
+    ],
+    [
+      "tests/test_storage.py",
+      "database.get_user(user_id) is None",
+      1
+    ],
+    [
+      "tests/test_storage.py",
+      "db2.get_user_by_name('persist_user') is not None",
+      1
+    ],
+    [
+      "tests/test_storage.py",
+      "repo.get(task.id) is None",
+      1
+    ],
+    [
+      "tests/test_vendor_pjialin.py",
+      "importlib.import_module(name) is not None",
+      1
+    ],
+    [
+      "tests/test_web.py",
+      "created is not None",
+      1
+    ],
+    [
+      "tests/test_web.py",
+      "ctx.accounts.get('api_user') is None",
+      1
+    ],
+    [
+      "tests/test_web.py",
+      "row is not None",
+      1
+    ],
+    [
+      "tests/test_web.py",
+      "session is not None",
+      1
+    ]
+  ]
+}

@@ -1,0 +1,309 @@
+{
+  "_comment": "上游接口清单快照。**不要手改**：改上游文件后运行 `python scripts/build_upstream_baseline.py` 重建。",
+  "sources": {
+    "py12306_helpers_api.py": {
+      "origin": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    "testerSunshine_urlConf.py": {
+      "origin": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    }
+  },
+  "count": {
+    "paths": 46,
+    "templates": 2
+  },
+  "paths": [
+    {
+      "key": "GetJS,req_url",
+      "path": "/otn/HttpZF/GetJS",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "getDevicesId,req_url",
+      "path": "/otn/HttpZF/logdevice",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "chechFace,req_url",
+      "path": "/otn/afterNate/chechFace",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "confirmHB,req_url",
+      "path": "/otn/afterNate/confirmHB",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "getSuccessRate,req_url",
+      "path": "/otn/afterNate/getSuccessRate",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "passengerInitApi,req_url",
+      "path": "/otn/afterNate/passengerInitApi",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "queryQueue,req_url",
+      "path": "/otn/afterNate/queryQueue",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "SubmitOrderRequestRsp,req_url",
+      "path": "/otn/afterNate/submitOrderRequest",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "autoSubmitOrderRequest,req_url",
+      "path": "/otn/confirmPassenger/autoSubmitOrderRequest",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_CHECK_ORDER_INFO,checkOrderInfoUrl,req_url",
+      "path": "/otn/confirmPassenger/checkOrderInfo",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_CONFIRM_SINGLE_FOR_QUEUE,checkQueueOrderUrl,req_url",
+      "path": "/otn/confirmPassenger/confirmSingleForQueue",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "confirmSingleForQueueAsys,req_url",
+      "path": "/otn/confirmPassenger/confirmSingleForQueueAsys",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_USER_PASSENGERS,get_passengerDTOs,req_url",
+      "path": "/otn/confirmPassenger/getPassengerDTOs",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_GET_QUEUE_COUNT,getQueueCountUrl,req_url",
+      "path": "/otn/confirmPassenger/getQueueCount",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "getQueueCountAsync,req_url",
+      "path": "/otn/confirmPassenger/getQueueCountAsync",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_INITDC_URL,initdc_url,GetJS,odxmfwg,get_passengerDTOs,checkOrderInfoUrl,getQueueCountUrl,checkQueueOrderUrl,checkRandCodeAnsyn,codeImgByOrder,queryOrderWaitTimeUrl,req_url,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer",
+      "path": "/otn/confirmPassenger/initDc",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_QUERY_ORDER_WAIT_TIME,queryOrderWaitTimeUrl,req_url",
+      "path": "/otn/confirmPassenger/queryOrderWaitTime",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "odxmfwg,req_url",
+      "path": "/otn/dynamicJs/odxmfwg",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_CHECK_CDN_AVAILABLE",
+      "path": "/otn/dynamicJs/omseuuq",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "Referer,Referer,loginInit,loginInitCdn",
+      "path": "/otn/index/init",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "getUserInfo,req_url",
+      "path": "/otn/index/initMy12306",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_QUERY_INIT_PAGE,left_ticket_init,initdc_url,select_url,check_user_url,submit_station_url,autoSubmitOrderRequest,getQueueCountAsync,confirmSingleForQueueAsys,loginHtml,loginConf,loginAysnSuggest,chechFace,getSuccessRate,SubmitOrderRequestRsp,confirmHB,queryQueue,passengerInitApi,req_url,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer",
+      "path": "/otn/leftTicket/init",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_SUBMIT_ORDER_REQUEST,submit_station_url,req_url",
+      "path": "/otn/leftTicket/submitOrderRequest",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "check_user_url,req_url",
+      "path": "/otn/login/checkUser",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_USER_LOGIN_CHECK,loginConf,req_url",
+      "path": "/otn/login/conf",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "loginInit,loginInitCdn,req_url,req_url",
+      "path": "/otn/login/init",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "loginAysnSuggest,req_url",
+      "path": "/otn/login/loginAysnSuggest",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_USER_LOGIN,userLogin,req_url",
+      "path": "/otn/login/userLogin",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_USER_INFO",
+      "path": "/otn/modifyUser/initQueryUserInfoApi",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "checkRandCodeAnsyn,req_url",
+      "path": "/otn/passcodeNew/checkRandCodeAnsyn",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "codeImgByOrder,req_url",
+      "path": "/otn/passcodeNew/getPassCodeNew",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "Referer,Referer,Referer,Referer,getDevicesId,getUserInfo,userLogin,uamauthclient",
+      "path": "/otn/passport",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "cancelNoCompleteMyOrder,req_url",
+      "path": "/otn/queryOrder/cancelNoCompleteMyOrder",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "Referer,Referer,Referer,cancelNoCompleteMyOrder,initNoCompleteUrl,initNoCompleteUrl,queryMyOrderNoCompleteUrl,req_url",
+      "path": "/otn/queryOrder/initNoComplete",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "queryMyOrderNoCompleteUrl,req_url",
+      "path": "/otn/queryOrder/queryMyOrderNoComplete",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "Referer,Referer,Referer,Referer,Referer,Referer,Referer,Referer,auth,uamtk-static,login,left_ticket_init,getCodeImg,getCodeImg1,codeCheck,codeCheck1,loginInitCdn1,loginHtml,req_url,req_url",
+      "path": "/otn/resources/login.html",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_AUTH_UAMAUTHCLIENT,uamauthclient,req_url",
+      "path": "/otn/uamauthclient",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "Referer,loginInitCdn1",
+      "path": "/otn/view/index.html",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_AUTH_CODE_CHECK,codeCheck,codeCheck1,req_url,req_url",
+      "path": "/passport/captcha/captcha-check",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_AUTH_CODE_DOWNLOAD,getCodeImg,req_url",
+      "path": "/passport/captcha/captcha-image",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_AUTH_CODE_BASE64_DOWNLOAD,getCodeImg1,req_url",
+      "path": "/passport/captcha/captcha-image64",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_AUTH_UAMTK,auth,req_url",
+      "path": "/passport/web/auth/uamtk",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "req_url,uamtk-static",
+      "path": "/passport/web/auth/uamtk-static",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "API_AUTH_QRCODE_CHECK",
+      "path": "/passport/web/checkqr",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_AUTH_QRCODE_BASE64_DOWNLOAD",
+      "path": "/passport/web/create-qr64",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    },
+    {
+      "key": "API_BASE_LOGIN,login,req_url",
+      "path": "/passport/web/login",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    }
+  ],
+  "templates": [
+    {
+      "key": "req_url,select_url",
+      "path": "/otn/{3}",
+      "source": "testerSunshine/12306 · config/urlConf.py",
+      "license": "MIT"
+    },
+    {
+      "key": "LEFT_TICKETS",
+      "path": "/otn/{type}",
+      "source": "pjialin/py12306 · py12306/helpers/api.py",
+      "license": "Apache-2.0"
+    }
+  ]
+}

@@ -1,0 +1,458 @@
+{
+  "_comment": "vendor/pjialin 溯源清单。**不要手改**：改上游文件请在 scripts/build_vendor_pjialin.py 的 KNOWN_MODIFICATIONS 里登记，然后重跑 --init。",
+  "upstream": {
+    "repo": "pjialin/py12306",
+    "commit": "52ccae8b206b828624f185bf8178e1057c6b5fb9",
+    "commit_date": "2026-06-16",
+    "license": "Apache-2.0",
+    "homepage": "https://github.com/pjialin/py12306",
+    "fetch": "https://codeload.github.com/pjialin/py12306/tar.gz/52ccae8b206b828624f185bf8178e1057c6b5fb9"
+  },
+  "excluded": [
+    ".github/"
+  ],
+  "count": {
+    "files": 90,
+    "modified": 2
+  },
+  "generated": {
+    "ticket_facts.py": {
+      "from": [
+        {
+          "path": "py12306/query/job.py",
+          "what": "INDEX_* 字段下标常量",
+          "sha256": "52ce4227a5389e1afeb0027e88d32ecf9f51192aa9d0b56400ebef0ede3e278f"
+        },
+        {
+          "path": "py12306/query/query.py",
+          "what": "从余票页 HTML 读查询路径的正则",
+          "sha256": "ca0c915c30f4d9d68e261a01d011064bebb3ba32f3e04e07ba28b0aed30a3626"
+        },
+        {
+          "path": "py12306/helpers/api.py",
+          "what": "余票查询的 URL 模板（含 {type} 占位）",
+          "sha256": "125bcd97c4272155fb974d6dd1e1a73cb5cb010c8f5a9034cb3117ff4ca4300d"
+        },
+        {
+          "path": "py12306/helpers/api.py",
+          "what": "用户域端点路径（登录态 / 用户信息 / 乘车人 / 扫码）",
+          "sha256": "125bcd97c4272155fb974d6dd1e1a73cb5cb010c8f5a9034cb3117ff4ca4300d"
+        },
+        {
+          "path": "py12306/user/job.py",
+          "what": "上游读响应用的点号字段路径",
+          "sha256": "89e4560fcf1182048359411ab518408c9c79f6b4a611ff4556b8270d9d26610f"
+        },
+        {
+          "path": "py12306/user/job.py",
+          "what": "扫码轮询的请求字段名与 result_code 分支值",
+          "sha256": "89e4560fcf1182048359411ab518408c9c79f6b4a611ff4556b8270d9d26610f"
+        },
+        {
+          "path": "py12306/helpers/api.py",
+          "what": "下单六步的端点路径",
+          "sha256": "125bcd97c4272155fb974d6dd1e1a73cb5cb010c8f5a9034cb3117ff4ca4300d"
+        },
+        {
+          "path": "py12306/order/order.py",
+          "what": "下单五步的表单字段名与固定取值",
+          "sha256": "7f225ec58a7a33a8c73309575bd50b2619728805cb90233fe6c5cf8b8056c4f2"
+        },
+        {
+          "path": "py12306/user/job.py",
+          "what": "initDc 表单与 token/滑块标记的取法",
+          "sha256": "89e4560fcf1182048359411ab518408c9c79f6b4a611ff4556b8270d9d26610f"
+        },
+        {
+          "path": "py12306/order/order.py",
+          "what": "滑块风控的表单附加字段与 scene 取值",
+          "sha256": "7f225ec58a7a33a8c73309575bd50b2619728805cb90233fe6c5cf8b8056c4f2"
+        },
+        {
+          "path": "py12306/config.py",
+          "what": "查询节奏与请求超时的默认值",
+          "sha256": "1d082d3ba100637431454eee6daa6ee2c3c2ea6b3a77156dd3c275ffd1510438"
+        },
+        {
+          "path": "py12306/helpers/func.py",
+          "what": "数字→间隔区间、区间→随机等待的两个函数",
+          "sha256": "cbfc35f6f8aa34c732f25c41195c72971b5b8f53c2f1ba7db12f2085ec6f6cec"
+        }
+      ]
+    }
+  },
+  "files": {
+    ".gitignore": {
+      "sha256": "78a638cffb46547685228b6bf80bdf3481e465d226a278f1d56bb12f0a453cf4",
+      "modified": false
+    },
+    ".gitpod.yml": {
+      "sha256": "f5c8ab8dfa7a843847539756d13c3bed7c6d41d9c277bbce0d4877c9d13f2fcd",
+      "modified": false
+    },
+    "data/cdn.txt": {
+      "sha256": "76b6a62f4723c5606a1cb4c050f0f87f7de3486d686cddb6e4f4e7a8aab76204",
+      "modified": false
+    },
+    "data/images/order_success.png": {
+      "sha256": "1eabb664fde694eb8a5683843670eaed07d6161843ce14c2c2f8f9b1be0608f8",
+      "modified": false
+    },
+    "data/images/web.png": {
+      "sha256": "06ff4d508c6b887b84458479f4e7627725af185b075fa8d689250a99ca49c638",
+      "modified": false
+    },
+    "data/stations.txt": {
+      "sha256": "7f7440df23cf485f98d8d454788cf4e326d9ce3c0e17bc6e380a587a0c6cf0d4",
+      "modified": false
+    },
+    "depdencies.txt": {
+      "sha256": "0438985c8a82e1a0138b01c871e43ae6cb3eccc63e9f9af33461fe6a89e9ffbc",
+      "modified": false
+    },
+    "docker-compose.yml.example": {
+      "sha256": "bef01f1e95eb91b478a02cecaf82a9029f63ef0f4cb7cab319edb448db901a2f",
+      "modified": false
+    },
+    "Dockerfile": {
+      "sha256": "54463ba0aac4bd4dbdb3f1b073eed15b9487037481db6c80f34b3002d3b6cc78",
+      "modified": false
+    },
+    "env.docker.py.example": {
+      "sha256": "e7cc0704cd2fd4f8e845ce4a1982fa46aed32c68f9c51caf78b002eaa9b3f636",
+      "modified": false
+    },
+    "env.py.example": {
+      "sha256": "4612a78aedc062ca69ccb3699e7b70bbabf984dd61abd43c3fe2811ae161fee1",
+      "modified": false
+    },
+    "env.slave.py.example": {
+      "sha256": "03d179f77e283dc27b005c4cb7d9f0b91fb5748b2d10794b2eb9bdbac4e8ba87",
+      "modified": false
+    },
+    "LICENSE": {
+      "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "modified": false
+    },
+    "main.py": {
+      "sha256": "d1e2d0ffd9216d84e8e3e20cff01f17e66954c48a7e660961a99e28c9809aa35",
+      "modified": false
+    },
+    "py12306/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified": false
+    },
+    "py12306/app.py": {
+      "sha256": "2da70ab7e75b6ce5db8b4784aa35e39b1195114cf3234ce26704104fa72f87eb",
+      "modified": false
+    },
+    "py12306/cluster/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified": false
+    },
+    "py12306/cluster/cluster.py": {
+      "sha256": "c2b5b1d466b47b17b1c48500da4e2ce1fbd7b6f24b741547f6c214cf120ef9b6",
+      "modified": false
+    },
+    "py12306/cluster/redis.py": {
+      "sha256": "60856f9c59206c880b779679ba2e7a1b0b7efb15166ab0a13bd9953064eec0f7",
+      "modified": false
+    },
+    "py12306/config.py": {
+      "sha256": "1d082d3ba100637431454eee6daa6ee2c3c2ea6b3a77156dd3c275ffd1510438",
+      "modified": false
+    },
+    "py12306/exceptions/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified": false
+    },
+    "py12306/helpers/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified": false
+    },
+    "py12306/helpers/api.py": {
+      "sha256": "125bcd97c4272155fb974d6dd1e1a73cb5cb010c8f5a9034cb3117ff4ca4300d",
+      "modified": true,
+      "modifications": [
+        {
+          "what": "第 53–58 行区域：把 `API_GET_BROWSER_DEVICE_ID` 从 `https://12306-rail-id-v2.pjialin.com/` 改回上游自己注释掉的官方地址 `BASE_URL_OF_12306 + '/otn/HttpZF/logdevice'`；并删除了指向 `https://12306-ocr.pjialin.com/check/` 的 `API_FREE_CODE_QCR_API` 常量。",
+          "why": "需求方明确禁止请求 pjialin 托管域（'如果要就把源码拿过来自己弄'）。改回官方地址后，query.py:130 / user/job.py:331 的 `if 'pjialin' not in API_GET_BROWSER_DEVICE_ID: return self.request_device_id2()` 会判为真，自动走上游自己实现的直连官方路径 —— 不需要自建服务。打码则由 'free' 改为 'user' 模式（本机服务），见 OCR.py 的改动。"
+        }
+      ]
+    },
+    "py12306/helpers/auth_code.py": {
+      "sha256": "5910e32f3a504ea260fc93b57dd7bf7e34fe4d775b850a864eae37f4d04707d7",
+      "modified": false
+    },
+    "py12306/helpers/cdn.py": {
+      "sha256": "4cd4c37b7ae775b261ba3aea7444a870a5694f190be784faaf0aeff05018402a",
+      "modified": false
+    },
+    "py12306/helpers/event.py": {
+      "sha256": "e67cce0df7902442bf744c455d4bcc50fa0f94f19b3baadbdb8104c8f1587063",
+      "modified": false
+    },
+    "py12306/helpers/func.py": {
+      "sha256": "cbfc35f6f8aa34c732f25c41195c72971b5b8f53c2f1ba7db12f2085ec6f6cec",
+      "modified": false
+    },
+    "py12306/helpers/notification.py": {
+      "sha256": "2aa0f42d69b908b863bfbe7e3577851ffa67ca5c929443c2f2e23c844c5f8694",
+      "modified": false
+    },
+    "py12306/helpers/OCR.py": {
+      "sha256": "5a1831dab6ac40e64a9a166435f0e467b5171ac613e2db460c5828683f5c1b49",
+      "modified": true,
+      "modifications": [
+        {
+          "what": "三处：① 删掉 `from py12306.helpers.api import API_FREE_CODE_QCR_API`；② `get_img_position` 的判定去掉 `'free'`，只留 `'user'`；③ `get_image_by_free_site` 里删掉 `if ...=='free'` 分支，只保留 POST 到 `Config().API_USER_CODE_QCR_API`。",
+          "why": "`free` 分支的唯一出口就是被禁的 `*.pjialin.com`。**坐标换算 `get_image_position_by_offset` 一个字未改** —— 它是本次要复用的上游能力（格子编号 → x,y）。"
+        }
+      ]
+    },
+    "py12306/helpers/qrcode.py": {
+      "sha256": "4e53b8e9a1de773599519b5cfa863e0c9137a5541c194e9808ec836693a2db63",
+      "modified": false
+    },
+    "py12306/helpers/request.py": {
+      "sha256": "ccc934e5f1752860e405b03066f05d7cc2c7e0fa3251e820af286303098524c5",
+      "modified": false
+    },
+    "py12306/helpers/station.py": {
+      "sha256": "ca503c13242fb6a7f41256acbde05c97af917ff3349b7555a07cbfa0577341a3",
+      "modified": false
+    },
+    "py12306/helpers/type.py": {
+      "sha256": "a04d7f68e4a710c308523841d56af5a56a3013f691ff10076f988b297b020a26",
+      "modified": false
+    },
+    "py12306/log/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified": false
+    },
+    "py12306/log/base.py": {
+      "sha256": "8c803ec0f0e36da82d124a5945aae5c34d0c15c6016f39d165244944d9553358",
+      "modified": false
+    },
+    "py12306/log/cluster_log.py": {
+      "sha256": "9e4c4df43b04eb0dece580641e8be826955961f033e05e593216822a0e1f12ce",
+      "modified": false
+    },
+    "py12306/log/common_log.py": {
+      "sha256": "85d22eb3a1fa8318ddedeb50bb48d416a801c28093b76c422181b594de2a2ba5",
+      "modified": false
+    },
+    "py12306/log/order_log.py": {
+      "sha256": "b7b48828d777fbc35c6425a6841d264160d3e3eb2e007076f428720cc9e92a3f",
+      "modified": false
+    },
+    "py12306/log/query_log.py": {
+      "sha256": "704f56715c52243650c22339cb27d0db21387972041c1327c16dee48738677ba",
+      "modified": false
+    },
+    "py12306/log/redis_log.py": {
+      "sha256": "d0deff85b440a20e6b40a409c09e48426a8602a3931d9dad16d8810f14553a5a",
+      "modified": false
+    },
+    "py12306/log/user_log.py": {
+      "sha256": "f08f6628ebf8a2c10d8d08410c4c86dc1d90bf1a4584c2bb4389dfcfc3637a3f",
+      "modified": false
+    },
+    "py12306/order/order.py": {
+      "sha256": "7f225ec58a7a33a8c73309575bd50b2619728805cb90233fe6c5cf8b8056c4f2",
+      "modified": false
+    },
+    "py12306/query/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified": false
+    },
+    "py12306/query/job.py": {
+      "sha256": "52ce4227a5389e1afeb0027e88d32ecf9f51192aa9d0b56400ebef0ede3e278f",
+      "modified": false
+    },
+    "py12306/query/query.py": {
+      "sha256": "ca0c915c30f4d9d68e261a01d011064bebb3ba32f3e04e07ba28b0aed30a3626",
+      "modified": false
+    },
+    "py12306/user/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified": false
+    },
+    "py12306/user/job.py": {
+      "sha256": "89e4560fcf1182048359411ab518408c9c79f6b4a611ff4556b8270d9d26610f",
+      "modified": false
+    },
+    "py12306/user/user.py": {
+      "sha256": "b5ca66b092db90d2b3bdbccb1153ffec787e073b99af4d25864fd20ee5309b3a",
+      "modified": false
+    },
+    "py12306/vender/ruokuai/main.py": {
+      "sha256": "abacc3978e280f3e1a6eec62cc361885b2105076bdc08db62f15f9f3f8dd3e01",
+      "modified": false
+    },
+    "py12306/web/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified": false
+    },
+    "py12306/web/handler/__init__.py": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "modified": false
+    },
+    "py12306/web/handler/app.py": {
+      "sha256": "114dd2c036e8eda229b01650c62e9e27106aa7fbc632c9b7059d442a3006ff42",
+      "modified": false
+    },
+    "py12306/web/handler/log.py": {
+      "sha256": "d5c4043c18fa792da9321348635daf7c4ca6d8165a8d5e373d3ab775f951526b",
+      "modified": false
+    },
+    "py12306/web/handler/query.py": {
+      "sha256": "8ff594b00af47a66c3804a73a82686aa72970cc2bdbece5c943d48ac5e600de4",
+      "modified": false
+    },
+    "py12306/web/handler/stat.py": {
+      "sha256": "9b59f440db55abd6db7b47d1ce000b05a8eae3b4a20c0163facf054c2bcb0f87",
+      "modified": false
+    },
+    "py12306/web/handler/user.py": {
+      "sha256": "7e0c812c13b8919e9808ae4957d7b0bc54da3eb024f2130c1ab82e26678d3ae9",
+      "modified": false
+    },
+    "py12306/web/static/css/app.35e2fbd94557d71d1e2bfa0d4bb44d13.css": {
+      "sha256": "db0e34bcfdaa09d7251b7d2edaf844677bd1a6abc2343183c6d962beacd525c8",
+      "modified": false
+    },
+    "py12306/web/static/css/app.7dba7f569524413218fde54c298188f4.css": {
+      "sha256": "ddfc17c0dd6be27f03ae0c1e4b8cd3fc99c6a2141587640448769ad3a88fdd27",
+      "modified": false
+    },
+    "py12306/web/static/css/app.dfb5ffed622907edd7c5f81709f2b782.css": {
+      "sha256": "d335e2fe91aaa944c9a26755e55114ea4d6ab52b6c6e9211b45adf155c95b23c",
+      "modified": false
+    },
+    "py12306/web/static/fonts/element-icons.6f0a763.ttf": {
+      "sha256": "7fc8efc76f5163006a76da126684d38e1c5ad47e1e38aa358551c75adc83dd83",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-brands-400.292a564.woff": {
+      "sha256": "25124930ff853ab2f8726107583a77167ccf26dcd39f06b75da1ec710a6fda50",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-brands-400.87b76b9.woff2": {
+      "sha256": "03d9ab25b07b637c8508dd78e90979281711782920d1ac621851e57a1d2954db",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-brands-400.f83bc05.ttf": {
+      "sha256": "5efa298b2b0a6aa056b172f0bf1a7ed606506188437d3667e2f351fbd09d4438",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-brands-400.f902692.eot": {
+      "sha256": "9cb5b26997e9664971d40aea24a369aed6b2597362f96a3d49018184e764244e",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-regular-400.732726c.woff2": {
+      "sha256": "815fbb39d2c07581227c1d9eab7fb031be54e32346ab7f9a527fe4060ddb96ee",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-regular-400.abde9e5.ttf": {
+      "sha256": "6064109e901e02f709162757107d2a6ffd3b4e15258b763182965e346b412f39",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-regular-400.b4cfd51.woff": {
+      "sha256": "6f2a19eec9606120d6125e787eef3c64aa0c3baa7e8e3721cb3b2024aa5da5fa",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-regular-400.d1ce381.eot": {
+      "sha256": "cf8fe6a4db14ff4b353a65965e32330d393e41028508dca4fac71d63f97ea00b",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-solid-900.3b921c2.eot": {
+      "sha256": "48de42e457f1a61b0395038b56029ffd9638f1250da35a870e8aca1f865a62d0",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-solid-900.bed3b0a.woff2": {
+      "sha256": "ed0c0e7ba446dc0be5c8580cb20b815f44eb5b967db1d233de317e300059a130",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-solid-900.d751e66.ttf": {
+      "sha256": "35351960d0b18b231db6973de8f6eefc4af3eff69c486f002cdf538d6f284fbb",
+      "modified": false
+    },
+    "py12306/web/static/fonts/fa-solid-900.e0c419c.woff": {
+      "sha256": "92d76da745ce5a4ebc6aa18219c725519a8cac587b2577e08d26428d02be315a",
+      "modified": false
+    },
+    "py12306/web/static/img/avatar_default.svg": {
+      "sha256": "c3ba98000a21e526c48ffee4da86ab4dc2a5256121005d4c7ef35a66a59d8b26",
+      "modified": false
+    },
+    "py12306/web/static/img/fa-brands-400.27183da.svg": {
+      "sha256": "5ecfad8c5f390d6ec719592c57362ee3a92f27e86f2f0bfd4607230cb788b29c",
+      "modified": false
+    },
+    "py12306/web/static/img/fa-regular-400.1e51c39.svg": {
+      "sha256": "59a032327d93d31aee05663b09f40a11144bf992fc1f8c222af72cf18015ceb4",
+      "modified": false
+    },
+    "py12306/web/static/img/fa-solid-900.a868400.svg": {
+      "sha256": "f4e14d856dfaea309cce1fbed56c842de0232bebc55b3dd4b218754da4bc2412",
+      "modified": false
+    },
+    "py12306/web/static/index.html": {
+      "sha256": "b4922057ff29a70e76c93c67bea6e0a1cce9f8301080454d3f836078097df8f9",
+      "modified": false
+    },
+    "py12306/web/static/js/app.680b1bbd04444c6d9d3a.js": {
+      "sha256": "0eee2303952716160c2a1c3fa0404661ab5846317f38f0fee937fbfa8aa66d3a",
+      "modified": false
+    },
+    "py12306/web/static/js/app.7d7d65cccfbfa339beba.js": {
+      "sha256": "de5be289bccd8120e913f8c101a47832e7629ce39965691414646500d7edea25",
+      "modified": false
+    },
+    "py12306/web/static/js/app.96ef02c9e5601eb5ebcb.js": {
+      "sha256": "05c5d9b784c01d151e1e1c2e9320f4a72d5a605186fb7e433d8cc5f6a605946f",
+      "modified": false
+    },
+    "py12306/web/static/js/app.cdb00779aeb087dabd94.js": {
+      "sha256": "5da35ce0ef551849db5fd08bb041b5fe3fbf2ecebf57345f116d3eb116c73e2f",
+      "modified": false
+    },
+    "py12306/web/static/js/manifest.82f431004cf9bb6ad2cb.js": {
+      "sha256": "4a7ee62f91ecac7e891321caa4a44c4744b57c1e1b7ffafc2f61b5546621382c",
+      "modified": false
+    },
+    "py12306/web/static/js/vendor.532ecf213e49d36e5e9e.js": {
+      "sha256": "365c9182956896d25fc4524b1e7ed6bbfcdf2e2834435d41398951c4a5e17589",
+      "modified": false
+    },
+    "py12306/web/static/js/vendor.aebd1de04bf90e88d9c7.js": {
+      "sha256": "19b4152724803aea932290e76383a1839330564eb79e0da366f44cbed79cb53b",
+      "modified": false
+    },
+    "py12306/web/web.py": {
+      "sha256": "968fa9dde6bd1933c0d13b8a0badd085804e15b2c80fc7d8aebbe2801584a8af",
+      "modified": false
+    },
+    "README.md": {
+      "sha256": "c233734b0e51c0f5353aacb7ce8c21017e3a07b1b6f904bd6c9bcaae39bd9ea6",
+      "modified": false
+    },
+    "requirements.txt": {
+      "sha256": "470b91ccdc9a8f93e7f3139cdd705e7a17382cc43e1273431fcf29ecbdbc16d3",
+      "modified": false
+    },
+    "runtime/.gitignore": {
+      "sha256": "3c6bfb7301d5897d802aa472e38fd098c54a2dcfaddd9c7505b1a172b66b77dc",
+      "modified": false
+    },
+    "runtime/query/.gitignore": {
+      "sha256": "240a3e0d37d2e86b614063f5347eb02d4f99ca6c254de6b82871ff8d95532a7d",
+      "modified": false
+    },
+    "runtime/user/.gitignore": {
+      "sha256": "240a3e0d37d2e86b614063f5347eb02d4f99ca6c254de6b82871ff8d95532a7d",
+      "modified": false
+    }
+  }
+}

@@ -1,0 +1,27 @@
+# 单机部署（CF-05）。分布式场景可在 cluster.enabled=true 后横向扩容多个节点。
+services:
+  ticket-helper:
+    build: .
+    image: ticket-helper:1.0
+    container_name: ticket-helper
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8008:8008"   # 默认只映射到本机；如需外网访问请自行加反代 + HTTPS
+    environment:
+      TICKET_HELPER_HOME: /data
+      TH_WEB_HOST: 0.0.0.0
+      TH_WEB_AUTH_USER: admin
+      # 生产环境务必通过 .env 或 secrets 注入，不要写在 compose 文件里
+      TH_WEB_AUTH_PASS: ${TH_WEB_AUTH_PASS:?请在 .env 中设置 TH_WEB_AUTH_PASS}
+      TH_LOG_LEVEL: INFO
+      # 指向 mock 可做离线演练：TH_API_BASE=http://mock:18006
+    volumes:
+      - ticket-helper-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8008/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  ticket-helper-data:
