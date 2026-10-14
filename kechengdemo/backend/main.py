@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 
 import api_auth                      # noqa: E402
 import api_chat                      # noqa: E402
+import api_eval                      # noqa: E402
 import api_review                    # noqa: E402
 import api_scoring                   # noqa: E402
 import api_sync                      # noqa: E402
@@ -56,6 +57,7 @@ app.include_router(api_sync.router)
 app.include_router(api_chat.router)
 app.include_router(api_scoring.router)
 app.include_router(api_review.router)
+app.include_router(api_eval.router)
 
 
 @app.get("/api/health")

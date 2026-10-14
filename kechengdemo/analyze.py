@@ -36,7 +36,8 @@ DEFAULT_TEMPERATURE = float(config.get("LLM_TEMPERATURE", 0) or 0)
 # 契约校验失败后的修复重试次数（G2：校验不能只"丢弃"，还要能"重来"）
 DEFAULT_MAX_REPAIRS = int(config.get("REJUDGE_RETRIES", 1) or 0)
 #: 提示词版本，落库到 assessment.prompt_version，用于归因「结论为何变了」
-PROMPT_VERSION = config.get("PROMPT_VERSION", "v2")
+#: v3 = C-C 起加入「①② 记忆段不是本次证据」说明（架构 §4.5.6）
+PROMPT_VERSION = config.get("PROMPT_VERSION", "v3")
 
 # ---------------------------------------------------------------------------
 # 内置样例对话（用于在真实消息正文可用前，验证规则与提示词）
@@ -142,6 +143,11 @@ SYSTEM_PROMPT = (
     "必须依据每条消息标注的时间与【当前日期】推算，不得凭感觉。\n"
     "7. customer_profile_summary 与 sales_strategy 使用中文。\n"
     "8. 不要自己计算总分，也不要输出总分类字段，总分由系统计算。\n"
+    "9. 上下文里可能含有【客户状态档案】与【上次评分明细】两段——它们**是上一次评估的结论**，"
+    "用于理解客户状态的变化（例如上次等级 S，本次客户说\"自己学\"）；"
+    "**只有带 #编号 的消息行才是本次判断的证据**，不得用这两段里的内容命中规则或作为 evidence_ids。"
+    "若你认为客户态度发生了变化，请在 customer_profile_summary 中说明该变化，"
+    "但不要因此把上次的加减分项重复计入本次命中项。\n"
 )
 
 
@@ -155,7 +161,8 @@ def build_user_prompt(rules: dict, conversation: str, facts: str,
         f"【评分规则】\n{rules_mod.rules_brief_for_prompt(rules)}\n\n"
         f"【必须逐条表态的规则 id（共 {len(required)} 条，每条都要在 rule_checks 里出现一次）】\n"
         f"{'、'.join(required)}\n\n"
-        f"【本次分析的客户聊天记录】（格式：#编号 [时间] 角色: 内容）\n{conversation}\n\n"
+        f"【上下文】（【客户状态档案】/【上次评分明细】= 上次评估的结论，仅供理解状态变化；"
+        f"**只有带 #编号 的行是本次证据**）\n{conversation}\n\n"
         f"【补充事实】\n{facts}\n\n"
         f"【输出 schema】（json，键名必须与此完全一致）\n{contracts.prompt_schema()}\n\n"
         "【字段说明】\n"

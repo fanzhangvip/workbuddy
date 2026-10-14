@@ -6,7 +6,7 @@
 做三件事：
   ① 挑一个**从未被评过**的真实会话，走后端 `service.score_session()` 完整跑一遍
   ② 断言契约层的产出真的落到了库里（新列 / 证据回链 / 覆盖率 / 契约调用次数）
-  ③ **按 assessment_id 清理**本次产生的全部痕迹，不给业务库留垃圾
+  ③ **按 assessment_id 清理**本次产生的全部痕迹（含 rule_tags），不给业务库留垃圾
 
 验收锚点（阶段 A）：
   - 落库的 positive/negative_items 每条都带 evidence_message_ids（证据可回链，F4/A1）
@@ -50,11 +50,15 @@ def pick_candidate():
 def cleanup(aid, staff_id, session_id):
     """清掉本次验收产生的全部行（含候选水位，使该会话仍可被正常流程选中）。"""
     if aid:
+        db.execute("DELETE FROM writeback_outbox WHERE assessment_id = %s", (aid,))
         db.execute("DELETE FROM negative_review WHERE assessment_id = %s", (aid,))
         db.execute("DELETE FROM score_writeback WHERE assessment_id = %s", (aid,))
         db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id = %s", (aid,))
     db.execute("DELETE FROM session_failure WHERE staff_id = %s AND session_id = %s",
                (staff_id, session_id))
+    # C-A 起评分链路会写 chat_message.rule_tags（关键历史检索键）——验收痕迹一并清掉
+    db.execute("""UPDATE chat_message SET rule_tags = '{}'
+                   WHERE staff_id = %s AND session_id = %s""", (staff_id, session_id))
 
 
 def main():
@@ -84,8 +88,13 @@ def main():
         check("落库：schema_version 已写", bool(row.get("schema_version")), str(row.get("schema_version")))
         check("落库：model_confidence 已写", row.get("model_confidence") is not None,
               str(row.get("model_confidence")))
-        check("落库：confidence 兼容列非空（前端不回归）", row.get("confidence") is not None,
-              str(row.get("confidence")))
+        # ⚠️ 契约已变（§6 置信度三层合成 / E4）：`confidence` 列**刻意停写** ——
+        # 铁律是「置信度必须算出来，不能问出来」，模型自报值只留 `model_confidence`。
+        # 前端已改为读 `model_confidence` + `session_confidence`，故这里断言「停写」而非「非空」。
+        check("落库：confidence 兼容列已停写（E4：模型自报不参与决策）",
+              row.get("confidence") is None, str(row.get("confidence")))
+        check("落库：session_confidence 已算出", row.get("session_confidence") is not None,
+              str(row.get("session_confidence")))
         check("落库：unchecked_rules 是列表", isinstance(row.get("unchecked_rules"), list),
               str(row.get("unchecked_rules")))
         check("落库：rule_version 已写", bool(row.get("rule_version")), str(row.get("rule_version")))

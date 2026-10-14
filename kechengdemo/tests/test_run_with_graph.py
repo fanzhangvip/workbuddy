@@ -73,6 +73,9 @@ def cleanup(run_ids):
                              WHERE source_run_id=%s)""", (run,))
         db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id=%s", (run,))
         db.execute("DELETE FROM scoring_run WHERE id=%s", (run,))
+        # ⚠️ Loop 护栏（H2）之后 `_run` 会写 `scoring_start` / `scoring_done` 审计 ——
+        # 这是**新增的写副作用**，跑该链路的测试必须同步清理（测试卫生铁律第 1 条）。
+        db.execute("DELETE FROM audit_log WHERE target=%s", (f"run:{run}",))
 
 
 def main():

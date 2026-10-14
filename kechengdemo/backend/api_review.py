@@ -62,7 +62,8 @@ def list_reviews(status: str = "", staff_id: str = "", grade: str = "",
     params["limit"] = page_size
     params["offset"] = (max(1, page) - 1) * page_size
     items = db.query(f"""
-        SELECT r.*, a.raw_score AS a_raw_score, a.positive_total, a.confidence,
+        SELECT r.*, a.raw_score AS a_raw_score, a.positive_total,
+               a.model_confidence, a.session_confidence, a.review_reasons,
                (SELECT count(*) FROM chat_message m
                  WHERE m.staff_id = r.staff_id AND m.session_id = r.session_id) AS session_msg_count
           FROM negative_review r

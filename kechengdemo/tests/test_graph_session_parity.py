@@ -14,6 +14,12 @@
 
 副作用
     ``mode="off"`` + ``fetch_tags=False`` → 不外写微伴；结束按 assessment_id 全量清理。
+
+C-B 之后的注意点
+    上下文装配（``build_context``）自 C-B 起依赖「上次评估水位」（③ 增量段）。
+    旧路径先跑会插入 assessment → 水位推进 → 新路径的 ③ 变成 0 条，
+    两条路径看到的上下文就不再相同 —— 那是在比较「水位前 vs 水位后」，
+    不是比较「图化前 vs 图化后」。故每条样本在新路径开跑前**先抹掉旧路径的痕迹**。
 """
 import hashlib
 import os
@@ -93,6 +99,19 @@ def row_of(run_id, session_id):
             WHERE source_run_id = %s AND session_id = %s""", (run_id, session_id))
 
 
+def _purge_run(run_id, session_id):
+    """抹掉某条样本上「某个 run 刚落的」评估痕迹，让它回到未评分的初始状态。"""
+    row = db.query_one(
+        """SELECT assessment_id FROM customer_intent_assessment
+            WHERE source_run_id = %s AND session_id = %s""", (run_id, session_id))
+    if not row:
+        return
+    aid = row["assessment_id"]
+    for tbl in ("writeback_outbox", "negative_review", "score_writeback"):
+        db.execute(f"DELETE FROM {tbl} WHERE assessment_id = %s", (aid,))
+    db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id = %s", (aid,))
+
+
 def cleanup(session_ids):
     for run in (OLD_RUN, NEW_RUN):
         for tbl in ("writeback_outbox", "negative_review", "score_writeback"):
@@ -116,11 +135,21 @@ def main():
     print(f"样本数：{len(cands)}")
 
     diffs = []
+    n_old = n_new = 0
     try:
         for cand in cands:
             sid = cand["session_id"]
             old_r = ss.service._score_one(OLD_RUN, cand, rules, 8, "off", False)
+            a = row_of(OLD_RUN, sid) if old_r == "scored" else None
+            if old_r == "scored":
+                n_old += 1
+            # 让新路径从**完全相同的初始状态**出发（见模块 docstring 的 C-B 注意点）
+            _purge_run(OLD_RUN, sid)
+
             new_r = graph_session.run_session(ss.service, NEW_RUN, cand, rules, 8, "off", False)
+            b = row_of(NEW_RUN, sid) if new_r == "scored" else None
+            if new_r == "scored":
+                n_new += 1
 
             if old_r != new_r:
                 diffs.append((sid, "outcome", old_r, new_r))
@@ -128,7 +157,6 @@ def main():
             if old_r == "skipped":
                 continue
 
-            a, b = row_of(OLD_RUN, sid), row_of(NEW_RUN, sid)
             if not a or not b:
                 diffs.append((sid, "missing_row", bool(a), bool(b)))
                 continue
@@ -146,10 +174,6 @@ def main():
         check("两条路径的评分字段差异数 = 0", not diffs,
               f"差异 {len(diffs)} 处：" + str(diffs[:5]))
 
-        n_old = db.query_one("SELECT count(*) AS n FROM customer_intent_assessment "
-                             "WHERE source_run_id=%s", (OLD_RUN,))["n"]
-        n_new = db.query_one("SELECT count(*) AS n FROM customer_intent_assessment "
-                             "WHERE source_run_id=%s", (NEW_RUN,))["n"]
         check("两条路径落库条数相同", n_old == n_new, f"old={n_old} new={n_new}")
         check("样本确实产生了评估（非空跑）", n_old >= 3, str(n_old))
     finally:

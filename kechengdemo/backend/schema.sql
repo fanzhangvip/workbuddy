@@ -79,6 +79,16 @@ CREATE INDEX IF NOT EXISTS idx_msg_staff_time   ON chat_message (staff_id, msg_t
 CREATE INDEX IF NOT EXISTS idx_msg_state        ON chat_message (content_state);
 CREATE INDEX IF NOT EXISTS idx_msg_content_trgm ON chat_message USING gin (content gin_trgm_ops);
 
+-- ---------------- 关键历史检索键（架构 §4.4.1）----------------
+-- 一条消息的 rule_tags = 「它曾经作为哪些规则的证据被采纳过」，**只增不减**。
+-- 为什么用「列 + GIN」而不是新表 message_rule_tag：
+--   查询是「整行 + 数组包含」，正是 GIN 的强项；且天然与 message_id 同行，零 join。
+--   来源追溯已由 customer_intent_assessment.positive_items[].evidence_message_ids 承载。
+ALTER TABLE chat_message
+  ADD COLUMN IF NOT EXISTS rule_tags TEXT[] NOT NULL DEFAULT '{}';
+
+CREATE INDEX IF NOT EXISTS idx_msg_rule_tags ON chat_message USING gin (rule_tags);
+
 -- ---------------- 同步水位（增量 + 断点续传）----------------
 CREATE TABLE IF NOT EXISTS sync_cursor (
     staff_id      TEXT NOT NULL,
@@ -362,3 +372,100 @@ CREATE TABLE IF NOT EXISTS trace_span (
 );
 CREATE INDEX IF NOT EXISTS idx_trace_run  ON trace_span (run_id, span_id);
 CREATE INDEX IF NOT EXISTS idx_trace_node ON trace_span (node, created_at DESC);
+
+-- ---------------- 评估集（第五章 E5 / 闸6）----------------
+-- 目的：回答「判得准不准」。**只标"命中了哪些 rule_id（含档位分值）"，不标总分** ——
+-- 总分由 rules.py 算；让人工标总分等于让人实现一遍规则引擎（架构 §4.1 原文）。
+-- messages_hash 是对话内容指纹：跑评估前校验，不一致说明会话内容已变，该样本失效。
+CREATE TABLE IF NOT EXISTS eval_case (
+    case_id       BIGSERIAL PRIMARY KEY,
+    kind          TEXT NOT NULL DEFAULT 'golden',   -- golden / regression / edge
+    staff_id      TEXT NOT NULL,
+    session_id    TEXT NOT NULL,
+    target_id     TEXT,
+    staff_name    TEXT,
+    target_name   TEXT,
+    session_name  TEXT,
+    messages_hash TEXT,                             -- 对话内容指纹（防漂移）
+    msg_count     INT,
+    last_msg_time BIGINT,
+    -- ---- 人工标注（金标准）----
+    expected_items     JSONB,                       -- [{rule_id, polarity, score, reason}]
+    expected_raw_score INT,                         -- 由 rules.compute_score 算出（非人工标）
+    expected_grade     TEXT,
+    -- ---- 基线快照（记录"改动前"系统怎么判，用于前后对比）----
+    baseline_items        JSONB,
+    baseline_raw_score    INT,
+    baseline_grade        TEXT,
+    baseline_rule_version TEXT,
+    baseline_prompt_version TEXT,
+    baseline_at           TIMESTAMPTZ,
+    -- ---- 元数据 ----
+    source    TEXT NOT NULL DEFAULT 'manual',       -- manual / review / sample
+    disputed  BOOLEAN NOT NULL DEFAULT false,       -- 存在标注争议
+    annotator TEXT,
+    note      TEXT,
+    active    BOOLEAN NOT NULL DEFAULT true,
+    frozen    BOOLEAN NOT NULL DEFAULT false,       -- 冻结后除仲裁外不得修改
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (kind, staff_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_eval_kind   ON eval_case (kind, active, case_id DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_seen   ON eval_case (staff_id, session_id);
+
+-- 每次跑评估集的结果（回答"这轮改动把指标抬了还是压了"，也留门禁判据）
+CREATE TABLE IF NOT EXISTS eval_run (
+    id            BIGSERIAL PRIMARY KEY,
+    kind          TEXT,                             -- 跑的是哪一层（可空=全部）
+    rule_version  TEXT,
+    prompt_version TEXT,
+    case_total    INT,
+    case_ok       INT,
+    metrics       JSONB,                            -- {rule_f1, precision, recall, grade_acc, fp_rate, ...}
+    baseline_id   INT,                              -- 对比的基线（引用 eval_run.id）
+    gate_passed   BOOLEAN,
+    gate_diffs    JSONB,                            -- [{metric, base, now, delta}]
+    status        TEXT NOT NULL DEFAULT 'running',  -- running / success / failed
+    error         TEXT,
+    elapsed_sec   DOUBLE PRECISION,
+    detail        JSONB,
+    started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_eval_run_time ON eval_run (started_at DESC);
+
+-- 复核改判可回流成评估样本（架构 §4.2 的 negative_review.eval_case_id）
+ALTER TABLE negative_review ADD COLUMN IF NOT EXISTS eval_case_id BIGINT;
+
+-- 跨进程停止请求（停止是「另一个进程发的请求」，不能被本进程标志表达）。
+-- 为什么要单独一列而不是塞进 detail：`_bump` 每轮都会整体覆盖 detail，标记会被冲掉。
+ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS stop_requested BOOLEAN NOT NULL DEFAULT false;
+
+-- ---------------- 置信度三层合成（第六章 E4）----------------
+-- 铁律：置信度必须「算出来」，不能「问出来」。
+--   · model_confidence  = 模型自报值，**仅留档观测，不参与任何决策**（已有列）
+--   · session_confidence = 系统算出（命中项置信均值 × 覆盖率 − 无效项惩罚 + 一致性加成），参与复核触发
+--   · verification_status = 人工验证状态，与上面两者分离 —— 避免复核员误以为
+--     「模型说 0.9」就等于「验证过了」
+ALTER TABLE customer_intent_assessment
+  ADD COLUMN IF NOT EXISTS session_confidence REAL;
+ALTER TABLE customer_intent_assessment
+  ADD COLUMN IF NOT EXISTS verification_status TEXT NOT NULL DEFAULT 'na';
+-- 为什么触发人工复核（可追溯）：["has_negative","low_confidence","grade_boundary",...]
+ALTER TABLE customer_intent_assessment
+  ADD COLUMN IF NOT EXISTS review_reasons JSONB;
+CREATE INDEX IF NOT EXISTS ix_assess_session_conf
+  ON customer_intent_assessment (session_confidence);
+
+-- ---------------- Loop 护栏（第二章 G3/G4/B3、§7.2）----------------
+-- deadline：整轮总超时。改造前「超时」只能靠单会话内部重试耗时（最多 3×120 秒）
+--   自然累积，卡住一整轮也无法中断 —— 实测一次批量跑了 2.7 小时才发现没有总闸。
+ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS deadline TIMESTAMPTZ;
+-- max_llm_calls：成本预算。LLM 调用是真花钱的，必须能设上限（G4）。
+ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS max_llm_calls INT;
+-- session_failed：失败会话数。改造前只累加在内存 detail 里、**没落列**，
+--   导致「这轮挂了几个会话」在 SQL 层面查不到（G5 的配套）。
+ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS session_failed INT NOT NULL DEFAULT 0;
+-- partial_reason：为何以 partial 结束（deadline / max_llm_calls / stop）。
+ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS partial_reason TEXT;

@@ -113,6 +113,10 @@ class SyncService:
               ignore_cursor: bool = False) -> dict:
         if self.is_running():
             return {"ok": False, "reason": "已有同步任务在运行，请先停止或等待完成"}
+        # 互斥（修 H1）：评分正在跑时不得启动同步 —— 否则评分读到的是「半截会话」
+        import scoring_service
+        if scoring_service.service.is_running():
+            return {"ok": False, "reason": "评分任务进行中，请先等待评分完成再同步（避免评分读到半截数据）"}
 
         types = [t for t in (session_types or ["ext_user"]) if t in SESSION_TYPES]
         if not types:

@@ -109,6 +109,7 @@ a { color: var(--brand); text-decoration: none; }
 .tag.green { background: #e8f9f0; color: #0b8a4f; border-color: #c6efdb; }
 .tag.orange { background: #fff5e8; color: #b45309; border-color: #ffe1bb; }
 .tag.red { background: #fef3f2; color: #b42318; border-color: #fdd8d4; }
+.tag.purple { background: #f4f0ff; color: #6d3bd4; border-color: #e0d5ff; }
 
 .muted { color: var(--text-3); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }

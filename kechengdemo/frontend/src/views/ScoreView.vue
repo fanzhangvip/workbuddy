@@ -84,9 +84,21 @@ function goto(p) { filters.value.page = p; refresh() }
 
 async function openDetail(id) { try { detail.value = await api.scoringAssessment(id) } catch (e) { error.value = e.message } }
 
-const STATUS_TAG = { success: 'green', running: 'blue', failed: 'red', stopped: 'orange' }
-const STATUS_CN = { success: '成功', running: '运行中', failed: '失败', stopped: '已停止' }
+const STATUS_TAG = { success: 'green', running: 'blue', failed: 'red', stopped: 'orange', partial: 'purple' }
+const STATUS_CN = { success: '成功', running: '运行中', failed: '失败', stopped: '已停止', partial: '部分完成' }
+// 部分完成的原因（架构 G3/G4）：让「为什么没跑完」一眼可见，而不是看到状态就慌
+const PARTIAL_CN = { deadline: '达到整轮超时上限', max_llm_calls: '达到大模型调用次数上限' }
 const GRADE_TAG = { S: 'red', A: 'orange', B: 'blue', C: 'green', D: '' }
+// 人工复核的触发原因（架构 第六章 E4：由规则判定，不再听模型自报）
+const REASON_CN = {
+  has_negative: '有语义负分项',
+  engine_negative_only: '仅引擎硬指标（如客户超 48h 未回复）',
+  unchecked_rules: '有规则被漏检',
+  low_confidence: '系统置信度偏低',
+  grade_boundary: '分数正好卡在等级分界（差 1 分即换级）',
+  weak_evidence: '高权重项但证据不硬',
+  grade_flip: '与上次等级明显翻转',
+}
 
 onMounted(() => { refresh(); loadStaffs(); timer = setInterval(refresh, 3000) })
 onUnmounted(() => clearInterval(timer))
@@ -208,6 +220,9 @@ onUnmounted(() => clearInterval(timer))
               <div class="stat card"><div class="label">转入复核</div><div class="value" style="color:var(--warn)">{{ run.review_new || 0 }}</div></div>
               <div class="stat card"><div class="label">大模型调用</div><div class="value">{{ run.llm_calls || 0 }}<span class="muted" style="font-size:13px"> / 失败 {{ run.llm_failed || 0 }}</span></div></div>
             </div>
+            <div class="alert warn" v-if="run.status === 'partial'">
+              本轮<b>未跑完</b>即退出：{{ PARTIAL_CN[run.partial_reason] || run.partial_reason }}。已处理的会话结论有效，可稍后再跑一轮续上。
+            </div>
             <div class="alert info" v-if="status?.progress?.current_target">
               正在评分：{{ status.progress.current_target }}
               <span class="muted" style="margin-left:6px">{{ status.progress.current_staff || '' }}</span>
@@ -308,8 +323,19 @@ onUnmounted(() => clearInterval(timer))
         <div class="card-body" style="display:grid;gap:14px">
           <div class="alert info">
             总分 <b>{{ detail.raw_score }}</b>（加分 {{ detail.positive_total }} / 扣分 {{ detail.negative_total }}）
-            · 规则 {{ detail.rule_version }} · 置信度 {{ detail.confidence }}
-            · <span class="muted">{{ fmtTime(Date.parse(detail.analyzed_at) / 1000) }}</span>
+            · 规则 {{ detail.rule_version }}
+            <span class="muted">｜</span>
+            <span :title="'系统算出（命中项置信 × 覆盖率 − 无效项惩罚 + 一致性加成）'">
+              系统置信度 <b>{{ detail.session_confidence == null ? '—' : detail.session_confidence.toFixed(2) }}</b>
+            </span>
+            <span class="muted" :title="'模型自报值，仅留档，不参与任何决策'">
+              （模型自报 {{ detail.model_confidence == null ? '—' : detail.model_confidence }}）
+            </span>
+            <span class="muted">· {{ fmtTime(Date.parse(detail.analyzed_at) / 1000) }}</span>
+          </div>
+          <div v-if="detail.review_reasons && detail.review_reasons.length" class="alert warn" style="font-size:12.5px">
+            触发人工复核：<b>{{ detail.review_reasons.map(r => REASON_CN[r] || r).join('、') }}</b>
+            <span class="muted">（由规则判定，非模型自报）</span>
           </div>
           <div>
             <div class="lbl">加分项</div>

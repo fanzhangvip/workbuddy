@@ -5,7 +5,7 @@
 
 验四件事：
   1. 默认关闭时**零额外写入**
-  2. 开启后逐节点落 span（成功路径 10 条），耗时/指纹/ok 齐备
+  2. 开启后逐节点落 span（成功路径每个图节点 1 条），耗时/指纹/ok 齐备
   3. 节点抛异常时落 ``ok=false`` + ``error_class``，且异常继续穿透
   4. **写 trace 失败（表不可写）不得影响评分主流程**
 """
@@ -91,10 +91,12 @@ def main():
         graph_session.run_session(ss.service, RUN_ID, cand, rules, 8, "off", False)
         rows = spans()
         nodes = {r["node"] for r in rows}
-        check("成功路径落 10 条 span（10 个节点）", len(rows) == 10, str(len(rows)))
-        check("覆盖全部主节点",
-              {"prepare_context", "facts", "judge", "items", "local_score",
-               "persist", "writeback", "review", "progress"} <= nodes, str(sorted(nodes)))
+        # 期望节点数从编译后的图里取，而不是写死数字 —— 否则每加一个节点都要改测试
+        expect_nodes = {n for n in graph_session.graph_for(ss.service).get_graph().nodes
+                        if not n.startswith("__")}
+        check(f"成功路径逐节点落 span（{len(expect_nodes)} 条）",
+              len(rows) == len(expect_nodes), f"{len(rows)} vs {len(expect_nodes)}")
+        check("覆盖全部主节点", expect_nodes <= nodes, str(sorted(nodes)))
         check("全部 ok=true", all(r["ok"] for r in rows))
         check("elapsed_ms 均已记录",
               all(r["elapsed_ms"] is not None for r in rows))

@@ -63,10 +63,42 @@ def _read_scoring_interval() -> int:
         return 0
 
 
+def guard_can_start(owner: str) -> bool:
+    """共享互斥守卫（修 H1）：同步与评分**不得同时运行**。
+
+    为什么必须互斥：评分要读 ``chat_message``；若同步正在往里写，评分会读到
+    「半截会话」（``msg_count`` / ``last_msg_time`` 都还在变），结论因此不可复现。
+
+    改造前的问题：``_job``（同步）只查**同步自己**在不在跑，压根不查评分 ——
+    于是「评分跑着，同步又启动」这条路没被堵住；而 ``_scoring_job`` 两边都查了。
+    两个 job 的守卫口径不一致，收敛成同一个入口后才算真的互斥。
+
+    返回 True = 可以启动；False = 应跳过（原因已打印）。
+    """
+    busy_sync = service.is_running()
+    busy_scoring = scoring.is_running()
+    if owner == "sync":
+        if busy_sync:
+            print("[scheduler] 已有同步在跑，本次跳过")
+            return False
+        if busy_scoring:
+            print("[scheduler] 评分进行中，本次同步跳过（避免读到半截数据）")
+            return False
+        return True
+    if owner == "scoring":
+        if busy_scoring:
+            print("[scheduler] 已有评分任务在跑，本次跳过")
+            return False
+        if busy_sync:
+            print("[scheduler] 同步进行中，本次评分跳过（避免读到半截数据）")
+            return False
+        return True
+    return True
+
+
 def _job():
-    """定时任务体：增量同步（自动触发的任务不抢占手动任务）。"""
-    if service.is_running():
-        print("[scheduler] 已有同步在跑，本次定时跳过")
+    """定时任务体：增量同步（与评分互斥，见 :func:`guard_can_start`）。"""
+    if not guard_can_start("sync"):
         return
     print("[scheduler] 触发定时增量同步")
     service.start(kind="incremental", triggered_by="schedule",
@@ -89,12 +121,8 @@ def _keepalive_job():
 
 
 def _scoring_job():
-    """定时任务体：增量评分（与同步互斥，避免读到半截数据）。"""
-    if service.is_running():
-        print("[scheduler] 同步进行中，本次评分跳过")
-        return
-    if scoring.is_running():
-        print("[scheduler] 已有评分任务在跑，本次跳过")
+    """定时任务体：增量评分（与同步互斥，见 :func:`guard_can_start`）。"""
+    if not guard_can_start("scoring"):
         return
     print("[scheduler] 触发定时评分")
     scoring.start(triggered_by="schedule")

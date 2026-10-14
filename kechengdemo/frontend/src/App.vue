@@ -32,6 +32,7 @@ const credState = computed(() => {
         <router-link to="/chat">会话管理</router-link>
         <router-link to="/score">评分中心</router-link>
         <router-link to="/review">负分复核</router-link>
+        <router-link to="/eval">评估集</router-link>
         <router-link to="/sync">同步中心</router-link>
         <router-link to="/auth">登录与凭据</router-link>
       </nav>

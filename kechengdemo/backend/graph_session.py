@@ -10,7 +10,8 @@
     ``prepare_context`` ──(kept < ctx_min_kept)──► END        （早退，不计 LLM 调用）
             │
             └─► emit_ctx_stats → facts → judge → items → local_score
-                 → persist(assessment + outbox 同事务) → writeback → review → progress → END
+                 → persist(assessment + outbox 同事务) → tag_evidence(rule_tags)
+                 → writeback → review → progress → END
 
 为什么用「闭包注入 service」而不是把它放进 state
     ``ScoringService`` 持有 ``threading.Lock``；若放进 state，一旦框架对 state 做
@@ -28,6 +29,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+import hooks
 import rules as rules_mod
 import scoring_service as ss
 import trace
@@ -39,6 +41,7 @@ NODE_JUDGE = "judge"
 NODE_ITEMS = "items"
 NODE_LOCAL = "local_score"
 NODE_PERSIST = "persist"
+NODE_TAG = "tag_evidence"
 NODE_WRITEBACK = "writeback"
 NODE_REVIEW = "review"
 NODE_PROGRESS = "progress"
@@ -64,6 +67,8 @@ class SessionState(TypedDict, total=False):
     score: dict
     grade: dict
     needs_review: bool
+    session_confidence: float
+    review_reasons: list
     aid: int
     wb_status: str
     review_enqueued: bool
@@ -80,9 +85,14 @@ def n_prepare(svc, state: SessionState) -> dict:
     cand = state["cand"]
     staff_id, session_id = cand["staff_id"], cand["session_id"]
     ctx = ss.build_context(staff_id, session_id,
-                           session_meta={"staff_id": staff_id, "session_id": session_id})
-    min_kept = ss.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4)
-    if ctx["stats"]["kept"] < min_kept:      # 有效条数太少 → 跳过（不计 llm 调用）
+                           session_meta={"staff_id": staff_id, "session_id": session_id},
+                           rel_key=f"{staff_id}:{cand['target_id']}")
+    # ① before_llm_call（架构 §2.4 H3）：与旧路径同一判定入口，保证口径一致
+    gate = hooks.before_llm_call(
+        kept=ctx["stats"]["kept"],
+        min_kept=ss.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4))
+    if gate.denied:
+        svc._note_hook(gate)
         return {"ctx": ctx, "outcome": "skipped"}
     return {"ctx": ctx}
 
@@ -102,6 +112,7 @@ def n_facts(svc, state: SessionState) -> dict:
     cand = state["cand"]
     facts = ss.compute_facts(cand["staff_id"], cand["session_id"],
                              fetch_tags=state["fetch_tags"])
+    svc._note_facts(facts)          # 修 G1：取标签失败留痕（与旧路径同口径）
     return {"facts": facts}
 
 
@@ -123,14 +134,35 @@ def n_items(svc, state: SessionState) -> dict:
 
 
 def n_local_score(svc, state: SessionState) -> dict:
-    """本地计分 + 代码判定是否需要人工复核。对应旧 L534-540。"""
+    """本地计分 + **代码算出的置信度与复核触发**。对应旧 L534-540。"""
     score = rules_mod.compute_score(state["pos_items"], state["neg_items"], state["rules"])
     grade = rules_mod.grade_of(score["raw_score"], state["rules"])
     unchecked = list(state["res"].get("unchecked_rules") or [])
-    # 「要不要人看一眼」由代码判定（修 E4：不让可能出错的组件自证清白）
-    needs_review = bool(state["neg_items"] or unchecked)
+    # ② after_llm_output（架构 §2.4 H3）：与旧路径同一判定入口（体检 + 极性终检）
+    gate = hooks.after_llm_output(pos_items=state["pos_items"], neg_items=state["neg_items"],
+                                  unchecked=unchecked,
+                                  invalid_items=state["res"].get("invalid_items"),
+                                  rules=state["rules"],
+                                  total_llm=len(rules_mod.llm_rule_ids(state["rules"])))
+    svc._note_hook(gate)
+    if gate.denied:
+        raise ss.llm.FatalLLMError(
+            f"命中项极性异常（规则表与输出不符）：{gate.detail.get('polarity_violations')}")
+    # 置信度三层合成（架构 第六章 E4）：与旧路径同一函数、同一阈值，口径必然一致
+    cand = state["cand"]
+    last_grade = (ss._last_assessment(f"{cand['staff_id']}:{cand['target_id']}") or {}).get("grade")
+    # 传**合并后**的 pos/neg_items（含引擎硬指标）；理由见 scoring_service._score_one 的注释
+    conf = ss.confidence.compute(state["pos_items"], state["neg_items"], state["res"],
+                                 score, grade, state["rules"], last_grade=last_grade,
+                                 thresholds=ss._confidence_thresholds())
+    n_pos = len(state["pos_items"])
+    conf_items = conf.get("items") or []
     return {"score": score, "grade": grade, "unchecked": unchecked,
-            "needs_review": needs_review}
+            "needs_review": conf["needs_human_review"],
+            # 命中项带上 item_confidence / confidence_kind（落库留痕，供复核参考）
+            "pos_items": conf_items[:n_pos], "neg_items": conf_items[n_pos:],
+            "session_confidence": conf["session_confidence"],
+            "review_reasons": conf["review_reasons"]}
 
 
 def n_persist(svc, state: SessionState) -> dict:
@@ -138,8 +170,18 @@ def n_persist(svc, state: SessionState) -> dict:
     aid = svc._persist_assessment(state["run_id"], state["cand"], state["res"],
                                   state["score"], state["grade"], state["needs_review"],
                                   state["unchecked"], state["pos_items"], state["neg_items"],
-                                  state["mode"])
+                                  state["mode"],
+                                  session_confidence=state.get("session_confidence"),
+                                  review_reasons=state.get("review_reasons"))
     return {"aid": aid}
+
+
+def n_tag(svc, state: SessionState) -> dict:
+    """写关键历史标签（架构 §4.4.1）。对应旧路径 persist 之后、回写之前。"""
+    cand = state["cand"]
+    svc._tag_evidence_messages(cand["staff_id"], cand["session_id"],
+                               state["pos_items"], state["neg_items"])
+    return {}
 
 
 def n_writeback(svc, state: SessionState) -> dict:
@@ -189,6 +231,7 @@ def build_graph(svc):
     g.add_node(NODE_ITEMS, _node(NODE_ITEMS, svc, n_items))
     g.add_node(NODE_LOCAL, _node(NODE_LOCAL, svc, n_local_score))
     g.add_node(NODE_PERSIST, _node(NODE_PERSIST, svc, n_persist))
+    g.add_node(NODE_TAG, _node(NODE_TAG, svc, n_tag))
     g.add_node(NODE_WRITEBACK, _node(NODE_WRITEBACK, svc, n_writeback))
     g.add_node(NODE_REVIEW, _node(NODE_REVIEW, svc, n_review))
     g.add_node(NODE_PROGRESS, _node(NODE_PROGRESS, svc, n_progress))
@@ -201,7 +244,8 @@ def build_graph(svc):
     g.add_edge(NODE_JUDGE, NODE_ITEMS)
     g.add_edge(NODE_ITEMS, NODE_LOCAL)
     g.add_edge(NODE_LOCAL, NODE_PERSIST)
-    g.add_edge(NODE_PERSIST, NODE_WRITEBACK)
+    g.add_edge(NODE_PERSIST, NODE_TAG)
+    g.add_edge(NODE_TAG, NODE_WRITEBACK)
     g.add_edge(NODE_WRITEBACK, NODE_REVIEW)
     g.add_edge(NODE_REVIEW, NODE_PROGRESS)
     g.add_edge(NODE_PROGRESS, END)

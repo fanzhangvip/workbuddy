@@ -65,7 +65,7 @@ def _classify_http_error(err: urllib.error.HTTPError) -> LLMError:
     return RetryableLLMError(msg)
 
 
-def chat(messages: list, temperature: float = 0.2, json_mode: bool = False,
+def chat(messages: list, temperature: float = 0.0, json_mode: bool = False,
          timeout: int = TIMEOUT, max_tokens: int = None, return_meta: bool = False):
     """调用对话补全，返回文本内容（``return_meta=True`` 时返回含 usage 的字典）。
 

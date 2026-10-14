@@ -9,6 +9,7 @@ import scoring_service as ss
 from scoring_service import service
 
 import analyze                       # noqa: E402  提示词/契约版本常量
+import confidence                    # noqa: E402  置信度默认阈值（架构 第六章）
 import contracts                     # noqa: E402
 
 router = APIRouter(prefix="/api/scoring", tags=["scoring"])
@@ -124,7 +125,8 @@ def assessments(grade: str = "", staff_id: str = "", min_score: int = None,
     items = db.query(f"""
         SELECT a.assessment_id, a.relationship_key, a.staff_id, a.staff_name,
                a.target_id, a.target_name, a.session_id, a.raw_score, a.positive_total,
-               a.negative_total, a.grade, a.confidence, a.needs_human_review,
+               a.negative_total, a.grade, a.model_confidence, a.session_confidence,
+               a.review_reasons, a.needs_human_review,
                a.rule_version, a.writeback_status, a.review_status, a.analyzed_at,
                a.last_msg_time,
                (SELECT count(*) FROM chat_message m
@@ -192,6 +194,19 @@ def get_settings():
         "max_sessions": ss.setting_int("scoring_max_sessions", "SCORING_MAX_SESSIONS", 200),
         "min_messages": ss.setting_int("scoring_min_messages", "SCORING_MIN_MESSAGES", 4),
         "fetch_tags": ss.setting_bool("scoring_fetch_tags", "SCORING_FETCH_TAGS", False),
+        # Loop 护栏（架构 §2.2 G3/G4/G7）：0 = 不限
+        "deadline_minutes": ss.setting_int("scoring_deadline_minutes",
+                                           "SCORING_DEADLINE_MINUTES", 120),
+        "max_llm_calls": ss.setting_int("scoring_max_llm_calls",
+                                        "SCORING_MAX_LLM_CALLS", 500),
+        "priority_order": ss.setting_bool("scoring_priority_order",
+                                          "SCORING_PRIORITY_ORDER", True),
+        # 回写副作用配额（架构 边界3）：**默认 0 = 不限**（不改变既有行为，
+        # 上线前由业务确认后再收紧；文档建议单客户单日 3 次）
+        "writeback_quota_per_run": ss.setting_int("writeback_quota_per_run",
+                                                  "WRITEBACK_QUOTA_PER_RUN", 0),
+        "writeback_quota_per_customer_per_day": ss.setting_int(
+            "writeback_quota_per_customer_per_day", "WRITEBACK_QUOTA_PER_CUSTOMER_PER_DAY", 0),
         # 上下文预处理层（ctx_preprocess）运行时设置
         "ctx_window_size": ss.setting_int("ctx_window_size", "CTX_WINDOW_SIZE", 60),
         "ctx_drop_msgtypes": ss.setting("ctx_drop_msgtypes", "CTX_DROP_MSGTYPES", "31,9"),
@@ -199,6 +214,19 @@ def get_settings():
         "ctx_drop_system": ss.setting_bool("ctx_drop_system", "CTX_DROP_SYSTEM", True),
         "ctx_display_relative": ss.setting_bool("ctx_display_relative", "CTX_DISPLAY_RELATIVE", True),
         "ctx_min_kept": ss.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4),
+        # 关键历史检索（架构 §4.4）：④ 段总量上限 / ④′ 冷启动早期锚点条数
+        "ctx_key_history": ss.setting_bool("ctx_key_history", "CTX_KEY_HISTORY", True),
+        "ctx_key_history_max": ss.setting_int("ctx_key_history_max", "CTX_KEY_HISTORY_MAX", 30),
+        "ctx_cold_start_early": ss.setting_int("ctx_cold_start_early", "CTX_COLD_START_EARLY", 10),
+        # ③ 增量段 / 预算（架构 §4.5）：增量条数软上限（0 = 关闭增量，退回「最近窗口」）
+        # 与整段文本的 token 硬预算（超限先砍 ⑤ 再砍 ③ 最早）
+        "ctx_delta_max": ss.setting_int("ctx_delta_max", "CTX_DELTA_MAX", 200),
+        "ctx_tokens_max": ss.setting_int("ctx_tokens_max", "CTX_TOKENS_MAX", 12000),
+        # ①② 记忆段（架构 §4.5.3 / C-C）：读回上次评估结论（档案 + 上次明细）
+        "ctx_memory": ss.setting_bool("ctx_memory", "CTX_MEMORY", True),
+        # ⑤ 兜底窗口的触发阈值（架构 §4.5.2）：③④ 有效条数低于它就补最近 60 条。
+        # 默认 4 = 文档原设计（①② 已落地，连续性由记忆承担）；设 60 可退回保守行为。
+        "ctx_fallback_min": ss.setting_int("ctx_fallback_min", "CTX_FALLBACK_MIN", 4),
         # 输出契约（阶段A）：模型调用与修复重试的运行时设置
         "llm_temperature": ss.setting_float("llm_temperature", "LLM_TEMPERATURE", 0.0),
         "llm_max_tokens": ss.setting_int("llm_max_tokens", "LLM_MAX_TOKENS", 0),
@@ -212,6 +240,19 @@ def get_settings():
         "use_graph_session": ss.setting_bool("use_graph_session", "USE_GRAPH_SESSION", False),
         "use_outbox": ss.setting_bool("use_outbox", "USE_OUTBOX", True),
         "trace_enabled": ss.setting_bool("trace_enabled", "TRACE_ENABLED", False),
+        # 置信度与复核触发（架构 第六章 E4）：默认值按 52 条真实评估标定，全部可调
+        "confidence_review_min": ss.setting_float("confidence_review_min", "CONFIDENCE_REVIEW_MIN",
+                                                  confidence.REVIEW_CONF_MIN),
+        "confidence_boundary_delta": ss.setting_int("confidence_boundary_delta",
+                                                    "CONFIDENCE_BOUNDARY_DELTA",
+                                                    confidence.GRADE_BOUNDARY_DELTA),
+        "confidence_flip_steps": ss.setting_int("confidence_flip_steps", "CONFIDENCE_FLIP_STEPS",
+                                                confidence.GRADE_FLIP_STEPS),
+        "confidence_weak_weight": ss.setting_int("confidence_weak_weight", "CONFIDENCE_WEAK_WEIGHT",
+                                                 confidence.WEAK_EVIDENCE_WEIGHT),
+        # ⚠️ 默认 true = 不放松（保持改造前的行为）；实测关掉可把复核率 90% → 60%
+        "review_engine_negative": ss.setting_bool("review_engine_negative", "REVIEW_ENGINE_NEGATIVE",
+                                                  confidence.REVIEW_ENGINE_NEGATIVE),
     }
 
 
@@ -228,12 +269,25 @@ def set_settings(payload: dict = Body(default={})):
     for key, skey in (("max_sessions", "scoring_max_sessions"),
                       ("min_messages", "scoring_min_messages"),
                       ("fetch_tags", "scoring_fetch_tags"),
+                      ("deadline_minutes", "scoring_deadline_minutes"),
+                      ("max_llm_calls", "scoring_max_llm_calls"),
+                      ("priority_order", "scoring_priority_order"),
+                      ("writeback_quota_per_run", "writeback_quota_per_run"),
+                      ("writeback_quota_per_customer_per_day",
+                       "writeback_quota_per_customer_per_day"),
                       ("ctx_window_size", "ctx_window_size"),
                       ("ctx_drop_msgtypes", "ctx_drop_msgtypes"),
                       ("ctx_drop_pure_url", "ctx_drop_pure_url"),
                       ("ctx_drop_system", "ctx_drop_system"),
                       ("ctx_display_relative", "ctx_display_relative"),
                       ("ctx_min_kept", "ctx_min_kept"),
+                      ("ctx_key_history", "ctx_key_history"),
+                      ("ctx_key_history_max", "ctx_key_history_max"),
+                      ("ctx_cold_start_early", "ctx_cold_start_early"),
+                      ("ctx_delta_max", "ctx_delta_max"),
+                      ("ctx_tokens_max", "ctx_tokens_max"),
+                      ("ctx_memory", "ctx_memory"),
+                      ("ctx_fallback_min", "ctx_fallback_min"),
                       ("llm_temperature", "llm_temperature"),
                       ("llm_max_tokens", "llm_max_tokens"),
                       ("llm_retry_attempts", "llm_retry_attempts"),
@@ -241,7 +295,12 @@ def set_settings(payload: dict = Body(default={})):
                       ("session_max_failures", "session_max_failures"),
                       ("use_graph_session", "use_graph_session"),
                       ("use_outbox", "use_outbox"),
-                      ("trace_enabled", "trace_enabled")):
+                      ("trace_enabled", "trace_enabled"),
+                      ("confidence_review_min", "confidence_review_min"),
+                      ("confidence_boundary_delta", "confidence_boundary_delta"),
+                      ("confidence_flip_steps", "confidence_flip_steps"),
+                      ("confidence_weak_weight", "confidence_weak_weight"),
+                      ("review_engine_negative", "review_engine_negative")):
         if key in payload:
             db.set_setting(skey, payload[key])
     return {"ok": True, **get_settings()}

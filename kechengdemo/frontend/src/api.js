@@ -54,6 +54,23 @@ export const api = {
   reviewSubmit: (payload) => http.post('/review/submit', payload).then(r => r.data),
   reviewSetStatus: (payload) => http.post('/review/status', payload).then(r => r.data),
   reviewAudit: (limit = 30) => http.get('/review/audit', { params: { limit } }).then(r => r.data),
+
+  // ---------------- 评估集（回答"判得准不准"）----------------
+  evalStats: () => http.get('/eval/stats').then(r => r.data),
+  evalList: (params) => http.get('/eval/list', { params }).then(r => r.data),
+  evalDetail: (case_id, msg_limit = 100) =>
+    http.get('/eval/detail', { params: { case_id, msg_limit } }).then(r => r.data),
+  evalSave: (payload) => http.post('/eval/save', payload).then(r => r.data),
+  evalFreeze: (payload) => http.post('/eval/freeze', payload).then(r => r.data),
+  evalActive: (payload) => http.post('/eval/active', payload).then(r => r.data),
+  evalSample: (payload) => http.post('/eval/sample', payload).then(r => r.data),
+  evalStart: (payload = {}) => http.post('/eval/start', payload).then(r => r.data),
+  evalStatus: () => http.get('/eval/status').then(r => r.data),
+  evalRuns: (limit = 20) => http.get('/eval/runs', { params: { limit } }).then(r => r.data),
+  evalBaseline: () => http.get('/eval/baseline').then(r => r.data),
+  evalSetBaseline: (payload = {}) => http.post('/eval/baseline', payload).then(r => r.data),
+  evalGate: () => http.get('/eval/gate').then(r => r.data),
+  evalExportUrl: (kind = '') => `/api/eval/export?kind=${encodeURIComponent(kind)}`,
 }
 
 // ---------------- 展示用工具 ----------------

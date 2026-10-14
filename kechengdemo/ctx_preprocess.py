@@ -17,7 +17,7 @@
 管道
   S1 ``classify``         归型：角色 / msgtype / 正文（plain 优先，content 回退）
   S2 ``should_drop``      降噪：撤回 / 名片 / 纯 URL / 系统消息 / 空文本
-  S3 ``select_window``    取最新 N 条（标记是否截断）
+  S3 ``select_window``    取最新 N 条（标记是否截断；``_pinned`` 行不受上限约束）
   S4 ``annotate``         编号 #001 + 绝对时间 + 相对天数
   S5 ``render_lines``     渲染 ``#001 [10-08 09:12｜6天前] 客户: 内容``
   S6 ``build_llm_context`` 组装（主入口）
@@ -311,13 +311,25 @@ def should_drop(item: dict, opts: Optional[CtxOptions] = None) -> Optional[str]:
 # ============================================================ S3 窗口 / S4 编号时间
 
 def select_window(items: List[dict], opts: Optional[CtxOptions] = None) -> Tuple[List[dict], bool]:
-    """按时间升序取最新 ``opts.window`` 条，返回 (窗口条目, 是否被截断)。"""
+    """按时间升序取最新 ``opts.window`` 条，返回 (窗口条目, 是否被截断)。
+
+    ``item["_pinned"]`` 的条目（架构 §4.4 的「关键历史消息」）**不受窗口上限约束**：
+    它们恰恰因为是「最早被采纳过的证据」而会被窗口切掉——那样检索就白做了。
+    ``_pinned`` 为空的常规输入下，行为与改造前**逐字一致**（既有 25 条单测不变）。
+    """
     opts = opts or CtxOptions()
-    ordered = sorted(items, key=lambda x: (x.get("msg_time") or 0, str(x.get("message_id") or "")))
+    key = lambda x: (x.get("msg_time") or 0, str(x.get("message_id") or ""))  # noqa: E731
+    ordered = sorted(items, key=key)
+    pinned = [x for x in ordered if x.get("_pinned")]
+    rest = [x for x in ordered if not x.get("_pinned")]
     w = _to_int(opts.window) or 0
-    if w > 0 and len(ordered) > w:
-        return ordered[-w:], True
-    return ordered, False
+    truncated = False
+    if w > 0 and len(rest) > w:
+        rest = rest[-w:]
+        truncated = True
+    if pinned:
+        return sorted(pinned + rest, key=key), truncated
+    return rest, truncated
 
 
 def fmt_relative(msg_time: Any, now: int) -> str:
@@ -438,7 +450,13 @@ def build_llm_context(rows: Iterable[dict], *, session_meta: dict = None,
     now = int(now if now is not None else time.time())
     rows = list(rows or [])
 
-    classified = [classify(r) for r in rows]
+    # ``_pinned``（关键历史）是行级标记，classify 只认业务字段，故在这里补挂上去。
+    classified = []
+    for r in rows:
+        it = classify(r)
+        if (r or {}).get("_pinned"):
+            it["_pinned"] = True
+        classified.append(it)
 
     kept: List[dict] = []
     reasons: Counter = Counter()
@@ -468,6 +486,8 @@ def build_llm_context(rows: Iterable[dict], *, session_meta: dict = None,
             "truncated": truncated,
             "drop_reasons": dict(reasons),
             "window": opts.window,
+            # 关键历史（_pinned）最终留下了几条 → 架构 §4.6 的 ctx_seg_key
+            "key": sum(1 for m in messages if m.get("_pinned")),
             "first_msg_time": messages[0]["msg_time"] if messages else None,
             "last_msg_time": messages[-1]["msg_time"] if messages else None,
         },
