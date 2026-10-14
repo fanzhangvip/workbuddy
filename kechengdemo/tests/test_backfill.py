@@ -378,6 +378,7 @@ def main():
     test_pure()
     test_snapshot_determinism()
     test_end_to_end()
+    test_consistency_repair()
     test_backup_shape()
     test_production_untouched()
     print("\n" + "=" * 70)

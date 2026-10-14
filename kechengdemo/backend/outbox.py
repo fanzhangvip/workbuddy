@@ -162,6 +162,10 @@ def _record(conn, row, status, ok, attempts, errcode=None, errmsg=None, resp=Non
                           last_response=%s, updated_at=now()
                     WHERE outbox_id=%s""",
                 (errcode, errmsg, _json(resp), row["outbox_id"]))
+            # D2-1：投递成功才推进客户级回写水位（差值累加的依据）。
+            # ⚠️ 必须与「写 score_writeback」在**同一事务**里 —— 否则出现
+            # 「记账说写成功了、水位没动」→ 下次差值重复算 → 重复回写。
+            _advance_ledger(cur, row)
         else:
             cur.execute(
                 """UPDATE writeback_outbox
@@ -172,6 +176,27 @@ def _record(conn, row, status, ok, attempts, errcode=None, errmsg=None, resp=Non
                     WHERE outbox_id=%s""",
                 ("dead" if dead else "failed", attempts, errcode, errmsg, _json(resp),
                  _delay(attempts), row["outbox_id"]))
+
+
+def _advance_ledger(cur, row) -> None:
+    """D2-1：回写成功后推进客户级水位（**复用调用方 cursor**，与记账同事务）。
+
+    `row["score"]` 在差值模式下本来就是「差值」（入队时已算好），
+    所以直接累加即可 —— 不要在这里再减一次水位（那会双重打折）。
+    """
+    cur.execute(
+        """INSERT INTO writeback_ledger
+             (relationship_key, staff_id, external_user_id, written_total,
+              last_assessment_id, last_write_at, writes)
+           VALUES (%s,%s,%s,%s,%s,now(),1)
+           ON CONFLICT (relationship_key) DO UPDATE
+             SET written_total = writeback_ledger.written_total + EXCLUDED.written_total,
+                 last_assessment_id = EXCLUDED.last_assessment_id,
+                 last_write_at = now(),
+                 writes = writeback_ledger.writes + 1,
+                 updated_at = now()""",
+        (row["relationship_key"], row["staff_id"], row["target_id"],
+         int(row["score"] or 0), row["assessment_id"]))
 
 
 def _defer(conn, row, seconds: int, note: str) -> None:

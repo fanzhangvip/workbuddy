@@ -62,6 +62,7 @@ REASON_CN = {
     "max_llm_calls": "达到大模型调用次数上限",
     "insufficient_content": "有效消息条数不足",
     "no_positive": "无正分，无需回写",
+    "no_delta": "相对已回写水位无增量（D2-1 差值累加）",
     "mode_off": "回写功能已关闭",
     "mode_dry_run": "演练模式：仅记录，未真实写入",
     "already_written": "该评估已回写过（幂等）",
@@ -81,6 +82,7 @@ REASON_TO_WB_STATUS = {
     "already_written": "skipped",
     "quota_run": "skipped",
     "quota_customer": "skipped",
+    "no_delta": "skipped",
 }
 
 
@@ -107,24 +109,43 @@ def guard_reason(deadline_ts, max_llm_calls, llm_calls, now=None):
 # ============================================================ ① before_llm_call
 
 def before_llm_call(*, kept=None, min_kept=None, deadline=None, max_llm_calls=None,
-                    llm_calls=0, now=None) -> HookResult:
+                    llm_calls=0, now=None,
+                    customer_msgs=None, min_customer_msgs=None,
+                    text_len=None, min_effective_chars=None) -> HookResult:
     """调模型之前的所有闸门。
 
     文档对应：**G3** 整轮超时 · **G4** 成本预算 · **B4** 有效信息量。
     改造前这三项分散在 `_run` 循环与 `_score_one` 开头两处，且图路径各写一遍。
 
     ``kept`` / ``min_kept`` 传 None 表示「本次不做内容量检查」（如轮次级调用只看预算）。
+
+    **B4 为什么是三个口径**（架构 §2.3）：单看「保留条数」会被钻空子 ——
+    销售单方面刷屏也能把条数刷上去，而客户一个字没说；单看「字符数」又会被
+    长语音转写骗过。三个判据**全部满足**才算有效信息量足够：
+    · ``kept`` ≥ ``min_kept``                 —— 规范化后条数（原来的唯一口径）
+    · ``customer_msgs`` ≥ ``min_customer_msgs`` —— **客户真的开口**（0 = 不限）
+    · ``text_len`` ≥ ``min_effective_chars``   —— 文本总长度（0 = 不限）
     """
     # G3 / G4：整轮级别的护栏（优先判定 —— 撞了总闸就不该再考虑单个会话）
     g = guard_reason(deadline, max_llm_calls, llm_calls, now=now)
     if g:
         return HookResult(False, g, {"llm_calls": int(llm_calls or 0),
                                      "max_llm_calls": max_llm_calls})
-    # B4：会话级「有效信息量」—— 规范化后保留条数太少则整个会话不评（省一次模型调用）
+    # B4：会话级「有效信息量」—— 三个口径都过才评（省一次模型调用）
+    detail = {"kept": kept, "customer_msgs": customer_msgs, "text_len": text_len}
     if kept is not None and min_kept is not None and int(kept) < int(min_kept):
-        return HookResult(False, "insufficient_content",
-                          {"kept": int(kept), "min_kept": int(min_kept)})
-    return HookResult(True, "ok", {"kept": kept})
+        detail.update({"min_kept": int(min_kept), "failed_on": "kept"})
+        return HookResult(False, "insufficient_content", detail)
+    if (customer_msgs is not None and min_customer_msgs
+            and int(customer_msgs) < int(min_customer_msgs)):
+        detail.update({"min_customer_msgs": int(min_customer_msgs), "failed_on": "customer_msgs"})
+        return HookResult(False, "insufficient_content", detail)
+    if (text_len is not None and min_effective_chars
+            and int(text_len) < int(min_effective_chars)):
+        detail.update({"min_effective_chars": int(min_effective_chars),
+                       "failed_on": "text_len"})
+        return HookResult(False, "insufficient_content", detail)
+    return HookResult(True, "ok", detail)
 
 
 # ============================================================ ② after_llm_output
@@ -189,17 +210,26 @@ def after_llm_output(*, pos_items=None, neg_items=None, unchecked=None,
 
 def before_writeback(*, positive_total=0, mode="off", already_written=False,
                      quota_run=0, quota_run_limit=0,
-                     quota_customer=0, quota_customer_limit=0) -> HookResult:
-    """回写微伴之前的判定：开关 / 幂等 / 配额。
+                     quota_customer=0, quota_customer_limit=0,
+                     written_total=None, delta_mode=True) -> HookResult:
+    """回写微伴之前的判定：开关 / 幂等 / 配额 / **差值累加（D2-1）**。
 
-    文档对应：**D2** 副作用开关 · **边界3** 副作用配额 · 幂等（`score_writeback`
-    的 `UNIQUE(assessment_id)`）。
+    文档对应：**D2** 副作用开关 · **边界3** 副作用配额 · **D2-1** 差值累加 · 幂等。
+
+    ## D2-1（差值累加）为什么在这里判定
+
+    微伴「客户评分」是**累计行为分、无覆盖接口**（架构 §10 D2）。所以每次回写必须是
+    **增量** ``本次 positive_total − 已回写累计(watermark)``，而不是整值 ——
+    整值回写在累加语义下会让客户分数虚高（同一次评估被反复累加）。
+
+    · ``written_total`` = 客户级回写水位（`writeback_ledger.written_total`），
+      由调用方查好传入（**保持本模块纯函数**）
+    · 差值为 0 或不正 → ``no_delta`` 直接跳过（**一次接口都不调**，
+      避免无意义的网络往返，也避免微伴侧产生 0 分记录）
+    · ``delta_mode=False`` → 退回改造前的整值语义（回滚开关）
 
     调用方需先查好 ``already_written`` 与两个配额计数（**仅在对应上限 > 0 时才查**，
     默认 0 = 不限 → 不产生额外 DB 往返）。
-
-    ``reason`` 与改造前 `_writeback` 的 status 一一对应（见 `REASON_TO_WB_STATUS`），
-    因此接入后行为**逐字不变**。
     """
     if int(positive_total or 0) < 1:
         return HookResult(False, "no_positive", {"positive_total": positive_total})
@@ -212,9 +242,19 @@ def before_writeback(*, positive_total=0, mode="off", already_written=False,
     if quota_customer_limit and int(quota_customer) >= int(quota_customer_limit):
         return HookResult(False, "quota_customer",
                           {"used": quota_customer, "limit": quota_customer_limit})
+    # D2-1：差值（放在配额之后、dry_run 之前 —— 差值判定与是否演练无关）
+    delta = int(positive_total or 0)
+    if delta_mode and written_total is not None:
+        delta = int(positive_total or 0) - int(written_total or 0)
+        if delta <= 0:
+            return HookResult(False, "no_delta",
+                              {"positive_total": int(positive_total or 0),
+                               "written_total": int(written_total or 0), "delta": delta})
     if mode == "dry_run":
-        return HookResult(False, "mode_dry_run", {"mode": mode})
-    return HookResult(True, "ok", {"mode": mode})
+        return HookResult(False, "mode_dry_run",
+                          {"mode": mode, "delta": delta, "written_total": written_total})
+    return HookResult(True, "ok", {"mode": mode, "delta": delta,
+                                   "written_total": written_total})
 
 
 # ============================================================ ④ before_persist

@@ -11,7 +11,12 @@
 3. ``auto-scoring``           定时增量评分
    间隔取 .env 的 ``SCORING_INTERVAL_MINUTES``（分钟），0 表示关闭。
 
-4. ``writeback-outbox-drain`` 回写 outbox 排空（阶段B）
+4. ``data-retention``        数据保留清理（架构 边界4）
+   间隔取 ``RETENTION_INTERVAL_MINUTES``（默认 720 = 12 小时），0 表示关闭。
+   **实际清理天数由 `data_retention_days` 决定，默认 0 = 不清理**——
+   保留多久是业务决策，不能由代码替业务拍板。只清运行观测类表，不碰业务结论（见 retention.py）。
+
+5. ``writeback-outbox-drain`` 回写 outbox 排空（阶段B）
    固定 30 秒一次。把「回写微伴」从评分主流程解耦：即使会话早已因增量水位
    退出候选集，失败的待回写任务仍会被重试（修 G6）。
 
@@ -33,6 +38,9 @@ SYNC_JOB_ID = "auto-incremental-sync"
 KEEPALIVE_JOB_ID = "credential-keepalive"
 SCORING_JOB_ID = "auto-scoring"
 OUTBOX_JOB_ID = "writeback-outbox-drain"
+RETENTION_JOB_ID = "data-retention"
+FAILURE_JOB_ID = "session-failure-retry"
+MORNING_JOB_ID = "morning-sa-review"
 
 OUTBOX_INTERVAL_SECONDS = 30
 
@@ -143,6 +151,57 @@ def _outbox_job():
         print(f"[scheduler] 回写 outbox 异常：{type(e).__name__}: {e}")
 
 
+def _retention_job():
+    """定时任务体：按 `data_retention_days` 清理运行观测类数据。
+
+    默认 `data_retention_days=0` → 直接返回（不清理）。这是刻意的：
+    「保留多少天」是业务决策，代码不能替业务拍板，更不能默认删数据。
+    """
+    try:
+        import retention
+        days = scoring.setting_int("data_retention_days", "DATA_RETENTION_DAYS", 0)
+        if days <= 0:
+            return
+        res = retention.purge(days, dry_run=False)
+        print(f"[scheduler] 数据保留清理（{days} 天）：{res.get('deleted')}")
+    except Exception as e:
+        print(f"[scheduler] 数据保留清理异常：{type(e).__name__}: {e}")
+
+
+def _failure_job():
+    """定时任务体：重投失败会话（修 G5「连续失败 ≥N 转人工」）。
+
+    评分失败后**没有任何东西会再试它** —— 会话就一直没被评过。
+    本 job 每 15 分钟挑一批到期的 pending 重投，达阈值标 dead 并转人工。
+    """
+    try:
+        import failure_worker
+        res = failure_worker.drain(limit=20)
+        if res.get("resolved") or res.get("dead") or res.get("marked_manual"):
+            print(f"[scheduler] 失败重投：{res}")
+    except Exception as e:
+        print(f"[scheduler] 失败重投异常：{type(e).__name__}: {e}")
+
+
+def _morning_job():
+    """早会前复核 S/A（架构 §2.1 F2 / D3：「早会时刻 UI 可配」）。
+
+    触发时刻来自 `scoring_morning_cron`（HH:MM）；**空 = 关闭**。
+    走**增量刷新**（force=False）+ 只扫指定等级 —— 符合 D3 拍板的「复核走增量刷新」。
+    """
+    try:
+        import scoring_service as ss
+        scope = ss.setting("public_class_grade_scope", "PUBLIC_CLASS_GRADE_SCOPE", "S,A")
+        grades = [g.strip().upper() for g in str(scope).split(",") if g.strip()]
+        if not guard_can_start("scoring"):
+            print("[scheduler] 早会复核跳过：已有任务在运行")
+            return
+        print(f"[scheduler] 早会复核（{','.join(grades)}）")
+        scoring.start(triggered_by="schedule", grades=grades)
+    except Exception as e:
+        print(f"[scheduler] 早会复核异常：{type(e).__name__}: {e}")
+
+
 def start():
     global _scheduler, _interval, _ka_interval, _sc_interval
     _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
@@ -154,10 +213,63 @@ def start():
     _reschedule_keepalive()
     _reschedule_scoring()
     _reschedule_outbox()
-    print(f"[scheduler] 已启动｜同步间隔 {_interval or '关闭'} 分钟"
-          f"｜保活间隔 {_ka_interval or '关闭'} 分钟"
-          f"｜评分间隔 {_sc_interval or '关闭'} 分钟"
-          f"｜回写 outbox {OUTBOX_INTERVAL_SECONDS} 秒")
+    _reschedule_retention()
+    _reschedule_failure()
+    _reschedule_morning()
+    try:
+        import scoring_service as _ss
+        _mo = _ss.setting('scoring_morning_cron', 'SCORING_MORNING_CRON', '') or '关闭'
+        _rt = _ss.setting_int('data_retention_days', 'DATA_RETENTION_DAYS', 0)
+    except Exception:
+        _mo, _rt = '关闭', 0
+    print(f"[scheduler] 已启动｜同步 {_interval or '关闭'} 分"
+          f"｜保活 {_ka_interval or '关闭'} 分"
+          f"｜评分 {_sc_interval or '关闭'} 分"
+          f"｜回写 outbox {OUTBOX_INTERVAL_SECONDS} 秒"
+          f"｜失败重投 {int(config.get('FAILURE_RETRY_INTERVAL_MINUTES') or 15)} 分"
+          f"｜保留期 {('关闭' if _rt <= 0 else str(_rt) + ' 天')}"
+          f"｜早会复核 {_mo}")
+
+
+def _reschedule_morning():
+    """按 `scoring_morning_cron`（HH:MM）注册/更新早会复核任务。空 = 关闭。"""
+    if _scheduler.get_job(MORNING_JOB_ID):
+        _scheduler.remove_job(MORNING_JOB_ID)
+    hhmm = str(config.get("SCORING_MORNING_CRON") or "").strip()
+    try:
+        import scoring_service as ss
+        hhmm = str(ss.setting("scoring_morning_cron", "SCORING_MORNING_CRON", "") or "").strip()
+    except Exception:
+        pass
+    if not hhmm or ":" not in hhmm:
+        return
+    try:
+        hh, mm = (int(x) for x in hhmm.split(":")[:2])
+    except Exception:
+        print(f"[scheduler] scoring_morning_cron 格式应为 HH:MM，收到 {hhmm!r}，已忽略")
+        return
+    from apscheduler.triggers.cron import CronTrigger
+    _scheduler.add_job(_morning_job, CronTrigger(hour=hh, minute=mm, timezone="Asia/Shanghai"),
+                       id=MORNING_JOB_ID, replace_existing=True)
+    print(f"[scheduler] 早会复核已排程：每天 {hh:02d}:{mm:02d}")
+
+
+def _reschedule_failure():
+    if _scheduler.get_job(FAILURE_JOB_ID):
+        _scheduler.remove_job(FAILURE_JOB_ID)
+    minutes = int(config.get("FAILURE_RETRY_INTERVAL_MINUTES") or 15)
+    if minutes > 0:
+        _scheduler.add_job(_failure_job, "interval", minutes=minutes,
+                           id=FAILURE_JOB_ID, replace_existing=True)
+
+
+def _reschedule_retention():
+    if _scheduler.get_job(RETENTION_JOB_ID):
+        _scheduler.remove_job(RETENTION_JOB_ID)
+    minutes = int(config.get("RETENTION_INTERVAL_MINUTES") or 720)
+    if minutes > 0:
+        _scheduler.add_job(_retention_job, "interval", minutes=minutes,
+                           id=RETENTION_JOB_ID, replace_existing=True)
 
 
 def _reschedule_outbox():
@@ -205,6 +317,14 @@ def _reschedule_scoring():
     if _sc_interval > 0:
         _scheduler.add_job(_scoring_job, "interval", minutes=_sc_interval,
                            id=SCORING_JOB_ID, max_instances=1, coalesce=True)
+
+
+def reschedule_all() -> dict:
+    """设置变更后重排（`scoring_morning_cron` 改了就立刻生效，不必重启后端）。"""
+    _reschedule_morning()
+    _reschedule_retention()
+    _reschedule_failure()
+    return schedule_info()
 
 
 def set_scoring_interval(minutes: int) -> dict:

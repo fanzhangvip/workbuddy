@@ -60,6 +60,8 @@ def cleanup(*aids):
     for aid in aids:
         db.execute("DELETE FROM writeback_outbox WHERE assessment_id=%s", (aid,))
         db.execute("DELETE FROM score_writeback WHERE assessment_id=%s", (aid,))
+        # ⚠️ D2-1 之后回写成功会推进 `writeback_ledger`（**新增写副作用**）→ 必须同步清
+        db.execute("DELETE FROM writeback_ledger WHERE last_assessment_id=%s", (aid,))
 
 
 def main():

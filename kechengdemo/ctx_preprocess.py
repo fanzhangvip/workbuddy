@@ -488,6 +488,12 @@ def build_llm_context(rows: Iterable[dict], *, session_meta: dict = None,
             "window": opts.window,
             # 关键历史（_pinned）最终留下了几条 → 架构 §4.6 的 ctx_seg_key
             "key": sum(1 for m in messages if m.get("_pinned")),
+            # B4（架构 §2.3）：有效信息量的**三个口径**。
+            # 改造前只有「规范化后保留条数」(kept)，一个口径容易被钻空子：
+            # 销售单方面刷屏也会让 kept 变大，但客户一个字没说 —— 那不是有效信息。
+            "customer_msgs": sum(1 for m in messages if m.get("role") == "客户"),
+            "sales_msgs": sum(1 for m in messages if m.get("role") == "销售"),
+            "text_len": sum(len(m.get("text") or "") for m in messages),
             "first_msg_time": messages[0]["msg_time"] if messages else None,
             "last_msg_time": messages[-1]["msg_time"] if messages else None,
         },

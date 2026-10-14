@@ -108,8 +108,25 @@ def test_before_llm_call():
           hooks.before_llm_call(kept=1, min_kept=4, deadline=NOW - 1, now=NOW).reason == "deadline")
     check("与 ss.guard_reason 是同一实现（re-export 未复制）",
           ss.guard_reason is hooks.guard_reason)
-    check("detail 携带观测值（kept/min_kept）",
-          hooks.before_llm_call(kept=2, min_kept=4).detail == {"kept": 2, "min_kept": 4})
+    check("detail 携带观测值（kept/min_kept/failed_on）",
+          {"kept", "min_kept", "failed_on"} <= set(hooks.before_llm_call(
+              kept=2, min_kept=4).detail))
+    # B4 三口径（架构 §2.3）
+    check("B4：客户一句没说 → 拒绝（即使条数够）",
+          hooks.before_llm_call(kept=10, min_kept=4, customer_msgs=0,
+                                min_customer_msgs=1).reason == "insufficient_content"
+          and hooks.before_llm_call(kept=10, min_kept=4, customer_msgs=0,
+                                    min_customer_msgs=1).detail["failed_on"] == "customer_msgs")
+    check("B4：文本太短 → 拒绝",
+          hooks.before_llm_call(kept=10, min_kept=4, customer_msgs=3, min_customer_msgs=1,
+                                text_len=20, min_effective_chars=100).detail["failed_on"]
+          == "text_len")
+    check("B4：三口径全过 → 放行",
+          hooks.before_llm_call(kept=10, min_kept=4, customer_msgs=3, min_customer_msgs=1,
+                                text_len=500, min_effective_chars=100).allow is True)
+    check("B4：阈值 0 = 不限（不影响既有行为）",
+          hooks.before_llm_call(kept=10, min_kept=4, customer_msgs=0, min_customer_msgs=0,
+                                text_len=1, min_effective_chars=0).allow is True)
 
 
 # ============================================================ 2. after_llm_output

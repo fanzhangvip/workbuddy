@@ -23,14 +23,23 @@ TIMEOUT = 30
 
 
 def _request(method: str, path: str, params: dict = None, body: dict = None) -> dict:
-    url = BASE + path
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    headers = {"Content-Type": "application/json"} if data else {}
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    """统一走 `backend/http_client`（架构 §2.5 工具层）。
+
+    改造前这里是裸 ``urlopen``：**一次瞬时网络抖动就整轮同步失败**（没有重试），
+    而同一项目里 LLM 调用却有退避重试 —— 同一个「网络抖一下」两套行为。
+    现在统一：超时 30s、只重试可重试故障（网络/408/429/5xx）、认证与参数错误立即失败。
+
+    ⚠️ 返回值语义**保持不变**（仍是解析后的 dict，`errcode` 由调用方判断）——
+    这样所有既有调用点零改动。
+    """
+    import sys
+    from pathlib import Path as _P
+    _backend = str(_P(__file__).resolve().parent / "backend")
+    if _backend not in sys.path:
+        sys.path.insert(0, _backend)
+    import http_client
+    return http_client.request_json(method, BASE + path, params=params, body=body,
+                                    timeout=TIMEOUT, retries=2, label="weiban")
 
 
 def get_access_token(force: bool = False) -> str:

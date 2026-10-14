@@ -44,6 +44,16 @@ export const api = {
   scoringSetSchedule: (minutes) => http.post('/scoring/schedule', { interval_minutes: minutes }).then(r => r.data),
   scoringSettings: () => http.get('/scoring/settings').then(r => r.data),
   scoringSetSettings: (payload) => http.post('/scoring/settings', payload).then(r => r.data),
+  // 架构第 2–4 批新增：F2 复核入口 / 闸6 门禁 / 边界4 保留期
+  scoringSaReview: (scope = '') => http.get('/scoring/sa-review', { params: { scope } }).then(r => r.data),
+  scoringPublicClassReview: (payload) => http.post('/scoring/public-class-review', payload).then(r => r.data),
+  scoringRulesGate: () => http.get('/scoring/rules/gate').then(r => r.data),
+  scoringRulesPublish: (payload) => http.post('/scoring/rules/publish', payload).then(r => r.data),
+  scoringRetention: (days) => http.get('/scoring/retention', { params: { days } }).then(r => r.data),
+  scoringRetentionPurge: (payload) => http.post('/scoring/retention/purge', payload).then(r => r.data),
+  // E5 meta-loop：误报率排行 + 改判回流
+  evalMetaLoop: () => http.get('/eval/meta-loop').then(r => r.data),
+  evalBackflow: (payload) => http.post('/eval/backflow', payload).then(r => r.data),
 
   // ---------------- 负分人工复核 ----------------
   reviewStats: () => http.get('/review/stats').then(r => r.data),

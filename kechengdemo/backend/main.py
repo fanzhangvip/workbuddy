@@ -37,6 +37,15 @@ DIST = ROOT / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    # E2 自愈：修「有行但无 current」与「superseded_by 悬空」（由**外部删除**造成的破损，
+    # 插入路径补不了）。幂等、几毫秒；不做的话破损客户会从评分列表里静默消失。
+    try:
+        import scoring_service
+        r = scoring_service.repair_current_flags()
+        if r.get("no_current_fixed") or r.get("dangling_cleared"):
+            print(f"[app] is_current 自愈：{r}")
+    except Exception as e:                      # noqa: BLE001  自愈失败不该拦住启动
+        print(f"[app] is_current 自愈失败（不影响启动）：{e}")
     scheduler.start()
     print("[app] 数据库就绪；服务地址 http://127.0.0.1:8848")
     yield

@@ -15,6 +15,14 @@ const filters = ref({ grade: '', q: '', review_status: '', page: 1, page_size: 1
 const detail = ref(null)
 const busy = ref(false)
 const error = ref('')
+// 架构新增项（第 2–4 批）：运行时参数 + F2 早会/公开课复核名单
+const arch = ref({ llm_timeout_sec: 0, data_retention_days: 0, eval_gate_enabled: true,
+                   morning_cron: '', public_class_grade_scope: 'S,A',
+                   writeback_delta_mode: true, ctx_min_customer_msgs: 1,
+                   ctx_min_effective_chars: 0 })
+const saList = ref({ count: 0, items: [], scope: ['S', 'A'] })
+const gate = ref(null)
+const retention = ref(null)
 let timer = null
 
 async function refresh() {
@@ -26,6 +34,7 @@ async function refresh() {
     status.value = s; metrics.value = m; runs.value = r.items || []
     list.value = { items: l.items || [], total: l.total || 0 }
     schedule.value = sc; settings.value = st
+    for (const k of Object.keys(arch.value)) if (k in st) arch.value[k] = st[k]
     if (scInterval.value === null && sc?.scoring) scInterval.value = sc.scoring.interval_minutes ?? 0
   } catch (e) { error.value = '后端未就绪：' + e.message }
 }
@@ -74,6 +83,41 @@ async function saveSchedule() {
   catch (e) { error.value = e.message }
 }
 
+// ---- 架构新增参数（第 2–4 批）----
+async function saveArch() {
+  busy.value = true; error.value = ''
+  try {
+    const r = await api.scoringSetSettings({ ...arch.value })
+    if (!r.ok) error.value = r.reason || '保存失败'
+    else refresh()
+  } catch (e) { error.value = e.message }
+  busy.value = false
+}
+
+// F2：早会/公开课复核 —— 点一下「增量刷新」S/A 名单，并展示刷新后的名单
+async function publicClassReview(mode) {
+  busy.value = true; error.value = ''
+  try {
+    const r = await api.scoringPublicClassReview({ mode })
+    if (!r.ok) error.value = r.reason || '启动失败'
+    if (r.name_list) saList.value = r.name_list
+    refresh()
+  } catch (e) { error.value = e.message }
+  busy.value = false
+}
+
+async function loadSaReview() {
+  try { saList.value = await api.scoringSaReview() } catch (e) { /* 未就绪时忽略 */ }
+}
+
+async function loadGate() {
+  try { gate.value = await api.scoringRulesGate() } catch (e) { /* ignore */ }
+}
+
+async function loadRetention() {
+  try { retention.value = await api.scoringRetention() } catch (e) { /* ignore */ }
+}
+
 async function setMode(mode) {
   try { settings.value = await api.scoringSetSettings({ writeback_mode: mode }); refresh() }
   catch (e) { error.value = e.message }
@@ -100,7 +144,10 @@ const REASON_CN = {
   grade_flip: '与上次等级明显翻转',
 }
 
-onMounted(() => { refresh(); loadStaffs(); timer = setInterval(refresh, 3000) })
+onMounted(() => {
+  refresh(); loadStaffs(); loadSaReview(); loadGate(); loadRetention()
+  timer = setInterval(refresh, 3000)
+})
 onUnmounted(() => clearInterval(timer))
 </script>
 
@@ -163,7 +210,8 @@ onUnmounted(() => clearInterval(timer))
             <div class="alert" :class="settings.writeback_mode === 'live' ? 'warn' : 'info'">
               当前：{{ WB_CN[settings.writeback_mode] }}
               <template v-if="settings.writeback_mode === 'live'">
-                —— 会真实修改微伴客户评分，请确认接口为覆盖语义！
+                —— 会真实修改微伴客户评分。微伴为<b>累加</b>语义，系统已按
+                <b>差值累加</b>回写（D2-1），不会重复累加；水位见 writeback_ledger。
               </template>
             </div>
             <div class="muted" style="font-size:11.5px;line-height:1.7">
@@ -181,6 +229,101 @@ onUnmounted(() => clearInterval(timer))
               {{ schedule?.scoring?.enabled
                   ? `下次 ${schedule.scoring.next_run_time ? new Date(schedule.scoring.next_run_time).toLocaleString() : '-'}`
                   : '定时评分已关闭' }}
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">复核入口（早会 / 公开课）· F2</div>
+          <div class="card-body" style="display:grid;gap:12px">
+            <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+              <div style="width:150px">
+                <label class="lbl">早会复核时刻（HH:MM，空=关闭）</label>
+                <input v-model="arch.morning_cron" class="input" placeholder="08:30" />
+              </div>
+              <div style="width:120px">
+                <label class="lbl">等级范围</label>
+                <input v-model="arch.public_class_grade_scope" class="input" placeholder="S,A" />
+              </div>
+              <button class="btn" @click="saveArch" :disabled="busy">保存</button>
+              <button class="btn ghost" @click="publicClassReview('before')" :disabled="busy">
+                课前复核（增量刷新）
+              </button>
+              <button class="btn ghost" @click="publicClassReview('after')" :disabled="busy">
+                课后复核（增量刷新）
+              </button>
+            </div>
+            <div class="muted" style="font-size:11.5px">
+              公开课不定期 → 手动按钮；早会时刻不写死在代码，改完<b>立即生效</b>（不必重启后端）。
+              两种模式都是「限定等级范围的增量刷新」——只有新消息的客户才会重评（D3 拍板）。
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <b style="font-size:12.5px">当前 {{ saList.scope.join('/') }} 名单：{{ saList.count }} 人</b>
+              <button class="btn ghost" style="padding:2px 8px;font-size:12px" @click="loadSaReview">刷新名单</button>
+            </div>
+            <div v-if="saList.items && saList.items.length" style="max-height:190px;overflow:auto">
+              <table style="width:100%;font-size:12px">
+                <thead><tr class="muted"><th style="text-align:left">等级</th><th style="text-align:left">客户</th>
+                  <th style="text-align:left">销售</th><th style="text-align:right">分</th>
+                  <th style="text-align:left">复核</th></tr></thead>
+                <tbody>
+                  <tr v-for="x in saList.items.slice(0, 50)" :key="x.assessment_id">
+                    <td><span class="tag" :class="GRADE_TAG[x.grade]">{{ x.grade }}</span></td>
+                    <td>{{ x.target_name || x.target_id }}</td>
+                    <td class="muted">{{ x.staff_name || '-' }}</td>
+                    <td style="text-align:right">{{ x.raw_score }}</td>
+                    <td class="muted">{{ x.review_status }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">治理与观测（闸6 门禁 / 边界4 保留期 / B4·D2-1 参数）</div>
+          <div class="card-body" style="display:grid;gap:12px">
+            <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+              <div style="width:140px">
+                <label class="lbl">单次 LLM 超时（秒，0=默认）</label>
+                <input v-model.number="arch.llm_timeout_sec" class="input" type="number" min="0" />
+              </div>
+              <div style="width:110px">
+                <label class="lbl">客户最少发言</label>
+                <input v-model.number="arch.ctx_min_customer_msgs" class="input" type="number" min="0" />
+              </div>
+              <div style="width:130px">
+                <label class="lbl">文本长度下限（0=不限）</label>
+                <input v-model.number="arch.ctx_min_effective_chars" class="input" type="number" min="0" />
+              </div>
+              <div style="width:150px">
+                <label class="lbl">数据保留（天，0=不清理）</label>
+                <input v-model.number="arch.data_retention_days" class="input" type="number" min="0" />
+              </div>
+              <label class="lbl" style="display:flex;align-items:center;gap:6px;padding-bottom:8px">
+                <input type="checkbox" v-model="arch.eval_gate_enabled" /> 回归门禁
+              </label>
+              <label class="lbl" style="display:flex;align-items:center;gap:6px;padding-bottom:8px">
+                <input type="checkbox" v-model="arch.writeback_delta_mode" /> 差值累加回写
+              </label>
+              <button class="btn" @click="saveArch" :disabled="busy">保存</button>
+            </div>
+
+            <div class="alert info" style="font-size:12px" v-if="gate">
+              <b>闸6 门禁</b>：{{ gate.decidable
+                  ? (gate.gate_passed ? '有基线且指标未下降 → 允许发布' : '指标下降 → 发布会被阻断')
+                  : '无法判定（' + gate.reason + '）' }}
+              <span class="muted">— 「无法判定」不等于「通过」</span>
+            </div>
+
+            <div class="alert info" style="font-size:12px" v-if="retention && retention.enabled">
+              <b>边界4 保留期</b>（{{ retention.days }} 天）：只清运行观测表 ——
+              <span v-for="(v, k) in retention.tables" :key="k" style="margin-right:8px">
+                {{ k }}={{ v.rows }}
+              </span>
+              <div class="muted">业务结论表（评估 / 复核 / 回写账本 / 评估集）**永不按天数清理**。</div>
+            </div>
+            <div class="alert warn" style="font-size:12px" v-else-if="retention">
+              保留期未开启（0 天 = 不清理）—— 保留多久是业务决策，代码不替业务拍板。
             </div>
           </div>
         </div>

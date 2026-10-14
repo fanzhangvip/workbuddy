@@ -300,6 +300,77 @@ def gate(now: dict, baseline: dict, tol: float = GATE_TOL) -> tuple:
     return passed, diffs
 
 
+def gate_decision(kind: str = "", limit: int = 0, run_if_possible: bool = True,
+                  baseline_path: str = None) -> dict:
+    """闸6「发布前硬拦截」的判定（架构 §2.7 / §5.4）。
+
+    改造前只有「跑分时算一个 `gate_passed`」，**没有任何地方用它拦截发布** ——
+    改了 `rules.json` 直接生效，回归门禁形同装饰。
+
+    本函数把「要不要拦住这次发布」变成一次明确判定，三种结果泾渭分明：
+
+    | 情况 | blocked | 说明 |
+    |---|---|---|
+    | 门禁关闭（`eval_gate_enabled=false`） | False | 显式关闭，尊重配置 |
+    | **没有基线** | False | 从没冻结过基线 → 无可比对象。**放行但如实说明**（不能假装通过） |
+    | **没有已标注样本** | False | 没标注就没法算指标 → 同上，如实说明 |
+    | 有基线且指标不降 | False | 正常通过 |
+    | 有基线且指标下降 | **True** | 拦截，附逐指标 diff |
+
+    ⚠️ 关键设计：**「无法判定」不等于「通过」**。返回里 ``decidable`` 明确区分二者，
+    前端与日志都要能看到「这次发布其实是没门禁保护的」——否则会给人虚假的安全感。
+    """
+    import scoring_service as ss
+    enabled = ss.setting_bool("eval_gate_enabled", "EVAL_GATE_ENABLED", True)
+    path = baseline_path or ss.setting("eval_baseline_path", "EVAL_BASELINE_PATH", "")
+    base = {}
+    if path:
+        try:
+            p = Path(path)
+            base = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        except Exception:                       # noqa: BLE001
+            base = {}
+    if not base:
+        base = load_baseline()
+
+    out = {"enabled": enabled, "baseline_path": str(path or BASELINE_PATH),
+           "has_baseline": bool(base.get("metrics")), "decidable": False,
+           "blocked": False, "gate_passed": None, "diffs": [], "reason": "", "metrics": None}
+
+    if not enabled:
+        out["reason"] = "回归门禁已关闭（eval_gate_enabled=false）"
+        return out
+    if not out["has_baseline"]:
+        out["reason"] = ("尚无基线（eval/baseline.json 不存在）→ **无法判定**，放行但不代表通过。"
+                         "先把一次跑分结果冻结为基线：POST /api/eval/baseline")
+        return out
+
+    # 有基线 → 需要本次指标。已有跑分结果就直接用，否则现跑一轮。
+    now_metrics = None
+    st = status()
+    if st.get("result") and (st["result"].get("metrics")):
+        now_metrics = st["result"]["metrics"]
+    if now_metrics is None and run_if_possible:
+        labeled = db.query_one(
+            "SELECT count(*) AS n FROM eval_case WHERE active AND expected_items IS NOT NULL")
+        if not (labeled or {}).get("n"):
+            out["reason"] = ("有基线，但**没有已人工标注的样本** → 无法计算指标，放行但不代表通过。"
+                             "标注后可用 POST /api/eval/run 复算")
+            return out
+        res = run_sync(kind=kind, limit=limit, check_drift=False)
+        now_metrics = res.get("metrics")
+    if now_metrics is None:
+        out["reason"] = "拿不到本次指标（没有跑分结果）→ 放行但不代表通过"
+        return out
+
+    passed, diffs = gate(now_metrics, base.get("metrics") or {})
+    out.update({"decidable": True, "gate_passed": passed, "diffs": diffs,
+                "metrics": now_metrics, "blocked": not passed})
+    out["reason"] = ("指标持平或变好 → 允许发布" if passed
+                     else "**指标下降 → 阻断发布**（逐指标 diff 见 diffs）")
+    return out
+
+
 def load_baseline() -> dict:
     if not BASELINE_PATH.exists():
         return {}

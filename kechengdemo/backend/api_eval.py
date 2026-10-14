@@ -14,6 +14,7 @@ from fastapi.responses import Response
 
 import db
 import eval_runner
+import meta_loop
 import rules as rules_mod
 import scoring_service as ss
 
@@ -235,6 +236,27 @@ def run_detail(run_id: int):
 
 
 # ---------------- 基线 ----------------
+
+@router.get("/meta-loop")
+def meta_loop_report():
+    """E5/G8 meta-loop 报告：按 rule 的误报率排行 + 复核回流进度 + 验证状态分布。
+
+    这是「把人工判断变回系统改进」的唯一出口 —— 没有它，人工复核的结论
+    只是躺在表里的一条记录，下次模型照样犯同样的错。
+    """
+    return meta_loop.report()
+
+
+@router.post("/backflow")
+def meta_loop_backflow(payload: dict = Body(default={})):
+    """把**人工改判过**的复核记录回流成 `eval_case`（E5）。
+
+    只回流改判过的（`corrected` / `rejected`）：与 AI 一致的复核不回流，
+    那只是确认、不带来新信息，回流只会稀释评估集。
+    """
+    return meta_loop.backflow_reviews(limit=int(payload.get("limit") or 100),
+                                      kind=payload.get("kind") or "regression")
+
 
 @router.get("/baseline")
 def get_baseline():

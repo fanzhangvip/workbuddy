@@ -60,9 +60,14 @@ def sync_rules(version: str = None) -> dict:
     for polarity, key in (("positive", "positive_rules"), ("negative", "negative_rules")):
         for r in rules.get(key, []):
             for opt in r.get("options", []):
+                # 闸1/F5：把 examples / conflict_priority 一并同步（前端规则页与
+                # 排障都要能看到「这条规则的边界示例到底是什么」）
                 rows.append((version, r["rule_id"], polarity, r.get("dimension", ""),
                              int(opt.get("score", 0)), opt.get("criteria"),
-                             r.get("engine"), "json"))
+                             r.get("engine"), "json",
+                             db.as_json(opt.get("examples")) if opt.get("examples") else None,
+                             (int(r["conflict_priority"])
+                              if r.get("conflict_priority") is not None else None)))
     with db.tx() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM scoring_rule WHERE rule_version = %s", (version,))
@@ -70,8 +75,8 @@ def sync_rules(version: str = None) -> dict:
                 cur.execute(
                     """INSERT INTO scoring_rule
                          (rule_version, rule_id, polarity, dimension, score, criteria,
-                          engine, source_type)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                          engine, source_type, examples, conflict_priority)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (rule_version, rule_id, score) DO NOTHING""", row)
     return {"rule_version": version, "rules": len(rows)}
 
@@ -664,6 +669,37 @@ def build_conversation(staff_id: str, session_id: str, limit: int = 60) -> str:
 STALE_MINUTES = 240
 
 
+def _ledger_total(rel_key: str) -> int:
+    """读客户级回写水位（D2-1）。不存在 → 0（首次回写全量）。"""
+    try:
+        row = db.query_one("SELECT written_total FROM writeback_ledger WHERE relationship_key=%s",
+                           (rel_key,))
+        return int((row or {}).get("written_total") or 0)
+    except Exception:
+        return 0
+
+
+def _advance_ledger(rel_key: str, staff_id: str, target_id: str, aid: int, delta: int) -> None:
+    """回写成功后推进水位（D2-1）。
+
+    ⚠️ 必须**只加已成功投递的增量**：水位是「微伴那边已经累加了多少分」的镜像，
+    多写会少回写（水位虚高 → 下次差值变 0 → 分数永远补不上），
+    少写会重复回写。两种错都会真实影响客户分数。
+    """
+    db.execute(
+        """INSERT INTO writeback_ledger
+             (relationship_key, staff_id, external_user_id, written_total,
+              last_assessment_id, last_write_at, writes)
+           VALUES (%s,%s,%s,%s,%s,now(),1)
+           ON CONFLICT (relationship_key) DO UPDATE
+             SET written_total = writeback_ledger.written_total + EXCLUDED.written_total,
+                 last_assessment_id = EXCLUDED.last_assessment_id,
+                 last_write_at = now(),
+                 writes = writeback_ledger.writes + 1,
+                 updated_at = now()""",
+        (rel_key, staff_id, target_id, int(delta), aid))
+
+
 def _audit(actor, action, target, detail=None):
     """写审计日志（架构 §2.2 H2）。**失败绝不影响主流程**（审计是旁路观测）。"""
     try:
@@ -700,6 +736,38 @@ def _customer_writes_today(target_id: str) -> int:
         return int(row["n"]) if row else 0
     except Exception:
         return 0
+
+
+def repair_current_flags() -> dict:
+    """自愈 `is_current` 的两种破损（**幂等**，可反复调用）。
+
+    背景（E2 的配套缺口）：落库时「新评估把同客户旧行标记为被取代」**只发生在插入那一刻**。
+    若那个新行**之后被删除**（测试清理、人工删数据），旧行的 `is_current` 就再也回不来
+    → 该客户在评分列表（默认过滤 `is_current`）里**彻底消失**。实测已出现 1 例。
+
+    两种破损：
+    1. 某客户**一行 current 都没有** → 把 `assessment_id` 最大的那行恢复为 current（清 `superseded_by`）
+    2. `superseded_by` 指向**已不存在的行** → 清空（悬空引用）
+
+    放在启动时调用，是刻意的：破损由**外部删除**造成，插入路径补不了，只能靠自愈。
+    """
+    fixed = db.execute(
+        """UPDATE customer_intent_assessment a
+              SET is_current = true, superseded_by = NULL
+            WHERE NOT a.is_current
+              AND a.assessment_id = (
+                    SELECT max(b.assessment_id) FROM customer_intent_assessment b
+                     WHERE b.relationship_key = a.relationship_key)
+              AND NOT EXISTS (
+                    SELECT 1 FROM customer_intent_assessment c
+                     WHERE c.relationship_key = a.relationship_key AND c.is_current)""")
+    dangling = db.execute(
+        """UPDATE customer_intent_assessment a
+              SET superseded_by = NULL
+            WHERE a.superseded_by IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM customer_intent_assessment b
+                               WHERE b.assessment_id = a.superseded_by)""")
+    return {"no_current_fixed": fixed, "dangling_cleared": dangling}
 
 
 class ScoringService:
@@ -790,7 +858,7 @@ class ScoringService:
 
     def start(self, staff_ids: list = None, max_sessions: int = 0,
               min_messages: int = 0, force: bool = False,
-              triggered_by: str = "manual") -> dict:
+              triggered_by: str = "manual", grades: list = None) -> dict:
         if self.is_running():
             return {"ok": False, "reason": "已有评分任务在运行，请先等待完成"}
         # 互斥（修 H1）：同步正在跑时不得启动评分 —— 否则会读到「半截会话」
@@ -811,10 +879,36 @@ class ScoringService:
         deadline_min = setting_int("scoring_deadline_minutes", "SCORING_DEADLINE_MINUTES", 120)
         max_llm_calls = setting_int("scoring_max_llm_calls", "SCORING_MAX_LLM_CALLS", 500)
         rv = current_rule_version()
+        # 闸6（架构 §5.4 / §2.7）：规则变了才需要过门禁 ——
+        # 「改规则前必须跑评估集，指标不降才允许发布」。
+        # ⚠️ 只在**规则版本真的变了**时检查（否则每次启动都查一遍纯属浪费）；
+        #    且这里**不主动跑评估集**（那会真调模型、把启动拖成分钟级）——
+        #    只读取已有基线 + 已有跑分结果判定，拿不到就如实说「无法判定」而不是假装通过。
+        #    要「跑一遍再发布」请用 POST /api/scoring/rules/publish。
+        prev_rv = db.query_one(
+            """SELECT rule_version FROM scoring_run
+                WHERE status IN ('success','partial') AND rule_version IS NOT NULL
+                ORDER BY id DESC LIMIT 1""") or {}
+        if (prev_rv.get("rule_version") and prev_rv["rule_version"] != rv
+                and setting_bool("eval_gate_enabled", "EVAL_GATE_ENABLED", True)):
+            try:
+                import eval_runner
+                dec = eval_runner.gate_decision(run_if_possible=False)
+                if dec.get("blocked"):
+                    _audit("system", "rule_gate_blocked", f"rule_version:{rv}",
+                           {"prev": prev_rv.get("rule_version"), "diffs": dec.get("diffs")})
+                    return {"ok": False,
+                            "reason": f"规则版本 {prev_rv.get('rule_version')} → {rv} "
+                                      f"未通过回归门禁，已阻断启动（闸6）。"
+                                      f"详见 /api/scoring/rules/gate",
+                            "gate": dec}
+            except Exception as e:              # 门禁自身异常不应拖垮评分启动
+                print(f"[scoring] 门禁检查异常（放行）：{e}")
         sync_rules(rv)
 
         detail = db.as_json({"staff_ids": staff_ids, "max_sessions": max_sessions,
-                             "min_messages": min_messages, "force": force})
+                             "min_messages": min_messages, "force": force,
+                             "grades": grades})
         run_id = db.query_one(
             """INSERT INTO scoring_run (kind, status, triggered_by, rule_version, detail,
                                         deadline, max_llm_calls)
@@ -841,9 +935,12 @@ class ScoringService:
                           "tool_failures": 0,
                           # 钩子观测（§2.4 H3）：拒绝原因分布 + 模型输出体检
                           "hook_denials": {}, "hook_sessions": 0,
-                          "hook_coverage_sum": 0.0, "hook_invalid_total": 0}
+                          "hook_coverage_sum": 0.0, "hook_invalid_total": 0,
+                          # H5 单会话耗时分布
+                          "session_secs": []}
         self._thread = threading.Thread(
-            target=self._run, args=(run_id, staff_ids, max_sessions, min_messages, force, rv),
+            target=self._run,
+            args=(run_id, staff_ids, max_sessions, min_messages, force, rv, grades),
             daemon=True, name=f"scoring-{run_id}")
         self._thread.start()
         # 审计三节点之一（架构 H2）：启动就留痕，便于追溯「谁在什么时候全量重评了」
@@ -901,6 +998,18 @@ class ScoringService:
         if facts.get("tool_failure"):
             self._inc(tool_failures=1)
 
+    def _note_session_secs(self, secs: float) -> None:
+        """记录单个会话的耗时（架构 §2.7 H5「单会话耗时分布」）。
+
+        改造前只有**整轮** `elapsed_sec`，于是「这一轮为什么慢」无法回答：
+        是普遍变慢，还是被某几个超长会话拖住？落一个耗时列表就能算 p50/p95 并定位长尾。
+        列表直接放 `scoring_run.detail`（169 个数字约 1KB，可接受）。
+        """
+        with self._lock:
+            lst = self._progress.setdefault("session_secs", [])
+            if len(lst) < 5000:                     # 兜底上限，防止极端情况撑爆 detail
+                lst.append(round(float(secs), 2))
+
     def _note_hook(self, result) -> None:
         """钩子拒绝留痕 + 模型输出体检（架构 §2.4 H3 / §2.7 可观测）。
 
@@ -926,7 +1035,7 @@ class ScoringService:
 
     # ---------------- 内部：候选会话 ----------------
 
-    def _candidates(self, staff_ids, limit, min_messages, force, rv) -> list:
+    def _candidates(self, staff_ids, limit, min_messages, force, rv, grades=None) -> list:
         """选出需要评分的会话。
 
         增量口径（``force=False``）：无评估 / 有新消息 / 规则版本变化；
@@ -941,6 +1050,14 @@ class ScoringService:
         if staff_ids:
             staff_filter = "AND c.staff_id = ANY(%(staff_ids)s)"
             params["staff_ids"] = list(staff_ids)
+        # F2（架构 §2.1）：只扫指定等级的客户（早会前复核 S/A、公开课复核）。
+        # ⚠️ 条件写在 `last.grade` 上 —— 即「**上次评出来的**等级」。
+        #    这是刻意选择：要复核的是「上次判为高价值的客户」，而不是「这次判为高价值的」
+        #    （后者要靠本次结果才知道，鸡生蛋）。
+        grade_filter = ""
+        if grades:
+            grade_filter = "AND last.grade = ANY(%(grades)s)"
+            params["grades"] = list(grades)
 
         # force = 真全量：整段去掉增量条件（rv 参数此时不再被引用，psycopg 会忽略多余键）
         incremental = "" if force else """
@@ -987,7 +1104,7 @@ class ScoringService:
              WHERE c.session_type = 'ext_user'
                AND c.target_id IS NOT NULL
                AND c.msg_count >= %(min_msgs)s
-               {staff_filter}{incremental}
+               {staff_filter}{grade_filter}{incremental}
              ORDER BY {order_by}
              LIMIT %(limit)s
         """
@@ -1011,6 +1128,9 @@ class ScoringService:
         max_tokens = setting_int("llm_max_tokens", "LLM_MAX_TOKENS", 0) or None
         max_repairs = setting_int("rejudge_retries", "REJUDGE_RETRIES",
                                   analyze.DEFAULT_MAX_REPAIRS)
+        # 单次调用超时（架构 §7.3 `scoring_llm_timeout_sec`）：此前是 `llm.TIMEOUT=120`
+        # **硬编码**，测试/弱网/慢模型都无法按环境调整。0 或空 → 用 llm 模块默认。
+        timeout = setting_int("llm_timeout_sec", "LLM_TIMEOUT_SEC", 0) or None
 
         def _on_attempt(_n, meta):
             usage = (meta or {}).get("usage") or {}
@@ -1031,6 +1151,7 @@ class ScoringService:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     max_repairs=max_repairs,
+                    timeout=timeout,
                     on_attempt=_on_attempt)
             except llm.RetryableLLMError as e:
                 last_err = e
@@ -1067,34 +1188,48 @@ class ScoringService:
         这样批量评分不会被微伴抖动拖慢，同时回写也不会因为增量水位推进而永久丢失。
         """
         status, errcode, errmsg, resp = "skipped", None, "无正分，无需回写", None
-        # ③ before_writeback（架构 §2.4 H3）：开关（D2）/ 幂等 / 配额（边界3）统一判定。
-        # 判定的 reason → status 映射与改造前逐字一致（见 hooks.REASON_TO_WB_STATUS），
-        # 所以接入后行为不变，只是「为什么没回写」从此有了稳定标识。
-        # ⚠️ 两个查询**条件化**：只在 live 且配额上限 > 0 时才查 —— 否则每个会话
-        #    白加两次 DB 往返（默认配额 0 = 不限，绝大多数部署都是这个配置）。
+        # ③ before_writeback（架构 §2.4 H3 + D2-1）：开关 / 幂等 / 配额 / **差值累加**。
+        # D2-1（开 live 的硬前提）：微伴「客户评分」是**累计行为分、无覆盖接口**，
+        # 所以必须只写增量 = 本次 positive_total − 客户已回写水位。
+        # 整值回写在累加语义下会让分数虚高（同一次评估被反复累加）。
+        # 两个查询**条件化**：只在 live 且配额上限 > 0 时才查，避免每会话白加 DB 往返。
         quota_run_limit = setting_int("writeback_quota_per_run", "WRITEBACK_QUOTA_PER_RUN", 0)
         quota_cust_limit = setting_int("writeback_quota_per_customer_per_day",
                                        "WRITEBACK_QUOTA_PER_CUSTOMER_PER_DAY", 0)
+        delta_mode = setting_bool("writeback_delta_mode", "WRITEBACK_DELTA_MODE", True)
         decision = hooks.before_writeback(
             positive_total=score, mode=mode,
             already_written=_already_written(aid) if mode == "live" else False,
             quota_run=self._progress.get("writeback_ok", 0) + self._progress.get("writeback_fail", 0),
             quota_run_limit=quota_run_limit,
             quota_customer=_customer_writes_today(target_id) if quota_cust_limit else 0,
-            quota_customer_limit=quota_cust_limit)
+            quota_customer_limit=quota_cust_limit,
+            # 水位查询也条件化：非 live / 非差值模式都不需要它
+            written_total=(_ledger_total(rel_key) if (mode == "live" and delta_mode) else None),
+            delta_mode=delta_mode)
         self._note_hook(decision)
+        # D2-1：真正投递的是**差值**（放行时 detail 里有 delta）
+        send_score = int((decision.detail or {}).get("delta") or score)
+        self._bump(run_id, writeback_delta=(1 if send_score != int(score) else 0))
         if decision.denied:
             status = hooks.REASON_TO_WB_STATUS.get(decision.reason, "skipped")
             errmsg = hooks.REASON_CN.get(decision.reason, decision.reason)
         else:  # live：单次投递，重试交给 outbox
             try:
                 resp = weiban.add_customer_score(staff_id, external_user_id=target_id,
-                                                 score=int(score), use_header_token=True)
+                                                 score=send_score, use_header_token=True)
                 errcode = resp.get("errcode")
                 errmsg = resp.get("errmsg")
                 status = "ok" if errcode == 0 else "failed"
             except Exception as e:
                 errmsg, status = f"{type(e).__name__}: {e}", "failed"
+        # D2-1：**只有真投递成功**才推进水位 —— dry_run 不推进（没真写就不算已写），
+        # 失败也不推进（否则差值被吃掉，重试时无分可写 → 永久少写）。
+        if status == "ok" and delta_mode:
+            try:
+                _advance_ledger(rel_key, staff_id, target_id, aid, send_score)
+            except Exception as e:                  # noqa: BLE001
+                print(f"[scoring] 推进回写水位失败（下次会重算差值）：{e}")
         try:
             db.execute(
                 """INSERT INTO score_writeback
@@ -1259,6 +1394,12 @@ class ScoringService:
         if gate.denied:
             self._note_hook(gate)
             raise ValueError(f"落库前校验未通过（{gate.reason}）：{gate.detail}")
+
+        # F6（架构 §7.2）：`old_raw_score` = 本次评估**之前**该客户的最新分数。
+        # 必须在 INSERT 之前取（取自己的话永远等于新分）。
+        # 目的：能直接答「这次比上次涨了还是跌了」，而不必回表做窗口函数。
+        prev = _last_assessment(rel) or {}
+        old_raw = prev.get("raw_score")
         with db.tx() as conn:
             aid = conn.execute(
                 """INSERT INTO customer_intent_assessment
@@ -1269,9 +1410,10 @@ class ScoringService:
                       rule_version, msg_count, last_msg_time,
                       unchecked_rules, prompt_version, schema_version, model_confidence,
                       source_run_id, contract_attempts,
-                      session_confidence, review_reasons)
+                      session_confidence, review_reasons,
+                      model_name, rule_checks, old_raw_score, profile_struct)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                           %s,%s,%s,%s,%s,%s,%s,%s)
+                           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    RETURNING assessment_id""",
                 (rel, cand["staff_id"], cand.get("staff_name"), cand["target_id"],
                  cand.get("target_name"), cand["session_id"],
@@ -1287,14 +1429,37 @@ class ScoringService:
                  res.get("model_confidence"),
                  # 人工单会话重评（run_id=0）不参与唯一约束，可反复重评
                  (run_id or None), int(res.get("contract_attempts") or 1),
-                 session_confidence, db.as_json(review_reasons) if review_reasons else None)
+                 session_confidence, db.as_json(review_reasons) if review_reasons else None,
+                 # B1 归因 / 闸2 逐维度表态 / F6 上次分数
+                 res.get("model_name"),
+                 db.as_json(res.get("rule_checks") or []),
+                 old_raw,
+                 db.as_json(res.get("profile_struct") or []))
             ).fetchone()["assessment_id"]
+
+            # E2（架构 §7.2）：新评估落库后，把**同一客户的旧记录**标记为被取代。
+            # 为什么放在同一事务：若先插入再单独更新，中途崩溃会留下**两条 is_current=true**
+            # → 列表出现重复行，正是 E2 要消除的问题。
+            # 语义：只有最新一条是「当前有效」，历史行保留（可追溯客户是怎么变的）。
+            conn.execute(
+                """UPDATE customer_intent_assessment
+                      SET is_current = false, superseded_by = %s
+                    WHERE relationship_key = %s AND assessment_id < %s AND is_current""",
+                (aid, rel, aid))
 
             # 仅 live + 有正分才入队（dry_run / off 走同步记账，与改造前行为一致）
             if (score["positive_total"] >= 1 and mode == "live"
                     and setting_bool("use_outbox", "USE_OUTBOX", True)):
-                outbox.enqueue(conn, aid, rel, cand["staff_id"], cand["target_id"],
-                               score["positive_total"], mode)
+                # D2-1：**入队的就是差值**，不是正分整值。
+                # 差值必须在这里算好并固化进任务 —— 出队重试时不能再算一次
+                # （水位会被别的任务推进，重算会得到不同的数）。
+                # 差值为 0（相对水位无增量）→ 不入队，省一次无意义的网络往返。
+                send = int(score["positive_total"])
+                if setting_bool("writeback_delta_mode", "WRITEBACK_DELTA_MODE", True):
+                    send = send - _ledger_total(rel)
+                if send > 0:
+                    outbox.enqueue(conn, aid, rel, cand["staff_id"], cand["target_id"],
+                                   send, mode)
         return aid
 
     # ---------------- 内部：关键历史标签（架构 §4.4.1 的「写」侧）----------------
@@ -1350,12 +1515,20 @@ class ScoringService:
         ctx = build_context(staff_id, session_id,
                             session_meta={"staff_id": staff_id, "session_id": session_id},
                             rel_key=rel)
-        # ① before_llm_call（架构 §2.4 H3）：有效信息量闸（B4）
+        # ① before_llm_call（架构 §2.4 H3）：有效信息量闸（B4 三口径）
         # 改造前是裸 `if kept < min_kept: return "skipped"`；现在统一走 hook，
         # 拒绝原因可观测（`hook_denials`），且与预算/超时共用同一判定入口。
+        # B4：三个口径（保留条数 / 客户开口数 / 文本长度）—— 单看条数会被
+        # 「销售单方面刷屏」钻空子（见 hooks.before_llm_call 的注释）。
+        _st = ctx["stats"]
         gate = hooks.before_llm_call(
-            kept=ctx["stats"]["kept"],
-            min_kept=setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4))
+            kept=_st["kept"],
+            min_kept=setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4),
+            customer_msgs=_st.get("customer_msgs"),
+            min_customer_msgs=setting_int("ctx_min_customer_msgs", "CTX_MIN_CUSTOMER_MSGS", 1),
+            text_len=_st.get("text_len"),
+            min_effective_chars=setting_int("ctx_min_effective_chars",
+                                            "CTX_MIN_EFFECTIVE_CHARS", 0))
         if gate.denied:
             self._note_hook(gate)
             return "skipped"
@@ -1450,7 +1623,7 @@ class ScoringService:
 
     # ---------------- 内部：主流程 ----------------
 
-    def _run(self, run_id, staff_ids, max_sessions, min_messages, force, rv):
+    def _run(self, run_id, staff_ids, max_sessions, min_messages, force, rv, grades=None):
         t0 = time.time()
         try:
             db.init_db()
@@ -1460,7 +1633,8 @@ class ScoringService:
             sleep_ms = setting_int("scoring_sleep_ms", "SCORING_SLEEP_MS", 0)
 
             self._bump(run_id, detail={"stage": "筛选候选会话"})
-            cands = self._candidates(staff_ids, max_sessions, min_messages, force, rv)
+            cands = self._candidates(staff_ids, max_sessions, min_messages, force, rv,
+                                     grades=grades)
             n_staff = len({c["staff_id"] for c in cands})
             db.execute("UPDATE scoring_run SET staff_count=%s, session_total=%s WHERE id=%s",
                        (n_staff, len(cands), run_id))
@@ -1500,7 +1674,10 @@ class ScoringService:
                                            "current_staff": cand.get("staff_name"),
                                            "session_total": len(cands)})
                 try:
+                    _t_sess = time.time()
                     r = self._score_cand(run_id, cand, rules, min_messages, mode, fetch_tags)
+                    # H5：单会话耗时（含失败的会话 —— 失败往往正是慢的那几个）
+                    self._note_session_secs(time.time() - _t_sess)
                     if r == "skipped":
                         self._bump(run_id, session_skipped=1)
                     else:
@@ -1525,11 +1702,19 @@ class ScoringService:
             else:
                 status, partial_reason = "success", None
             elapsed = round(time.time() - t0, 1)
+            # H5：把耗时列表折算成分布指标（列表本身也保留，便于事后查长尾）
+            _secs = sorted(self._progress.get("session_secs") or [])
+            _dist = {}
+            if _secs:
+                def _pct(p):
+                    return _secs[min(len(_secs) - 1, int(len(_secs) * p))]
+                _dist = {"session_secs_p50": _pct(0.5), "session_secs_p95": _pct(0.95),
+                         "session_secs_max": _secs[-1], "session_secs_n": len(_secs)}
             db.execute(
                 """UPDATE scoring_run SET status=%s, elapsed_sec=%s, finished_at=now(),
                        partial_reason=%s, detail=%s WHERE id=%s""",
                 (status, elapsed, partial_reason,
-                 db.as_json({**self._progress, "stage": "已完成"}), run_id))
+                 db.as_json({**self._progress, **_dist, "stage": "已完成"}), run_id))
             _audit("system", "scoring_done", f"run:{run_id}",
                    {"status": status, "partial_reason": partial_reason,
                     "elapsed_sec": elapsed, "session_done": self._progress.get("session_done", 0),

@@ -469,3 +469,72 @@ ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS max_llm_calls INT;
 ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS session_failed INT NOT NULL DEFAULT 0;
 -- partial_reason：为何以 partial 结束（deadline / max_llm_calls / stop）。
 ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS partial_reason TEXT;
+
+-- ---------------- 归因与留痕字段（架构 §7.2 / B1 / 闸2 / F6）----------------
+-- model_name：实际返回的模型名（非配置值）。与 prompt_version / schema_version
+--   一起构成「结果变更可归因」—— 换模型后分数变了，能立刻看出是谁换的。
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS model_name TEXT;
+-- rule_checks：模型**逐维度原始表态**落库（此前只在契约内校验、不落库）。
+--   与 unchecked_rules 互补：后者只说「漏了哪些」，前者说「表了什么态、给了多少分」。
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS rule_checks JSONB;
+-- old_raw_score：上一次有效分数（对比「这次涨了还是跌了」）。F6，①② 记忆段也会用到
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS old_raw_score INT;
+-- last_notified_grade：上次对外通知过的等级（避免同一等级反复通知）。F6
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS last_notified_grade TEXT;
+
+-- ---------------- E2：当前有效标记（列表去重）----------------
+-- 语义：同一 relationship_key 下**只有最新一条** is_current=true。
+-- 历史行置 false 并记 superseded_by=新行 id —— 这样「某客户当前的结论」是 O(1) 查询，
+-- 同时保留完整历史（可回答「这个客户是怎么一路变过来的」）。
+-- ⚠️ 与 `uq_assessment_run_session` 互补：那个约束保证「同一轮同一会话只落一条」，
+--    本列保证「同一客户在列表里只出现一条」。两者解决的是不同层面的重复。
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS is_current BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS superseded_by BIGINT;
+CREATE INDEX IF NOT EXISTS idx_assess_current ON customer_intent_assessment (relationship_key) WHERE is_current;
+-- 历史数据回填：每个客户只保留最新一条为 current（幂等，可重复执行）
+UPDATE customer_intent_assessment a SET is_current = false
+ WHERE EXISTS (SELECT 1 FROM customer_intent_assessment b
+                WHERE b.relationship_key = a.relationship_key
+                  AND b.assessment_id > a.assessment_id);
+
+-- ---------------- E3：结构化画像（带逐槽位证据）----------------
+-- 固定 8 槽位（记忆方案 M-B）：position/company/city/need/budget/timeline/concerns/competitor。
+-- profile_summary 保留为「自由文本补充」，本列才是可查询、可跨次对比的那一份。
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS profile_struct JSONB;
+
+-- ---------------- 闸1/F5：规则可机读化 ----------------
+-- examples：每个分值档的 positive / negative / ambiguous 三档示例（钉住边界）
+-- conflict_priority：两条规则同时像命中时先算哪条（替代提示词里硬编码的冲突说明）
+ALTER TABLE scoring_rule ADD COLUMN IF NOT EXISTS examples JSONB;
+ALTER TABLE scoring_rule ADD COLUMN IF NOT EXISTS conflict_priority INT;
+
+-- ---------------- D2-1：客户级回写水位（差值累加）----------------
+-- 背景（架构 §10 D2）：微伴「客户评分」= **累计行为分，无覆盖接口**。
+-- 所以「整值回写」会把同一个分数反复累加 → 客户分数虚高。
+-- 正确做法：每次只写**增量** = 本次 positive_total − 该客户已回写累计。
+-- 本表就是那个「已回写累计」的水位（一客户一行）。
+-- ⚠️ 与 `score_writeback` 的分工：
+--    · `score_writeback` = 每次回写的**流水**（幂等记账，UNIQUE(assessment_id)）
+--    · `writeback_ledger` = 客户的**累计水位**（差值计算的依据）
+--    只有 live 成功投递才推进水位 —— dry_run 不推进，因为「没真写就不算已写」。
+CREATE TABLE IF NOT EXISTS writeback_ledger (
+    relationship_key   TEXT PRIMARY KEY,
+    staff_id           TEXT,
+    external_user_id   TEXT,
+    written_total      INT NOT NULL DEFAULT 0,   -- 已回写累计分
+    last_assessment_id BIGINT,
+    last_write_at      TIMESTAMPTZ,
+    writes             INT NOT NULL DEFAULT 0,   -- 成功回写次数
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------- H2：请求幂等（关键操作防重复提交）----------------
+-- 互斥守卫管「不能同时跑两个」，本表管「同一个请求不要跑两遍」——两者互补。
+-- 调用方给 request_key 时：首次执行并落结果，重复到达直接复用首次结果。
+CREATE TABLE IF NOT EXISTS request_guard (
+    request_key TEXT PRIMARY KEY,
+    endpoint    TEXT NOT NULL,
+    response    JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_request_guard_time ON request_guard (created_at);

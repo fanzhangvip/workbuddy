@@ -141,7 +141,9 @@ SYSTEM_PROMPT = (
     "5. 不得捏造聊天记录中不存在的信息（如预算、职位、到课、时间节点）。\n"
     "6. 判断「1 个月内」「1-3 个月」「已学习 1 个月以上」等时效类规则时，"
     "必须依据每条消息标注的时间与【当前日期】推算，不得凭感觉。\n"
-    "7. customer_profile_summary 与 sales_strategy 使用中文。\n"
+    "7. customer_profile_summary / sales_strategy / customer_profile 一律使用中文。\n"
+    "7b. customer_profile 的槽位名必须严格取自给定枚举，8 个槽位一个不少；\n"
+    "    客户未提及的槽位 value 写「未提及」并留空 evidence_ids（不要省略该槽位）。\n"
     "8. 不要自己计算总分，也不要输出总分类字段，总分由系统计算。\n"
     "9. 上下文里可能含有【客户状态档案】与【上次评分明细】两段——它们**是上一次评估的结论**，"
     "用于理解客户状态的变化（例如上次等级 S，本次客户说\"自己学\"）；"
@@ -172,6 +174,10 @@ def build_user_prompt(rules: dict, conversation: str, facts: str,
         "- rule_checks[].evidence_ids：命中时引用聊天记录编号，如 [\"#012\"]\n"
         "- rule_checks[].reason：一句话理由，未命中时说明为什么不算命中\n"
         "- customer_profile_summary：客户背景、需求、紧迫性、顾虑与当前阶段摘要\n"
+        "- customer_profile：**结构化画像**，固定 8 个槽位各给一条（架构 §2.3 E3）：\n"
+        "    " + " / ".join(f"{k}（{v}）" for k, v in contracts.PROFILE_SLOT_CN.items()) + "\n"
+        "    每个槽位给 {slot, value, evidence_ids}；**客户没提过的槽位必须给，value 写「未提及」**\n"
+        "    （这样才能看出「上次说有预算、这次没提」这类信息变化），evidence_ids 引用聊天记录编号\n"
         "- sales_strategy：下一步行动、沟通重点与建议跟进时间\n"
         "- model_confidence：你对本次判断的整体把握，0~1"
     )
@@ -185,9 +191,14 @@ def _attach_evidence(items: list, index: dict, labels: dict) -> tuple:
       这就是「证据不足则不要命中」落到代码里的强制力。
     · ``evidence`` 一律取预处理层的原文行，不接受模型自述，杜绝编造证据。
     · 没有 index（老调用方）时原样返回，保持向后兼容。
+
+    **A1（架构 §7.2）**：每个保留项打 ``evidence_verified``（逐项回链结果）——
+    ``1`` = 全部编号都回链成功；``2`` = 部分成功（``invalid_evidence_ids`` 有值）；
+    ``0`` = 无 index 未校验。有了它，「证据到底靠不靠得住」可按 item 统计，
+    而不是只知道整项的存亡。
     """
     if not index:
-        return list(items or []), []
+        return [{**dict(it), "evidence_verified": 0} for it in (items or [])], []
     labels = labels or {}
     kept, dropped = [], []
     for it in items or []:
@@ -197,14 +208,50 @@ def _attach_evidence(items: list, index: dict, labels: dict) -> tuple:
         if not codes:
             given = row.get("evidence_ids") or "未提供编号"
             dropped.append({**row, "invalid_evidence_ids": given,
+                            "evidence_verified": 0,
                             "reason": f"证据无法回链到原文：{given}"})
             continue
         row["evidence_message_ids"] = res["message_ids"]
         if res["invalid"]:
             row["invalid_evidence_ids"] = res["invalid"]
         row["evidence"] = [labels[c] for c in codes if labels.get(c)]
+        row["evidence_verified"] = 2 if res["invalid"] else 1
         kept.append(row)
     return kept, dropped
+
+
+def _attach_profile_evidence(fields: list, index: dict, labels: dict) -> list:
+    """E3（架构 §2.3）：给结构化画像的每个槽位回链证据。
+
+    与命中项**同一套**回链机制（复用 `ctx_preprocess.resolve_evidence`），但处置更宽松：
+    命中项回链不上要**丢弃**（证据不足则不要命中）；画像槽位回链不上只**清空编号**、
+    保留 value —— 画像错一点不影响分数，丢了反而让画像无谓变空。
+
+    固定 8 槽位：模型漏给的槽位补成「未提及」（保持跨次可对比）；模型给的未知槽位丢弃。
+    """
+    out = []
+    seen = set()
+    for f in (fields or []):
+        slot = (getattr(f, "slot", None) or "").strip()
+        if slot not in contracts.PROFILE_SLOTS or slot in seen:
+            continue                       # 未知槽位/重复槽位：丢弃（固定枚举才有对比价值）
+        seen.add(slot)
+        value = getattr(f, "value", "") or ""
+        ids = list(getattr(f, "evidence_ids", None) or [])
+        rec = {"slot": slot, "slot_cn": contracts.PROFILE_SLOT_CN.get(slot, slot),
+               "value": value, "evidence_ids": [], "evidence": []}
+        if ids and index:
+            res = ctx_preprocess.resolve_evidence(ids, index)
+            rec["evidence_ids"] = res["codes"]
+            rec["evidence_message_ids"] = res["message_ids"]
+            rec["evidence"] = [labels[c] for c in res["codes"] if (labels or {}).get(c)]
+        out.append(rec)
+    # 补齐缺席槽位（「未提及」），让「上次有、这次没有」可被机器识别
+    for slot in contracts.PROFILE_SLOTS:
+        if slot not in seen:
+            out.append({"slot": slot, "slot_cn": contracts.PROFILE_SLOT_CN.get(slot, slot),
+                        "value": "未提及", "evidence_ids": [], "evidence": [], "missing": True})
+    return out
 
 
 def _parse_judgment(raw: str):
@@ -235,13 +282,15 @@ def _repair_prompt(err: Exception) -> str:
 
 
 def _judge_with_repair(messages: list, *, temperature, max_tokens, max_repairs,
-                       on_attempt=None):
+                       on_attempt=None, timeout=None):
     """调模型 + 契约校验；不合格就把校验错误回灌重来。
 
     这是「校验 → 通过或者重来」这条内循环的落地：改造前校验只决定"丢弃"，
     没有"重来"，模型偶发少字段就只能整条会话算失败、分数静默偏小。
 
     临时性网络故障（``RetryableLLMError``）不由这里重试，交给上层按可重试/不可重试分流。
+
+    ``timeout`` 为单次调用超时（秒）；``None`` → 用 ``llm.TIMEOUT``（架构 §7.3 要求可配）。
     """
     convo = list(messages)
     attempts = 0
@@ -249,8 +298,11 @@ def _judge_with_repair(messages: list, *, temperature, max_tokens, max_repairs,
     last_raw = ""
     while attempts <= max_repairs:
         attempts += 1
-        meta = llm.chat(convo, temperature=temperature, json_mode=True,
-                        max_tokens=max_tokens, return_meta=True)
+        chat_kw = {"temperature": temperature, "json_mode": True,
+                   "max_tokens": max_tokens, "return_meta": True}
+        if timeout:
+            chat_kw["timeout"] = int(timeout)
+        meta = llm.chat(convo, **chat_kw)
         last_raw = meta.get("content") or ""
         if on_attempt:
             on_attempt(attempts, meta)
@@ -275,7 +327,7 @@ def analyze(conversation: str, facts: str, rules: dict, *,
             evidence_index: dict = None, labels: dict = None,
             current_date: str = None, temperature: float = None,
             max_tokens: int = None, max_repairs: int = None,
-            on_attempt=None) -> dict:
+            timeout: int = None, on_attempt=None) -> dict:
     """调用大模型判断 → 契约校验（失败回灌重来）→ 派生命中项 → 证据回链 → 本地计分。
 
     ``evidence_index`` / ``labels`` 来自 ``ctx_preprocess.build_llm_context()``，
@@ -294,7 +346,7 @@ def analyze(conversation: str, facts: str, rules: dict, *,
     ]
     judgment, attempts, _meta = _judge_with_repair(
         messages, temperature=temperature, max_tokens=max_tokens,
-        max_repairs=max_repairs, on_attempt=on_attempt)
+        max_repairs=max_repairs, on_attempt=on_attempt, timeout=timeout)
 
     # 逐维度表态 → 命中项（item 结构与此前完全一致，前端与复核页零改动）
     pos_items, neg_items, derive_bad = rules_mod.derive_items(judgment.rule_checks, rules)
@@ -320,6 +372,10 @@ def analyze(conversation: str, facts: str, rules: dict, *,
         invalid_items=list(derive_bad) + list(pos_noev) + list(neg_noev),
         unchecked_rules=unchecked,
         profile_summary=judgment.customer_profile_summary,
+        # E3：结构化画像也走**同一套证据回链**（编号 → message_id 留在 items 之外，
+        # 但同样只接受能回链的编号；回链失败的原样保留 value，只清空编号）
+        profile_struct=_attach_profile_evidence(judgment.customer_profile, evidence_index,
+                                               labels),
         sales_strategy=judgment.sales_strategy,
         model_confidence=judgment.model_confidence,
         # 需要人工看一眼的判据由代码给：有规则被漏检就置真（模型不再自报"要不要人看"）
@@ -327,6 +383,12 @@ def analyze(conversation: str, facts: str, rules: dict, *,
         rule_version=rules.get("rule_version") or "",
         prompt_version=PROMPT_VERSION,
         schema_version=contracts.SCHEMA_VERSION,
+        # B1（架构 §7.2）：记录**实际返回的模型名**（不是配置里的名字 —— 服务端可能
+        # 做了别名路由/版本切换，只有响应里的 model 才是真正跑的那个），
+        # 与 prompt_version / schema_version 一起构成「结果变更可归因」。
+        model_name=(_meta or {}).get("model") or config.LLM_MODEL,
+        # 闸2（架构 §7.2）：逐维度原始表态落库（契约已校验，这里只是把它留下来）
+        rule_checks=[rc.model_dump() for rc in judgment.rule_checks],
         current_date=current_date,
         analyzed_at=int(time.time()),
         contract_attempts=attempts,

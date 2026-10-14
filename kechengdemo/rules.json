@@ -1,137 +1,473 @@
 {
-  "rule_version": "v1.0",
-  "score_bounds": { "min": -12, "max": 13 },
-  "scoring_policy": {
-    "positive": "同一维度命中多个档位时只取最高分；不同维度可累加；总分上限 +13。",
-    "negative": "扣分维度可叠加；总分下限 -12。",
-    "final": "raw_score = 加分合计 + 扣分合计，并按上下限截断。"
+ "rule_version": "v1.0",
+ "score_bounds": {
+  "min": -12,
+  "max": 13
+ },
+ "scoring_policy": {
+  "positive": "同一维度命中多个档位时只取最高分；不同维度可累加；总分上限 +13。",
+  "negative": "扣分维度可叠加；总分下限 -12。",
+  "final": "raw_score = 加分合计 + 扣分合计，并按上下限截断。"
+ },
+ "grade_thresholds": [
+  {
+   "min": 6,
+   "grade": "S",
+   "priority": "最高",
+   "advice": "每日重点跟进；课后 30 分钟内跟进并推动关单。"
   },
-  "grade_thresholds": [
-    { "min": 6, "grade": "S", "priority": "最高", "advice": "每日重点跟进；课后 30 分钟内跟进并推动关单。" },
-    { "min": 4, "grade": "A", "priority": "高", "advice": "每日 1 次有效跟进，重点推动到课和预定。" },
-    { "min": 2, "grade": "B", "priority": "中", "advice": "隔日有效跟进，以价值内容和公开课邀约培育。" },
-    { "min": 0, "grade": "C", "priority": "低", "advice": "每周 1-2 次低打扰触达，等待主动咨询信号。" },
-    { "min": -999, "grade": "D", "priority": "暂停", "advice": "停止一对一深度跟进，进入长期激活池。" }
-  ],
-  "positive_rules": [
+  {
+   "min": 4,
+   "grade": "A",
+   "priority": "高",
+   "advice": "每日 1 次有效跟进，重点推动到课和预定。"
+  },
+  {
+   "min": 2,
+   "grade": "B",
+   "priority": "中",
+   "advice": "隔日有效跟进，以价值内容和公开课邀约培育。"
+  },
+  {
+   "min": 0,
+   "grade": "C",
+   "priority": "低",
+   "advice": "每周 1-2 次低打扰触达，等待主动咨询信号。"
+  },
+  {
+   "min": -999,
+   "grade": "D",
+   "priority": "暂停",
+   "advice": "停止一对一深度跟进，进入长期激活池。"
+  }
+ ],
+ "positive_rules": [
+  {
+   "rule_id": "positive_coder_profile",
+   "dimension": "程序员或转型画像",
+   "options": [
     {
-      "rule_id": "positive_coder_profile",
-      "dimension": "程序员或转型画像",
-      "options": [
-        { "score": 2, "criteria": "在职编程技术岗" },
-        { "score": 1, "criteria": "非编程岗但明确转型 AI/大模型，或相关专业在校生" }
+     "score": 2,
+     "criteria": "在职编程技术岗",
+     "examples": {
+      "positive": [
+       "我是在职后端开发，主要写 Java",
+       "我们组做微服务，我负责接口开发"
       ],
-      "hint": "可结合微伴标签（如编程岗标签）辅助判断。"
-    },
-    {
-      "rule_id": "positive_clear_work_need",
-      "dimension": "明确的工作具体需求",
-      "options": [
-        { "score": 2, "criteria": "有可落地的业务痛点、AI 项目或明确场景" },
-        { "score": 1, "criteria": "仅有学习方向但需求不具体" }
-      ]
-    },
-    {
-      "rule_id": "positive_cooperative",
-      "dimension": "配合度、认可度高",
-      "options": [
-        { "score": 1, "criteria": "积极回复、配合画像收集，且认可课程、师资或平台" }
-      ]
-    },
-    {
-      "rule_id": "positive_urgency",
-      "dimension": "紧迫性高",
-      "options": [
-        { "score": 2, "criteria": "1 个月内的刚性需求" },
-        { "score": 1, "criteria": "1-3 个月的中期计划" }
-      ]
-    },
-    {
-      "rule_id": "positive_learning",
-      "dimension": "已学习一段时间",
-      "options": [
-        { "score": 1, "criteria": "已接触或自学大模型 1 个月以上，含实操、API、RAG、Agent 等" }
-      ]
-    },
-    {
-      "rule_id": "positive_attended_class",
-      "dimension": "邀课成功",
-      "options": [
-        { "score": 2, "criteria": "已实际到课" },
-        { "score": 1, "criteria": "已确认参加但尚未到课" }
+      "negative": [
+       "我是做行政的，平时不怎么用电脑",
+       "我是产品经理，不写代码"
       ],
-      "external_event_preferred": true,
-      "hint": "实际到课以直播/课程平台事件或微伴到课/完课标签为准；仅凭聊天记录不得直接给 +2。"
-    },
-    {
-      "rule_id": "positive_high_tier_city",
-      "dimension": "高转地区",
-      "options": [
-        { "score": 1, "criteria": "一线或指定新一线城市" }
+      "ambiguous": [
+       "我是测试，偶尔写点自动化脚本",
+       "我在运维岗，会写一点 shell"
       ]
+     }
     },
     {
-      "rule_id": "positive_ask_course",
-      "dimension": "主动问课",
-      "options": [
-        { "score": 2, "criteria": "客户主动询问课程、价格、师资、就业、方式等" },
-        { "score": 1, "criteria": "经销售引导后表示想了解" }
+     "score": 1,
+     "criteria": "非编程岗但明确转型 AI/大模型，或相关专业在校生",
+     "examples": {
+      "positive": [
+       "我打算转行做算法，已经在补数学了",
+       "我是计算机专业大四，准备走这个方向"
       ],
-      "hint": "冲突规则：客户在具备学习或业务需求时主动问价格，按「主动问课」判断。"
+      "negative": [
+       "我就是随便了解一下",
+       "我学的是市场营销"
+      ],
+      "ambiguous": [
+       "我做过一点数据分析，不确定算不算",
+       "我在自学 Python，还没想好转不转"
+      ]
+     }
     }
-  ],
-  "negative_rules": [
+   ],
+   "hint": "可结合微伴标签（如编程岗标签）辅助判断。"
+  },
+  {
+   "rule_id": "positive_clear_work_need",
+   "dimension": "明确的工作具体需求",
+   "options": [
     {
-      "rule_id": "negative_price_haggling",
-      "dimension": "追着问价格",
-      "options": [
-        { "score": -1, "criteria": "未了解课程价值和服务、反复只比价" }
+     "score": 2,
+     "criteria": "有可落地的业务痛点、AI 项目或明确场景",
+     "examples": {
+      "positive": [
+       "我们公司要做 RAG 知识库，下季度上线",
+       "我想把客服问答用大模型替换掉"
       ],
-      "hint": "仅当客户不了解价值、反复只比价时才算。"
-    },
-    {
-      "rule_id": "negative_bad_attitude",
-      "dimension": "态度差",
-      "options": [
-        { "score": -2, "criteria": "不耐烦、粗鲁、挑衅或无理指责" }
-      ]
-    },
-    {
-      "rule_id": "negative_low_cooperation",
-      "dimension": "配合度低",
-      "options": [
-        { "score": -1, "criteria": "敷衍回复、拒绝提供基础信息、长期不配合沟通" }
-      ]
-    },
-    {
-      "rule_id": "negative_low_recognition",
-      "dimension": "认可度低",
-      "options": [
-        { "score": -1, "criteria": "明确否定在线教育、课程、公司或品牌" }
-      ]
-    },
-    {
-      "rule_id": "negative_self_study",
-      "dimension": "要自学",
-      "options": [
-        { "score": -2, "criteria": "明确选择免费自学并拒绝付费课程" }
-      ]
-    },
-    {
-      "rule_id": "negative_no_reply_2d",
-      "dimension": "连续 2 天不回复",
-      "options": [
-        { "score": -2, "criteria": "销售正常跟进后，客户连续 48 小时未回复；客户已说明「忙、晚点聊」等情形不计" }
+      "negative": [
+       "就是感觉 AI 挺火的，先看看",
+       "说不好具体做什么"
       ],
-      "engine": "rule",
-      "hint": "由后台规则引擎根据消息时间计算，不由大模型判断。"
+      "ambiguous": [
+       "老板让我调研 AI 能不能用在售后",
+       "有个想法，但还没定下来"
+      ]
+     }
     },
     {
-      "rule_id": "negative_refuse",
-      "dimension": "明确拒绝报课",
-      "options": [
-        { "score": -3, "criteria": "明确表示不报、不学、暂不考虑、没有需求等" }
+     "score": 1,
+     "criteria": "仅有学习方向但需求不具体",
+     "examples": {
+      "positive": [
+       "我想系统学一下大模型",
+       "先把提示词学明白"
+      ],
+      "negative": [
+       "我有明确项目要做，7 月必须上线"
+      ],
+      "ambiguous": [
+       "想学学看，也许会用在工作中"
       ]
+     }
     }
-  ]
+   ],
+   "conflict_priority": 20
+  },
+  {
+   "rule_id": "positive_cooperative",
+   "dimension": "配合度、认可度高",
+   "options": [
+    {
+     "score": 1,
+     "criteria": "积极回复、配合画像收集，且认可课程、师资或平台",
+     "examples": {
+      "positive": [
+       "好的，我加你微信，资料发我",
+       "老师讲得挺好，我刚看了课程大纲"
+      ],
+      "negative": [
+       "别再给我发了",
+       "我没兴趣，别问了"
+      ],
+      "ambiguous": [
+       "嗯",
+       "行吧"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "rule_id": "positive_urgency",
+   "dimension": "紧迫性高",
+   "options": [
+    {
+     "score": 2,
+     "criteria": "1 个月内的刚性需求",
+     "examples": {
+      "positive": [
+       "我们 8 月底要上线，这月必须把人教会",
+       "我下周就要交付"
+      ],
+      "negative": [
+       "明年再说吧",
+       "先了解一下，不着急"
+      ],
+      "ambiguous": [
+       "可能这两个月，还没最终定"
+      ]
+     }
+    },
+    {
+     "score": 1,
+     "criteria": "1-3 个月的中期计划",
+     "examples": {
+      "positive": [
+       "打算 3 个月内把团队搭起来",
+       "计划这个季度完成"
+      ],
+      "negative": [
+       "三年内都不考虑"
+      ],
+      "ambiguous": [
+       "下半年吧，具体时间还没定"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "rule_id": "positive_learning",
+   "dimension": "已学习一段时间",
+   "options": [
+    {
+     "score": 1,
+     "criteria": "已接触或自学大模型 1 个月以上，含实操、API、RAG、Agent 等",
+     "examples": {
+      "positive": [
+       "我自己写过一个 RAG 的 demo，弄了两个月",
+       "我调过 API，做过简单的 Agent"
+      ],
+      "negative": [
+       "我完全没接触过",
+       "刚听说大模型这个词"
+      ],
+      "ambiguous": [
+       "看过一些视频，没动手做过"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "rule_id": "positive_attended_class",
+   "dimension": "邀课成功",
+   "options": [
+    {
+     "score": 2,
+     "criteria": "已实际到课",
+     "examples": {
+      "positive": [
+       "上周的公开课我全程听了",
+       "我已经上完第一节课了"
+      ],
+      "negative": [
+       "我还没报名",
+       "那天有事没去"
+      ],
+      "ambiguous": [
+       "报名了，但还没开课"
+      ]
+     }
+    },
+    {
+     "score": 1,
+     "criteria": "已确认参加但尚未到课",
+     "examples": {
+      "positive": [
+       "我报名了下周三的课",
+       "明天的课我会来"
+      ],
+      "negative": [
+       "我不打算听课"
+      ],
+      "ambiguous": [
+       "看看吧，有空就去"
+      ]
+     }
+    }
+   ],
+   "external_event_preferred": true,
+   "hint": "实际到课以直播/课程平台事件或微伴到课/完课标签为准；仅凭聊天记录不得直接给 +2。"
+  },
+  {
+   "rule_id": "positive_high_tier_city",
+   "dimension": "高转地区",
+   "options": [
+    {
+     "score": 1,
+     "criteria": "一线或指定新一线城市",
+     "examples": {
+      "positive": [
+       "我在北京",
+       "深圳这边"
+      ],
+      "negative": [
+       "我在四线城市",
+       "我们这是县城"
+      ],
+      "ambiguous": [
+       "我在杭州下面一个县",
+       "人在广州，长期出差在外"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "rule_id": "positive_ask_course",
+   "dimension": "主动问课",
+   "options": [
+    {
+     "score": 2,
+     "criteria": "客户主动询问课程、价格、师资、就业、方式等",
+     "examples": {
+      "positive": [
+       "你们这个课多少钱？怎么上课？",
+       "有就业推荐吗？授课老师是哪位"
+      ],
+      "negative": [
+       "价格是我先问的，客户只是回答",
+       "客户没主动问过任何课程信息"
+      ],
+      "ambiguous": [
+       "课程是线上的吗（销售先介绍后客户追问）"
+      ]
+     }
+    },
+    {
+     "score": 1,
+     "criteria": "经销售引导后表示想了解",
+     "examples": {
+      "positive": [
+       "你发我看看，我了解下",
+       "行，你说说看"
+      ],
+      "negative": [
+       "我不想了解"
+      ],
+      "ambiguous": [
+       "嗯，知道了"
+      ]
+     }
+    }
+   ],
+   "hint": "冲突规则：客户在具备学习或业务需求时主动问价格，按「主动问课」判断。",
+   "conflict_priority": 30
+  }
+ ],
+ "negative_rules": [
+  {
+   "rule_id": "negative_price_haggling",
+   "dimension": "追着问价格",
+   "options": [
+    {
+     "score": -1,
+     "criteria": "未了解课程价值和服务、反复只比价",
+     "examples": {
+      "positive": [
+       "别家才 3000，你们怎么这么贵，能便宜多少",
+       "太贵了，打几折？"
+      ],
+      "negative": [
+       "你们的服务和别家比差异在哪？价格怎么构成的"
+      ],
+      "ambiguous": [
+       "是有点贵，能优惠吗"
+      ]
+     }
+    }
+   ],
+   "hint": "仅当客户不了解价值、反复只比价时才算。",
+   "conflict_priority": 10,
+   "conflict_note": "仅在「主动问课」不成立、且未了解价值时反复比价才计"
+  },
+  {
+   "rule_id": "negative_bad_attitude",
+   "dimension": "态度差",
+   "options": [
+    {
+     "score": -2,
+     "criteria": "不耐烦、粗鲁、挑衅或无理指责",
+     "examples": {
+      "positive": [
+       "你们就是骗子",
+       "别烦我，滚"
+      ],
+      "negative": [
+       "这个价格我再考虑一下"
+      ],
+      "ambiguous": [
+       "怎么这么久才回我"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "rule_id": "negative_low_cooperation",
+   "dimension": "配合度低",
+   "options": [
+    {
+     "score": -1,
+     "criteria": "敷衍回复、拒绝提供基础信息、长期不配合沟通",
+     "examples": {
+      "positive": [
+       "嗯",
+       "哦，再说吧（多次，且拒答基础信息）"
+      ],
+      "negative": [
+       "好的，我把我这边情况发你"
+      ],
+      "ambiguous": [
+       "最近有点忙"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "rule_id": "negative_low_recognition",
+   "dimension": "认可度低",
+   "options": [
+    {
+     "score": -1,
+     "criteria": "明确否定在线教育、课程、公司或品牌",
+     "examples": {
+      "positive": [
+       "在线教育都是骗人的",
+       "你们这个品牌我没听过，不靠谱"
+      ],
+      "negative": [
+       "你们的师资我觉得不错"
+      ],
+      "ambiguous": [
+       "我不太信网课，不过可以看看"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "rule_id": "negative_self_study",
+   "dimension": "要自学",
+   "options": [
+    {
+     "score": -2,
+     "criteria": "明确选择免费自学并拒绝付费课程",
+     "examples": {
+      "positive": [
+       "我打算自己看 B 站学，不报班了",
+       "我用免费资料就够了"
+      ],
+      "negative": [
+       "我还是想报个班系统学一下"
+      ],
+      "ambiguous": [
+       "先自学看看，不行再报"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "rule_id": "negative_no_reply_2d",
+   "dimension": "连续 2 天不回复",
+   "options": [
+    {
+     "score": -2,
+     "criteria": "销售正常跟进后，客户连续 48 小时未回复；客户已说明「忙、晚点聊」等情形不计"
+    }
+   ],
+   "engine": "rule",
+   "hint": "由后台规则引擎根据消息时间计算，不由大模型判断。"
+  },
+  {
+   "rule_id": "negative_refuse",
+   "dimension": "明确拒绝报课",
+   "options": [
+    {
+     "score": -3,
+     "criteria": "明确表示不报、不学、暂不考虑、没有需求等",
+     "examples": {
+      "positive": [
+       "我不报了",
+       "算了，不学这个了",
+       "没有需求，别再联系我"
+      ],
+      "negative": [
+       "我再考虑考虑"
+      ],
+      "ambiguous": [
+       "暂时不需要吧"
+      ]
+     }
+    }
+   ],
+   "conflict_priority": 50
+  }
+ ]
 }

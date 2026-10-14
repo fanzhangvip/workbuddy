@@ -77,6 +77,17 @@ def cleanup(staff_id, session_id):
     db.execute("""DELETE FROM negative_review WHERE assessment_id IN
                   (SELECT assessment_id FROM customer_intent_assessment
                     WHERE source_run_id = %s)""", (RUN_ID,))
+    # ⚠️ D2-1 之后回写成功会推进 `writeback_ledger`（**新增写副作用**）→ 必须同步清。
+    # 两种删法都要：① 按 assessment 关联；② **按客户关系键** ——
+    # 因为上一轮清理可能已把 assessment 删了（`last_assessment_id` 成了悬空引用），
+    # 只按 ① 会残留水位，导致下一轮「差值=0 → 不入队」把用例弄挂（实测踩到）。
+    db.execute("""DELETE FROM writeback_ledger WHERE last_assessment_id IN
+                    (SELECT assessment_id FROM customer_intent_assessment
+                      WHERE source_run_id = %s)""", (RUN_ID,))
+    db.execute("""DELETE FROM writeback_ledger WHERE relationship_key IN
+                    (SELECT c.staff_id || ':' || c.target_id FROM chat_session c
+                      WHERE c.staff_id = %s AND c.session_id = %s)""",
+               (staff_id, session_id))
     db.execute("""DELETE FROM score_writeback WHERE assessment_id IN
                   (SELECT assessment_id FROM customer_intent_assessment
                     WHERE source_run_id = %s)""", (RUN_ID,))

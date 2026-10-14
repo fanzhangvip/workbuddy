@@ -86,6 +86,37 @@ class RuleCheck(BaseModel):
         return self
 
 
+class ProfileField(BaseModel):
+    """客户画像的**单个结构化槽位**（架构 §2.3 E3）。
+
+    改造前画像只有一段自由文本 `customer_profile_summary`：无法查询、无法对比变化、
+    也无法回答「这个结论依据哪句话」。现在每个槽位都带 ``evidence_ids``。
+
+    槽位沿用记忆方案 M-B（固定 8 个，缺值写「未提及」而**不是**空串）——
+    固定槽位让「上次说有预算、这次没提」这种**信息消失**变得可检测（详见 §4.5.1 ①）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: 槽位名，必须是 PROFILE_SLOTS 之一
+    slot: str = Field(min_length=1)
+    #: 槽位取值（客户原话归纳；未提及写「未提及」）
+    value: str = ""
+    #: 依据的聊天记录编号，如 ["#012"]（与命中项同一套回链机制）
+    evidence_ids: List[str] = Field(default_factory=list)
+
+
+#: E3 画像固定槽位（记忆方案 M-B）：不随模型自由发挥增减，便于跨次对比
+PROFILE_SLOTS = ("position", "company", "city", "need", "budget",
+                 "timeline", "concerns", "competitor")
+
+#: 槽位的中文名（提示词与前端展示共用）
+PROFILE_SLOT_CN = {
+    "position": "岗位", "company": "公司", "city": "城市/地域", "need": "需求",
+    "budget": "预算", "timeline": "时间要求", "concerns": "顾虑", "competitor": "竞品/对比",
+}
+
+
 class JudgmentOut(BaseModel):
     """**模型层契约** —— 模型必须原样满足这个结构。
 
@@ -97,6 +128,9 @@ class JudgmentOut(BaseModel):
     rule_checks: List[RuleCheck] = Field(min_length=1)
     customer_profile_summary: str = ""
     sales_strategy: str = ""
+    #: E3（架构 §2.3）结构化画像；**可为空列表**（老提示词/模型不给时不报错，
+    #: 避免为了一个可选字段触发修复重试）
+    customer_profile: List[ProfileField] = Field(default_factory=list)
     # 模型自报置信度：仅留档，**不参与任何决策**（决策用覆盖率与规则命中）
     model_confidence: float = 0.5
 
@@ -142,6 +176,8 @@ class ItemOut(BaseModel):
     evidence_message_ids: List[str] = Field(default_factory=list)
     #: 部分编号回链不上时的留痕（对应不上就丢掉，但不装作没发生过）
     invalid_evidence_ids: List[str] = Field(default_factory=list)
+    #: A1（架构 §7.2）逐项证据回链结果：1=全部成功 / 2=部分成功 / 0=未校验
+    evidence_verified: int = 0
 
 
 class AssessmentOut(BaseModel):
@@ -172,6 +208,9 @@ class AssessmentOut(BaseModel):
     profile_summary: str = ""
     sales_strategy: str = ""
     model_confidence: float = 0.0
+    #: E3（架构 §2.3）：结构化画像（8 槽位 + 逐槽位证据编号）。
+    #: `profile_summary` 降级为「自由文本补充」，结构化字段才是可查询、可对比的那一份。
+    profile_struct: List[dict] = Field(default_factory=list)
 
     # ---- 代码判定 ----
     #: 负分项存在、或存在漏检规则时置 true（收回了模型的自证权）
@@ -181,6 +220,13 @@ class AssessmentOut(BaseModel):
     rule_version: str = ""
     prompt_version: str = ""
     schema_version: str = SCHEMA_VERSION
+    #: B1（架构 §7.2）：实际返回的模型名（取响应里的 ``model``，非配置值）
+    model_name: str = ""
+    #: 闸2（架构 §7.2）：模型的**逐维度原始表态**落库（此前只在契约内校验、不落库）。
+    #: 有了它可回答「模型对哪条规则表了什么态、给的分值是多少」，
+    #: 而 `unchecked_rules` 只能回答「漏了哪些」。元素形如
+    #: ``{"rule_id": str, "hit": bool, "score": int|None, "evidence_ids": [...], "reason": str}``
+    rule_checks: List[dict] = Field(default_factory=list)
     current_date: str = ""
     analyzed_at: int = 0
     #: 契约实际消耗的 LLM 调用次数：1 = 一次通过，>1 = 触发过修复重试

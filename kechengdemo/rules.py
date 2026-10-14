@@ -168,22 +168,88 @@ def grade_of(raw_score: int, rules: dict) -> dict:
 
 
 def rules_brief_for_prompt(rules: dict) -> str:
-    """把规则表转成给大模型看的精简文本。"""
+    """把规则表转成给大模型看的精简文本。
+
+    **闸1/F5（架构 §2.3）**：规则除了自然语言 ``criteria``，还可带
+    ``examples``（``positive`` / ``negative`` / ``ambiguous`` 三档）。
+    为什么加示例：``criteria`` 一句话在边界情况上必然有歧义（"在职编程技术岗"
+    对"运维算不算"没有答案），而示例把边界钉死 —— 这是提升判定一致率最便宜的手段。
+    没有 ``examples`` 时输出与改造前**逐字一致**（向后兼容）。
+    """
+    def _opt(o, sign=""):
+        t = f"{sign}{o['score']}：{o['criteria']}"
+        ex = o.get("examples") or {}
+        if not ex:
+            return t
+        parts = []
+        # 三档示例：分别代表「典型命中」「明确不命中」「看着像但不算」
+        for key, label in (("positive", "命中示例"), ("negative", "不命中示例"),
+                           ("ambiguous", "边界示例")):
+            vals = [str(x).strip() for x in (ex.get(key) or []) if str(x).strip()]
+            if vals:
+                parts.append(f"{label}：" + "｜".join(vals))
+        return t + ("（" + "；".join(parts) + "）" if parts else "")
+
     lines = []
     lines.append(f"规则版本：{rules.get('rule_version')}")
     lines.append("")
     lines.append("【加分规则】")
     for r in rules.get("positive_rules", []):
-        opts = "；".join(f"+{o['score']}：{o['criteria']}" for o in r.get("options", []))
+        opts = "；".join(_opt(o, "+") for o in r.get("options", []))
         lines.append(f"- {r['rule_id']}（{r['dimension']}）：{opts}")
     lines.append("")
     lines.append("【扣分规则】")
     for r in rules.get("negative_rules", []):
-        opts = "；".join(f"{o['score']}：{o['criteria']}" for o in r.get("options", []))
+        opts = "；".join(_opt(o) for o in r.get("options", []))
         extra = "（此项由系统规则引擎计算，你不需要判断）" if r.get("engine") == "rule" else ""
         lines.append(f"- {r['rule_id']}（{r['dimension']}）：{opts}{extra}")
     lines.append("")
     lines.append("【冲突规则】")
+    # 闸1/F5：`conflict_priority` 让「两条规则同时像命中时先算哪条」可配置，
+    # 而不是写死在提示词里（原来只有两条硬编码的说明文字）。
+    prios = sorted([r for r in rules.get("positive_rules", []) + rules.get("negative_rules", [])
+                    if r.get("conflict_priority")],
+                   key=lambda x: -int(x["conflict_priority"]))
+    for r in prios[:8]:
+        tip = r.get("conflict_note") or r.get("hint") or ""
+        lines.append(f"- 优先级 {r['conflict_priority']}：{r['rule_id']}"
+                     + (f"（{tip}）" if tip else ""))
     lines.append("- 客户在具备学习或业务需求时主动问价格，按「主动问课」判断；仅在未了解价值的前提下反复只比价，才计「追着问价格」。")
     lines.append("- 「实际到课 +2」须有到课事件或到课标签佐证；仅凭聊天记录不得给出 +2，最多按「已确认参加但尚未到课 +1」。")
     return "\n".join(lines)
+
+
+def examples_coverage(rules: dict) -> dict:
+    """闸1/F5 的验收口径：多少条规则带了 ``examples``。
+
+    架构 §8 的 G1 锚点要求「被丢弃证据项占比 < 15%」这类**可统计**的判据，
+    示例覆盖率同理 —— 不统计就永远不知道「边界是不是真的钉住了」。
+    同时统计 ``conflict_priority`` 覆盖（冲突规则可配置化程度）。
+    """
+    total = with_ex = with_prio = with_any_ex = 0
+    missing = []
+    by_slot = {"positive": 0, "negative": 0, "ambiguous": 0}
+    for key in ("positive_rules", "negative_rules"):
+        for r in rules.get(key, []):
+            total += 1
+            opts = r.get("options") or []
+            covered = [o for o in opts if (o.get("examples") or {})]
+            if len(covered) == len(opts) and opts:
+                with_ex += 1
+            else:
+                missing.append(r.get("rule_id"))
+            for o in opts:
+                ex = o.get("examples") or {}
+                if ex:
+                    with_any_ex += 1
+                for slot in by_slot:
+                    if [x for x in (ex.get(slot) or []) if str(x).strip()]:
+                        by_slot[slot] += 1
+            if r.get("conflict_priority"):
+                with_prio += 1
+    return {"rules_total": total, "rules_with_examples": with_ex,
+            "options_with_examples": with_any_ex,
+            "rules_with_conflict_priority": with_prio,
+            "examples_by_kind": by_slot,
+            "missing_rules": missing,
+            "coverage": round(with_ex / total, 4) if total else 0.0}

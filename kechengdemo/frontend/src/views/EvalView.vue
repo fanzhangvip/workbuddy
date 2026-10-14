@@ -17,6 +17,8 @@ const KINDS = [
 ]
 
 const stats = ref({})
+// E5 meta-loop：按 rule 的误报率排行 + 复核回流进度
+const metaLoop = ref(null)
 const gate = ref(null)
 const evStatus = ref({})
 const tab = ref('')
@@ -178,12 +180,73 @@ const GTAG = { S: 'red', A: 'orange', B: 'blue', C: 'green', D: '' }
 const pct = (v) => (v === null || v === undefined) ? '-' : (v * 100).toFixed(1) + '%'
 const fmtMetric = (k, v) => (v === null || v === undefined) ? '-' : (k === 'rule_f1' || k === 'precision' || k === 'recall' || k === 'grade_acc' || k === 'fp_case_rate' ? pct(v) : v)
 
-onMounted(() => { refresh(); loadRules(); timer = setInterval(() => { refresh() }, 8000) })
+async function loadMetaLoop() {
+  try { metaLoop.value = await api.evalMetaLoop() } catch (e) { /* 未就绪时忽略 */ }
+}
+
+async function runBackflow() {
+  busy.value = true; msg.value = ''
+  try {
+    const r = await api.evalBackflow({ limit: 100 })
+    msg.value = `回流完成：新增 ${r.created} 条，跳过 ${r.skipped} 条（人工判断已进入回归集）`
+    loadMetaLoop()
+  } catch (e) { error.value = e.message }
+  busy.value = false
+}
+
+onMounted(() => { refresh(); loadRules(); loadMetaLoop(); timer = setInterval(() => { refresh() }, 8000) })
 onUnmounted(() => clearInterval(timer))
 </script>
 
 <template>
   <div class="page">
+    <!-- E5 meta-loop：把人工判断变回系统改进 -->
+    <div class="card" style="margin-bottom:16px" v-if="metaLoop">
+      <div class="card-head">meta-loop · 误报率排行与回流（E5/G8）
+        <span class="tag" style="margin-left:8px">{{ metaLoop.ranking?.reviews_with_human || 0 }} 条人工结论</span>
+        <span class="tag" style="margin-left:6px">
+          回流 {{ metaLoop.review?.backflowed || 0 }} / {{ metaLoop.review?.done || 0 }} 已复核
+        </span>
+        <button class="btn sm" style="margin-left:auto" :disabled="busy" @click="runBackflow">
+          回流改判到评估集
+        </button>
+      </div>
+      <div class="card-body" style="display:grid;gap:12px">
+        <div class="muted" style="font-size:11.5px;line-height:1.7">
+          只统计<b>人工已完成</b>的复核（否则等于拿 AI 自己的判断当标准答案）。
+          <b>误报率</b>=人工否掉的命中项 / AI 命中项总数；越高说明该规则越爱乱报 →
+          据此改 <code>rules.json</code> 的 criteria/examples。
+          <b>回流</b>只收改判过的（与 AI 一致的不回流，那只是确认、无新信息）。
+        </div>
+        <div v-if="metaLoop.ranking?.alerts?.length" class="alert warn" style="font-size:12px">
+          有 <b>{{ metaLoop.ranking.alerts.length }}</b> 条规则误报率超过
+          {{ Math.round((metaLoop.ranking.threshold || 0) * 100) }}%，建议优先复核其 criteria/examples。
+        </div>
+        <div v-if="metaLoop.ranking?.rules?.length" style="overflow:auto">
+          <table style="width:100%;font-size:12px">
+            <thead><tr class="muted">
+              <th style="text-align:left">规则</th><th style="text-align:right">AI命中</th>
+              <th style="text-align:right">人工保留</th><th style="text-align:right">误报</th>
+              <th style="text-align:right">漏报</th><th style="text-align:right">误报率</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="r in metaLoop.ranking.rules" :key="r.rule_id">
+                <td>{{ r.rule_id }} <span v-if="r.alert" class="tag red">超阈值</span></td>
+                <td style="text-align:right">{{ r.ai_hits }}</td>
+                <td style="text-align:right">{{ r.human_keeps }}</td>
+                <td style="text-align:right" :style="{ color: r.false_positives ? 'var(--danger)' : '' }">{{ r.false_positives }}</td>
+                <td style="text-align:right">{{ r.misses }}</td>
+                <td style="text-align:right">{{ Math.round((r.fp_rate || 0) * 100) }}%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="muted" style="font-size:12px">
+          暂无人工作出无效结论的复核记录（改判过的复核会出现在这里）。
+        </div>
+      </div>
+    </div>
+
     <!-- 顶部：指标 + 门禁 -->
     <div class="card" style="margin-bottom:16px">
       <div class="card-head">评估集 · 判得准不准

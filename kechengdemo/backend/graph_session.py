@@ -87,10 +87,18 @@ def n_prepare(svc, state: SessionState) -> dict:
     ctx = ss.build_context(staff_id, session_id,
                            session_meta={"staff_id": staff_id, "session_id": session_id},
                            rel_key=f"{staff_id}:{cand['target_id']}")
-    # ① before_llm_call（架构 §2.4 H3）：与旧路径同一判定入口，保证口径一致
+    # ① before_llm_call（架构 §2.4 H3）：与旧路径同一判定入口，保证口径一致。
+    # B4 三口径（保留条数 / 客户开口数 / 文本长度）与旧路径**必须完全一致**，
+    # 否则 `test_graph_session_parity` 会立刻暴露差异。
+    _st = ctx["stats"]
     gate = hooks.before_llm_call(
-        kept=ctx["stats"]["kept"],
-        min_kept=ss.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4))
+        kept=_st["kept"],
+        min_kept=ss.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4),
+        customer_msgs=_st.get("customer_msgs"),
+        min_customer_msgs=ss.setting_int("ctx_min_customer_msgs", "CTX_MIN_CUSTOMER_MSGS", 1),
+        text_len=_st.get("text_len"),
+        min_effective_chars=ss.setting_int("ctx_min_effective_chars",
+                                           "CTX_MIN_EFFECTIVE_CHARS", 0))
     if gate.denied:
         svc._note_hook(gate)
         return {"ctx": ctx, "outcome": "skipped"}

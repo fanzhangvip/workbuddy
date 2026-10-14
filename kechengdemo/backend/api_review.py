@@ -137,15 +137,39 @@ def submit(payload: dict = Body(default={})):
                human_note=%s, reviewer=%s, status='done', reviewed_at=now(), updated_at=now()
              WHERE id=%s""",
         (db.as_json(valid), total, note, reviewer, rid))
-    db.execute("UPDATE customer_intent_assessment SET review_status='done' WHERE assessment_id=%s",
-               (r["assessment_id"],))
+    # E4（架构 §7.2 / §6.3）：人工验证状态落列 —— 此前**这一列建了但没有任何写入方**，
+    # 于是「模型算的置信度」与「人到底认同没有」永远分不清。
+    # 三种结果语义不同，必须分开：
+    #   · verified  —— 人工确认，且与模型结论一致（总分相同）
+    #   · corrected —— 人工改判过（总分不同）→ 这是 meta-loop 的**误报样本来源**
+    #   · rejected  —— 人工认为该条不该扣分（修正后合计为 0）
+    ai_total = int(r.get("ai_negative_total") or 0)
+    if total == 0:
+        vstatus = "rejected"
+    elif total == ai_total:
+        vstatus = "verified"
+    else:
+        vstatus = "corrected"
+    db.execute(
+        """UPDATE customer_intent_assessment
+              SET review_status='done', verification_status=%s WHERE assessment_id=%s""",
+        (vstatus, r["assessment_id"]))
     db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
                (reviewer, "review_submit", str(rid),
                 db.as_json({"human_negative_total": total, "items": valid,
                             "ai_negative_total": r["ai_negative_total"],
-                            "note": note})))
-    return {"ok": True, "human_negative_total": total,
-            "invalid_items": bad, "status": "done"}
+                            "verification_status": vstatus, "note": note})))
+    # E5 meta-loop：改判过的复核**立刻回流评估集**（人工判断是最贵的资源，不该只用一次）。
+    # 失败不影响复核提交本身 —— 回流是「后续改进」，不是「本次结论」。
+    backflow = {}
+    if vstatus in ("corrected", "rejected"):
+        try:
+            import meta_loop
+            backflow = meta_loop.link_review_to_case(rid)
+        except Exception as e:
+            backflow = {"error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "human_negative_total": total, "verification_status": vstatus,
+            "invalid_items": bad, "status": "done", "backflow": backflow}
 
 
 # ---------------- 修改状态 ----------------
