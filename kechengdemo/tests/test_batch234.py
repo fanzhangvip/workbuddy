@@ -127,6 +127,43 @@ def test_e2_is_current():
         _cleanup()
 
 
+def test_e2_selfheal():
+    """E2 自愈：**删掉被取代列之后，旧行必须能恢复 current**。
+
+    这不是假想场景 —— 生产实测出现过 1 例（#855）：新行被删除（测试清理），旧行的
+    `is_current` 永久为 false、`superseded_by` 悬空 → 该客户从列表里静默消失。
+    """
+    print("\n--- E2 自愈：无 current 行 / 悬空 superseded_by ---")
+    s = _session()
+    cand = dict(s); cand["target_id"] = "B234TEST_E2H"
+    try:
+        _cleanup()
+        mk = lambda raw, g: ({"raw_score": raw, "positive_total": raw, "negative_total": 0},
+                             {"grade": g, "priority": "", "advice": ""})
+        a1 = ss.service._persist_assessment(0, cand, _res(), *mk(2, "B"), False, [],
+                                            _res()["positive_items"], [], "off")
+        a2 = ss.service._persist_assessment(0, cand, _res(), *mk(6, "S"), False, [],
+                                            _res()["positive_items"], [], "off")
+        # 模拟「新行被外部删除」：留下旧行非 current、superseded_by 悬空
+        db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (a2,))
+        rows = db.query("""SELECT is_current, superseded_by FROM customer_intent_assessment
+                            WHERE relationship_key LIKE %s""", ("%B234TEST_E2H",))
+        check("★ 复现破损：该客户一行 current 都没有",
+              len(rows) == 1 and rows[0]["is_current"] is False, str(rows))
+
+        res = ss.repair_current_flags()
+        rows = db.query("""SELECT is_current, superseded_by FROM customer_intent_assessment
+                            WHERE relationship_key LIKE %s""", ("%B234TEST_E2H",))
+        check("★ 自愈：旧行恢复 current 且清掉悬空指针",
+              rows[0]["is_current"] is True and rows[0]["superseded_by"] is None, str(rows))
+        check("自愈结果含修复计数", res.get("no_current_fixed", 0) >= 1, str(res))
+        again = ss.repair_current_flags()
+        check("自愈幂等（再跑 0 改动）",
+              again == {"no_current_fixed": 0, "dangling_cleared": 0}, str(again))
+    finally:
+        _cleanup()
+
+
 # ============================================================ B4
 
 def test_b4_effective():
@@ -539,6 +576,7 @@ def main():
     _T0 = (db.query_one("SELECT now() AS t") or {}).get("t")
     try:
         test_e2_is_current()
+        test_e2_selfheal()
         test_b4_effective()
         test_e3_profile()
         test_examples()
