@@ -65,7 +65,10 @@ def test_version_command_runs(capsys):
 
     assert cli_main.main(["-v"]) == 0
     out = capsys.readouterr().out
-    assert "12306 抢票助手" in out
+    assert "12306 抢票助手" not in out, "旧品牌名还在 banner 里"
+    assert "智泊AI抢票助手" in out
+    assert "智泊AI版权所有，仅限智泊AI学员使用" in out
+    assert "https://www.zhipoai.com/" in out
     assert "web" in out and "desktop" in out
 
 

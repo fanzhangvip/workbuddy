@@ -26,6 +26,18 @@ if not (PROJECT_ROOT / "main.py").exists():
     raise SystemExit(f"打包配置错误：在 {PROJECT_ROOT} 下找不到 main.py")
 
 # --------------------------------------------------------------------------- #
+# 版本形态（正式版 / 教学演示版）
+#
+# 由 scripts/build_exe.py 通过环境变量传入 —— **spec 不自己判断**：
+# 「是不是演示版」的唯一来源是 ticket_helper/edition.py，打包脚本负责在打包前
+# 把它的 DEMO_MODE 打开、打包后还原；这里只是把产物名与 exe 文件属性跟着改掉。
+# 产物名带 Demo 后缀，两个版本可以并排放在 dist 下互不覆盖。
+# --------------------------------------------------------------------------- #
+_build_name = os.environ.get("TICKET_HELPER_BUILD_NAME", "").strip() or "TicketHelper"
+_edition_label = os.environ.get("TICKET_HELPER_EDITION", "").strip()
+_name_suffix = f"（{_edition_label}）" if _edition_label else ""
+
+# --------------------------------------------------------------------------- #
 # 数据文件：源码路径 -> 包内相对目录
 # --------------------------------------------------------------------------- #
 datas = [
@@ -186,7 +198,7 @@ excludes = [
 # --------------------------------------------------------------------------- #
 # 版本信息（UI-14：文件说明/版本号，同时有助于降低杀软误报）
 # --------------------------------------------------------------------------- #
-version_info = """
+version_info = f"""
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(1, 0, 0, 0),
@@ -202,13 +214,14 @@ VSVersionInfo(
     StringFileInfo([
       StringTable(
         u'080404B0',
-        [StringStruct(u'CompanyName', u'个人项目'),
-         StringStruct(u'FileDescription', u'12306 抢票助手（个人自用学习工具）'),
+        [StringStruct(u'CompanyName', u'智泊AI'),
+         StringStruct(u'FileDescription', u'智泊AI抢票助手{_name_suffix}（智泊AI学员专用）'),
          StringStruct(u'FileVersion', u'1.0.0.0'),
          StringStruct(u'InternalName', u'ticket_helper'),
-         StringStruct(u'LegalCopyright', u'仅供个人学习交流使用，禁止商业用途'),
-         StringStruct(u'OriginalFilename', u'TicketHelper.exe'),
-         StringStruct(u'ProductName', u'12306 抢票助手'),
+         StringStruct(u'LegalCopyright', u'智泊AI版权所有，仅限智泊AI学员使用'),
+         StringStruct(u'Comments', u'https://www.zhipoai.com/'),
+         StringStruct(u'OriginalFilename', u'{_build_name}.exe'),
+         StringStruct(u'ProductName', u'智泊AI抢票助手{_name_suffix}'),
          StringStruct(u'ProductVersion', u'1.0.0.0')])
     ]),
     VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
@@ -286,7 +299,7 @@ if os.environ.get("TICKET_HELPER_ONEFILE") == "1":
         a.binaries,
         a.datas,
         [],
-        name="TicketHelper",
+        name=_build_name,
         console=False,
         exclude_binaries=False,
         **_exe_kwargs,
@@ -294,12 +307,12 @@ if os.environ.get("TICKET_HELPER_ONEFILE") == "1":
 else:
     # 双击即用的图形界面版（无控制台；不带参数启动会直接打开桌面客户端）
     exe_gui = EXE(  # noqa: F821
-        pyz, a.scripts, [], name="TicketHelper", console=False, exclude_binaries=True, **_exe_kwargs
+        pyz, a.scripts, [], name=_build_name, console=False, exclude_binaries=True, **_exe_kwargs
     )
 
     # 命令行版（保留控制台，用于 web/grab/doctor/init/mock 等子命令）
     exe_cli = EXE(  # noqa: F821
-        pyz, a.scripts, [], name="TicketHelper-CLI", console=True, exclude_binaries=True, **_exe_kwargs
+        pyz, a.scripts, [], name=f"{_build_name}-CLI", console=True, exclude_binaries=True, **_exe_kwargs
     )
 
     coll = COLLECT(  # noqa: F821
@@ -311,5 +324,5 @@ else:
         strip=False,
         upx=False,
         upx_exclude=[],
-        name="TicketHelper",
+        name=_build_name,
     )

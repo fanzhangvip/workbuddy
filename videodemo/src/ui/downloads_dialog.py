@@ -37,6 +37,7 @@ from src.core.downloader import (
     DownloadTask,
     format_size,
 )
+from src.ui.theme import TOKENS
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -71,7 +72,8 @@ class DownloadsDialog(QDialog):
         self.tree.setColumnWidth(1, 200)
 
         self.label_summary = QLabel("")
-        self.label_summary.setStyleSheet("color: palette(mid);")
+        self.label_summary.setWordWrap(True)
+        self.label_summary.setStyleSheet(f"color: {TOKENS['text_dim']};")
 
         self.btn_open_dir = QPushButton("打开下载目录")
         self.btn_open_file = QPushButton("打开文件")
@@ -80,18 +82,35 @@ class DownloadsDialog(QDialog):
         self.btn_clear = QPushButton("清除已结束")
         self.btn_cancel_all = QPushButton("全部取消")
 
+        # 六个按钮原本挤在一行，窗口一窄"全部取消"就被裁掉——而它恰恰是
+        # 出问题时最想点的那个。分成两组：「查看目录/文件」与「任务操作」，
+        # 中间留伸缩空间；窄到 620px 以下时优先收起查看类按钮
+        # （它们只是省一步到资源管理器，不影响下载本身）。
+        view_row = QHBoxLayout()
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_row.setSpacing(6)
+        view_row.addWidget(self.btn_open_file)
+        view_row.addWidget(self.btn_open_dir)
+
+        self._view_buttons = [self.btn_open_file, self.btn_open_dir]
+
         actions = QHBoxLayout()
-        for button in (
-            self.btn_open_dir, self.btn_open_file, self.btn_cancel,
-            self.btn_retry, self.btn_clear, self.btn_cancel_all,
-        ):
-            actions.addWidget(button)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(6)
+        actions.addLayout(view_row)
         actions.addStretch(1)
+        actions.addWidget(self.btn_cancel)
+        actions.addWidget(self.btn_retry)
+        actions.addWidget(self.btn_clear)
+        actions.addWidget(self.btn_cancel_all)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
         layout.addWidget(self.tree, 1)
         layout.addWidget(self.label_summary)
         layout.addLayout(actions)
@@ -111,6 +130,18 @@ class DownloadsDialog(QDialog):
         for task in manager.tasks():
             self._on_added(task)
         self._refresh_summary()
+
+    # ------------------------------------------------------------ 窄窗口收缩
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        """窄窗口下先收起"查看类"按钮，保住任务操作按钮的完整。
+
+        「打开文件 / 打开下载目录」只是省一步去资源管理器，收起来也不影响下载；
+        而「全部取消」「重试选中」在出问题时是必须能点到的，所以它们优先保留。
+        """
+        super().resizeEvent(event)
+        show_view = event.size().width() >= 620
+        for button in self._view_buttons:
+            button.setVisible(show_view)
 
     # ------------------------------------------------------------ 行管理
     def _row_of(self, task_id: int) -> int:

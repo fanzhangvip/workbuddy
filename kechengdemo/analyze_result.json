@@ -1,0 +1,80 @@
+{
+  "rule_version": "v1.0",
+  "analyzed_at": 1791782079,
+  "raw_score": 9,
+  "positive_total": 9,
+  "negative_total": 0,
+  "grade": "S",
+  "priority": "最高",
+  "advice": "每日重点跟进；课后 30 分钟内跟进并推动关单。",
+  "positive_items": [
+    {
+      "rule_id": "positive_coder_profile",
+      "dimension": "程序员或转型画像",
+      "polarity": "positive",
+      "score": 2,
+      "evidence": [
+        "客户: 你好，我是做 Java 后端的，想问下你们的大模型课程怎么上"
+      ],
+      "reason": "明确自述为在职 Java 后端开发，属于在职编程技术岗，符合 +2 档"
+    },
+    {
+      "rule_id": "positive_clear_work_need",
+      "dimension": "明确的工作具体需求",
+      "polarity": "positive",
+      "score": 2,
+      "evidence": [
+        "客户: 我们公司下季度要上 AI 客服项目，我需要在 2 个月内能独立上手做出来"
+      ],
+      "reason": "有明确可落地的业务场景（公司 AI 客服项目）及独立交付目标，需求具体"
+    },
+    {
+      "rule_id": "positive_urgency",
+      "dimension": "紧迫性高",
+      "polarity": "positive",
+      "score": 1,
+      "evidence": [
+        "客户: 我需要在 2 个月内能独立上手做出来"
+      ],
+      "reason": "时间要求为 2 个月，属于 1-3 个月的中期计划，按 +1 档计"
+    },
+    {
+      "rule_id": "positive_learning",
+      "dimension": "已学习一段时间",
+      "polarity": "positive",
+      "score": 1,
+      "evidence": [
+        "客户: 可以，我之前自己学过一点 LangChain，也调过 API"
+      ],
+      "reason": "已有 LangChain 与 API 实操接触，属于已接触大模型技术栈"
+    },
+    {
+      "rule_id": "positive_high_tier_city",
+      "dimension": "高转地区",
+      "polarity": "positive",
+      "score": 1,
+      "evidence": [
+        "客户: 我在杭州，公开课几点？我尽量参加"
+      ],
+      "reason": "客户自述所在地为杭州，属新一线城市"
+    },
+    {
+      "rule_id": "positive_ask_course",
+      "dimension": "主动问课",
+      "polarity": "positive",
+      "score": 2,
+      "evidence": [
+        "客户: 你好，我是做 Java 后端的，想问下你们的大模型课程怎么上",
+        "客户: 课程都包含什么内容？大概多少钱？"
+      ],
+      "reason": "客户主动询问上课方式、课程内容与价格，属主动问课，且是在具备明确业务需求前提下问价，按主动问课判定"
+    }
+  ],
+  "negative_items": [],
+  "invalid_items": [],
+  "customer_profile_summary": "客户为在职 Java 后端开发，身处杭州（新一线）。因公司下季度要上线 AI 客服项目，需在 2 个月内独立上手大模型相关开发，业务需求明确、动机偏项目驱动。已自学过一点 LangChain 并调用过 API，具备一定技术基础，处于「明确需求 + 初阶基础」阶段。当前顾虑与信息缺口：课程内容范围、价格体系尚未确认；对销售引导的今晚公开课表示「尽量参加」，到课意愿尚未锁定，未表达任何负面态度。",
+  "sales_strategy": "1）沟通重点：围绕其「AI 客服项目 + 2 个月独立交付」的痛点做场景化方案讲解，重点展示提示词、RAG、Agent 实战与后端技术栈（Java）的衔接方式，以及能否满足其 2 个月上手节奏，避免单纯罗列大纲。2）课程价值与价格：结合其项目落地目标说明课程服务与配套（直播节奏、实战项目、答疑），在价值讲清后再确认价格接受度。3）邀课：尽快确认今晚公开课具体时间与参与方式（可发日程提醒），争取公开课后当次或次日完成一次 1v1 需求诊断，趁热推进正课转化。4）补充画像：同步了解其项目团队规模、技术选型与预算决策链，评估是否为其本人付费。5）建议跟进时间：公开课当天课前 1-2 小时提醒，课后当晚或次日上午回访。",
+  "confidence": 0.88,
+  "needs_human_review": false,
+  "conversation_source": "样例-高意向客户"
+}

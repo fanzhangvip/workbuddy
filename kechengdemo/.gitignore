@@ -1,0 +1,25 @@
+# ---- 虚拟环境 / 依赖锁 ----
+.venv/
+requirements.lock.txt
+
+# ---- IDE / 编辑器 ----
+.vscode/
+.idea/
+.workbuddy/
+
+# ---- 凭据与登录态（勿提交）----
+.env
+.cache/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ---- 前端 ----
+node_modules/
+frontend/dist/
+
+# ---- 运行时产物 ----
+*.log
+导出/

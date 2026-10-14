@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>面试执行手册 · 宋先栋 · 智能体课程讲师</title>
+<style>
+  :root{
+    --ink:#1f2328; --ink2:#4a5058; --ink3:#7d848d; --line:#e3e6ea;
+    --bg:#ffffff; --soft:#f6f7f9; --soft2:#fafbfc;
+    --red:#c0392b; --redbg:#fdf0ee; --green:#1a7f5a; --greenbg:#eef7f2;
+    --amber:#9a6a00; --amberbg:#fdf6e6; --blue:#1f5c99; --bluebg:#eef4fb;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:#eef0f3;color:var(--ink);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei","Segoe UI",Roboto,sans-serif;
+    font-size:14px;line-height:1.7;}
+  .page{max-width:920px;margin:28px auto;background:var(--bg);border:1px solid var(--line);
+    border-radius:10px;overflow:hidden;}
+  .head{padding:32px 40px 26px;border-bottom:3px solid var(--ink);}
+  .head .kicker{font-size:12px;letter-spacing:.16em;color:var(--ink3);text-transform:uppercase;}
+  .head h1{margin:8px 0 6px;font-size:26px;font-weight:700;letter-spacing:.01em;}
+  .head .meta{font-size:13px;color:var(--ink2);}
+  .head .meta span{margin-right:18px;white-space:nowrap;}
+  .body{padding:8px 40px 46px;}
+  h2{font-size:17px;font-weight:700;margin:34px 0 12px;padding-left:11px;
+    border-left:4px solid var(--ink);line-height:1.3;}
+  h3{font-size:14.5px;font-weight:700;margin:22px 0 8px;}
+  p{margin:8px 0;}
+  .lead{background:var(--soft);border-radius:8px;padding:16px 18px;font-size:14px;}
+  .verdict{border:1px solid var(--line);border-left:5px solid var(--red);
+    background:var(--redbg);border-radius:8px;padding:16px 18px;margin:14px 0;}
+  .verdict b{color:var(--red);}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px;}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top;}
+  th{background:var(--soft);font-weight:700;color:var(--ink2);font-size:12.5px;}
+  td.c{text-align:center;white-space:nowrap;}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:4px;font-weight:700;
+    white-space:nowrap;}
+  .t-red{background:var(--redbg);color:var(--red);}
+  .t-green{background:var(--greenbg);color:var(--green);}
+  .t-amber{background:var(--amberbg);color:var(--amber);}
+  .t-blue{background:var(--bluebg);color:var(--blue);}
+  .q{border:1px solid var(--line);border-radius:8px;padding:0;margin:14px 0;overflow:hidden;}
+  .q .qh{background:var(--soft);padding:9px 14px;font-weight:700;font-size:13.5px;
+    border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:baseline;}
+  .q .qh .id{color:var(--ink3);font-weight:700;font-size:12px;white-space:nowrap;}
+  .q .qb{padding:11px 14px;}
+  .q .row{display:flex;gap:8px;margin:6px 0;}
+  .q .row .lb{flex:0 0 62px;color:var(--ink3);font-size:12.5px;font-weight:700;padding-top:1px;}
+  .q .row .tx{flex:1;font-size:13px;}
+  .anchor{margin-top:8px;border-top:1px dashed var(--line);padding-top:8px;font-size:12.5px;color:var(--ink2);}
+  .anchor b{color:var(--ink);}
+  .flag{color:var(--red);font-weight:700;}
+  ul{margin:8px 0;padding-left:22px;}
+  li{margin:5px 0;}
+  .flow{list-style:none;padding:0;margin:12px 0;counter-reset:s;}
+  .flow li{position:relative;padding:12px 14px 12px 56px;border:1px solid var(--line);
+    border-radius:8px;margin-bottom:8px;background:var(--soft2);counter-increment:s;}
+  .flow li::before{content:counter(s);position:absolute;left:14px;top:12px;
+    width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;
+    font-size:12.5px;font-weight:700;display:flex;align-items:center;justify-content:center;}
+  .flow .tm{float:right;font-size:12px;color:var(--ink3);font-weight:700;}
+  .flow .ttl{font-weight:700;}
+  .flow .ds{font-size:12.5px;color:var(--ink2);}
+  .key{background:var(--bluebg);border-radius:6px;padding:2px 6px;font-weight:700;color:var(--blue);font-size:12.5px;}
+  .foot{font-size:12px;color:var(--ink3);margin-top:36px;padding-top:14px;border-top:1px solid var(--line);}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  @media print{body{background:#fff;}.page{border:none;margin:0;max-width:none;}}
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="head">
+  <div class="kicker">Interview Playbook</div>
+  <h1>面试执行手册 · 智能体课程讲师</h1>
+  <div class="meta">
+    <span>候选人：<b>宋先栋</b>（男 · 本科 · 3 年）</span>
+    <span>现职：大模型开发工程师</span>
+    <span>应聘：智能体课程讲师</span>
+  </div>
+</div>
+
+<div class="body">
+
+<h2>一、先看结论：这是一场"错位"面试</h2>
+<div class="lead">
+        他的简历技术含量<b>远超</b>岗位要求（LangGraph 多 Agent、RAG 全链路、MCP、量化成果齐全），
+        但简历里<b>没有一个字</b>提到 Coze / Dify / WorkBuddy（JD 硬门槛），
+        <b>没有一个字</b>提到教学、教程、社群、作品（这是"讲师"的立身之本）。
+        所以这场面试的重心不是"考他会不会做智能体"，而是回答三个问题：
+</div>
+<div class="verdict">
+  <b>这场面试只需回答 3 件事：</b>
+  <ol style="margin:8px 0 0;">
+    <li>他会不会用 <b>Coze / Dify / WorkBuddy</b>？——简历零证据，是 JD 硬门槛</li>
+    <li>他能不能把技术<b>讲成小白听得懂的话</b>？——深技术背景最易踩"术语碾压"的坑</li>
+    <li>他有没有<b>教学 / 内容作品</b>？——讲师岗没有作品，技术再好也要打问号</li>
+  </ol>
+</div>
+<p style="font-size:13px;color:var(--ink2);">
+  预判：他的画像更像 <span class="tag t-blue">进阶 / 代码模块讲师</span> 或 <span class="tag t-blue">课程技术顾问</span>，
+  而<b>不是零基础入门课的主讲</b>。能不能推荐，取决于上面三个问题的答案。
+</p>
+
+<h2>二、匹配度诊断（对照《面试评估表》五大维度）</h2>
+<table>
+  <thead><tr><th style="width:22%">评估维度（权重）</th><th style="width:44%">简历呈现</th><th style="width:34%">对岗位的意义 / 判断</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>一、智能体技术能力</b><br>30%</td>
+      <td>很强：LangGraph 手写状态图编排多 Agent、RAG 全链路（切分/向量/混合检索/Reranker）、Milvus、MCP + FastMCP、Claude Code 辅助开发</td>
+      <td><span class="tag t-green">技术达标</span> 但全是<b>代码栈</b>。Coze / Dify / WorkBuddy <b>零提及</b>，与课程主打教学栈不重合</td>
+    </tr>
+    <tr>
+      <td><b>二、业务理解与提效</b><br>25%</td>
+      <td>教育行业，量化很足：批改耗时 ↓50%、备课 ↓30–40%、FAQ 拦截 70%、准确率 85%→94%、工单分类 ≥95%、人工介入 75%→20%</td>
+      <td><span class="tag t-amber">部分满足</span> 数据漂亮但行业<b>仅教育一个</b>；且他是<b>开发者视角</b>，业务痛点可能来自需求方转述，需验证真懂</td>
+    </tr>
+    <tr>
+      <td><b>三、表达与教学能力</b><br>25%</td>
+      <td>无任何教学、分享、授课、带新人记录</td>
+      <td><span class="tag t-red">最大风险</span> 讲师岗的<b>一票否决项</b>，必须现场试讲验证</td>
+    </tr>
+    <tr>
+      <td><b>四、内容产出与产品思维</b><br>10%</td>
+      <td>无教程、公众号、B 站、知乎、课程作品</td>
+      <td><span class="tag t-red">零证据</span> 需现场索取作品链接</td>
+    </tr>
+    <tr>
+      <td><b>五、软素质与文化匹配</b><br>10%</td>
+      <td>简历无法体现</td>
+      <td><span class="tag t-amber">现场考察</span> 学习热情、同理心、责任心</td>
+    </tr>
+    <tr>
+      <td><b>加分项</b></td>
+      <td colspan="2">企业内训 ✗　Coze/Dify 社区创作者 ✗　转行经历 ✗　工具包/模板库 ✗　社群运营 ✗　英文跟进 ✗ —— <b>简历上加分项全部落空</b></td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>需要当场核实的 4 个可疑点</h3>
+<table>
+  <thead><tr><th style="width:30%">疑点</th><th>说明与问法</th></tr></thead>
+  <tbody>
+    <tr><td><b>1. 学历与工作时间重叠</b></td><td>本科 2021/08–2025/06 在读，但工作 2023/08 就开始了（在读期间入职）。问：这段是实习还是全职？在校期间怎么兼顾？（核实真实性）</td></tr>
+    <tr><td><b>2. 空窗期</b></td><td>2026/08 离职，至今约 2 个月。问：为什么离开？现在在做什么？</td></tr>
+    <tr><td><b>3. 岗位名不一致</b></td><td>投递岗位名为"AI 产品经理"（工作地点长沙 10–15K），简历头衔是"大模型开发工程师"。问：你到底想做<b>开发、产品还是讲师</b>？职业定位是否清晰？</td></tr>
+    <tr><td><b>4. 成果数据口径</b></td><td>简历全是"提升 X%"，一律要问<b>基线多少、谁测的、怎么算的</b>。</td></tr>
+  </tbody>
+</table>
+
+<h2>三、面试流程设计（建议 60 分钟 · 复面为主）</h2>
+<p style="font-size:13px;color:var(--ink2);">建议先做 15 分钟电话预筛（清掉学历/地点/Coze 经验等硬伤），再进 60 分钟复面。复面按下面节奏推进：</p>
+<ul class="flow">
+  <li><span class="tm">0–5 min</span><div class="ttl">开场 + 职业动机</div><div class="ds">先问"为什么从开发转讲师"——这是他的核心拐点，也决定后面所有判断的基调。</div></li>
+  <li><span class="tm">5–18 min</span><div class="ttl">技术深挖 + Coze/Dify 缺口探测</div><div class="ds">挑最复杂的项目深挖（考转译），再直接问零代码平台使用经验。见 Q1–Q4。</div></li>
+  <li><span class="tm">18–33 min</span><div class="ttl">★ 即兴试讲 + 教学能力深挖（重头戏）</div><div class="ds">3 分钟限时试讲，决定录用与否。见 Q8–Q11。</div></li>
+  <li><span class="tm">33–45 min</span><div class="ttl">业务与提效案例深挖（验数据）</div><div class="ds">挑 1–2 个简历数字当场归因，并测试跨行业迁移。见 Q5–Q7。</div></li>
+  <li><span class="tm">45–53 min</span><div class="ttl">内容产出 / 产品思维 + 软素质</div><div class="ds">强制索取作品；设计第一节课；压力测试。见 Q12–Q18。</div></li>
+  <li><span class="tm">53–60 min</span><div class="ttl">候选人提问 + 收尾</div><div class="ds">看他问什么——问课程效果、学员反馈的，多半是真想做教学；只问薪资工时的，动机存疑。</div></li>
+</ul>
+
+<h2>四、问题清单（按维度定制，含追问与评分锚点）</h2>
+
+<h3>维度一 · 智能体技术能力（权重 30%）</h3>
+
+<div class="q">
+  <div class="qh"><span>Q1　挑你最复杂的项目（知学智慧校园助手）讲讲</span><span class="id">转译初筛</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx">项目是否本人主导、能否把设计讲清楚（讲师必须能复述自己的东西）。<b>重点不是技术深度，是他能不能讲明白。</b></div></div>
+    <div class="row"><div class="lb">追问</div><div class="tx">① 为什么用 LangGraph 手写状态图，而不是用现成平台？② 那个"8 节点批改流水线"，如果给一个完全不懂技术的老师讲清楚，你会怎么讲？③ 过程中最大的坑是什么，怎么解决的？</div></div>
+    <div class="anchor"><b>5 分</b>：能讲清设计权衡 + 真实踩坑 + 效果，且能用大白话说清架构。　<b>3 分</b>：能讲功能，讲不出"为什么"。　<b>1 分</b>：只报技术名词，问细节就卡。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q2　Coze / Dify / WorkBuddy 你用过吗？做过几个？</span><span class="id">★ 硬门槛</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx"><b>JD 硬门槛：Coze 或 Dify 独立完成 3 个以上可展示项目。</b>他简历零提及，必须当面确认。</div></div>
+    <div class="row"><div class="lb">问法</div><div class="tx">"你的项目都是自己写代码（LangGraph / LangChain）。我们这门课主要教非技术的人用 Coze 和 Dify 搭智能体。这两个平台，还有 WorkBuddy，你实际用过吗？"</div></div>
+    <div class="row"><div class="lb">追问</div><div class="tx">若没用过：① 你打算多快上手并教别人？② 你既然能做代码方案，怎么看待零代码平台？什么场景该用零代码、什么场景必须上代码？</div></div>
+    <div class="anchor"><b>5 分</b>：用过且有可展示作品，能清晰讲清"零代码 vs 代码"的适用边界。　<b>3 分</b>：用过或了解，愿意快速补齐。　<b>1 分</b>：完全没碰过，且觉得"没必要/看不上"。<br>
+      <span class="flag">注意：</span>这是<b>能力缺口</b>不是态度缺口。没用过但学习意愿强、有清晰上手路径，可给 3 分并列入培养观察；否则这门课他教不了主体部分。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q3　用 60 秒，把 RAG 讲给一个完全不懂技术的人听</span><span class="id">转译测试</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx">这是他<b>最熟</b>的技术，正好测"降维"能力——越是熟的越容易不自觉堆术语。</div></div>
+    <div class="row"><div class="lb">追问</div><div class="tx">再用一个生活类比讲讲"向量检索"是什么。</div></div>
+    <div class="anchor"><b>5 分</b>：类比贴切、全程无术语、60 秒内说清。　<b>3 分</b>：能讲清但会蹦术语。　<b>1 分</b>：直接上 embedding、余弦相似度。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q4　你简历写了 MCP，用大白话讲 MCP 是干嘛的</span><span class="id">转译测试</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx">同上，考把抽象协议讲成人话的能力。</div></div>
+    <div class="anchor"><b>5 分</b>：用一个"USB 接口 / 万能插座"级别的类比讲清。　<b>1 分</b>：背协议定义。</div>
+  </div>
+</div>
+
+<h3>维度二 · 业务理解与提效经验（权重 25%）</h3>
+
+<div class="q">
+  <div class="qh"><span>Q5　"老师"这个岗位，每天最耗时、最重复、最痛的 3 件事是什么？</span><span class="id">验真懂业务</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx">他是<b>开发者视角</b>，痛点可能来自需求方二手转述。要分辨"真了解"还是"听来的"。</div></div>
+    <div class="row"><div class="lb">追问</div><div class="tx">① 这些痛点是<b>你自己观察到</b>的，还是需求方告诉你的？② 你去过学校现场吗？见过老师实际怎么改作业吗？</div></div>
+    <div class="anchor"><b>5 分</b>：能说出具体到"粒度"的细节（一份作文批改几分钟、老师最烦重复写评语）。　<b>3 分</b>：知道大概，细节含糊。　<b>1 分</b>：全是想象。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q6　"批改耗时下降 50%"，这个 50% 具体怎么算出来的？</span><span class="id">★ 验数据</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx">简历数字真实性。挑 <b>1–2 个数字</b>当场归因即可判断整体可信度。</div></div>
+    <div class="row"><div class="lb">追问</div><div class="tx">① 基线是多少（原来每份几分钟）？② 谁测的、样本多大？③ 老师真实反馈是什么？④ 有没有失败 / 被弃用的时候？</div></div>
+    <div class="anchor"><b>5 分</b>：能说清测算口径，且主动讲反面案例。　<b>3 分</b>：大概记得。　<b>1 分</b>：说不清、含糊带过。<br>
+      <span class="flag">红旗：</span>所有数字都是"提升 XX%"，但问"怎么来的"就绕开。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q7　课程要覆盖 HR、财务、律师、老师。你只有教育经验，明天让你讲一节"财务自动对账"，你怎么拆这个场景？</span><span class="id">迁移能力</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx">能不能从"自己那一摊"迁移到陌生行业——这是讲师能否覆盖多行业的命门。</div></div>
+    <div class="row"><div class="lb">追问</div><div class="tx">你用什么方法快速摸清一个陌生岗位的痛点？（听有没有方法论）</div></div>
+    <div class="anchor"><b>5 分</b>：有方法（访谈 + 流程拆解 + 找高频重复环节 + 定优先级）。　<b>3 分</b>：愿意学但没方法。　<b>1 分</b>：只会讲自己做的教育项目。</div>
+  </div>
+</div>
+
+<h3>维度三 · 表达与教学能力（权重 25%）—— 本场决定性维度</h3>
+
+<div class="q" style="border-color:#c0392b;">
+  <div class="qh" style="background:#fdf0ee;"><span>Q8　【必考 · 一票否决级】3 分钟，给一个完全不懂技术的 HR 讲明白"什么是智能体"。现在开始</span><span class="id" style="color:#c0392b;">★ 试讲</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">规则</div><div class="tx"><b>不给准备时间、不许打草稿、限时 3 分钟。</b>假装对面坐着一个连 API 都不知道的 HR。</div></div>
+    <div class="row"><div class="lb">考察点</div><div class="tx">这是讲师最核心的能力，也是他"深技术背景"最大的风险点。</div></div>
+    <div class="row"><div class="lb">追问</div><div class="tx">讲完后追一句：如果你讲完对方还是皱眉，你会换个什么说法？</div></div>
+    <div class="anchor"><b>5 分</b>：有生活类比（如"带一个新来的实习生"）、逻辑顺、全程无术语、小白真能听懂。　<b>3 分</b>：能讲清但有点绕 / 不自觉蹦术语。　<b>1 分</b>：术语堆砌，自己讲得嗨。<br>
+      <span class="flag">红旗：</span>开口就是"智能体是基于大模型的 Agent 框架，通过 Planning、Memory、Tool Use…"——直接判 1 分。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q9　你以前教过别人吗？带新人、社群分享、写教程都算</span><span class="id">教学经历</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">追问</div><div class="tx">能<b>现场给我看一个作品链接</b>吗？（公众号 / B 站 / 知乎 / Coze 主页 / 视频都行）—— 强制索取，看不到实物就按"无作品"计。</div></div>
+    <div class="anchor"><b>5 分</b>：有真实教学经历 + 学员反馈 + 可展示作品。　<b>3 分</b>：零星分享过。　<b>1 分</b>：从没教过。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q10　学员学完说"我还是不会"，你会怎么办？</span><span class="id">学员导向</span></div>
+  <div class="qb">
+    <div class="anchor"><b>5 分</b>：先从学员视角找卡点 → 给具体解法 → 反哺课程改进。　<b>1 分</b>：觉得"是学员没认真听"。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q11　你技术这么强，学员连"什么是 API"都不知道、反复问你，你会不耐烦吗？</span><span class="id">★ 同理心</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx">正对 JD 避坑项"技术很强但讲不清楚 / 习惯用术语碾压新手"。</div></div>
+    <div class="row"><div class="lb">追问</div><div class="tx">那你现在就把"API"讲给一个 HR 听，怎么讲？</div></div>
+    <div class="anchor"><b>5 分</b>：真诚 + 立刻给出贴切类比。　<b>1 分</b>：流露"这都不会"的不耐烦。</div>
+  </div>
+</div>
+
+<h3>维度四 · 内容产出与产品思维（权重 10%）</h3>
+
+<div class="q">
+  <div class="qh"><span>Q12　写过教程 / 公众号 / 知乎 / B 站吗？有作品吗？</span><span class="id">内容产出</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">追问</div><div class="tx">① 有多少人看过 / 学过？② 你怎么组织结构？③ 根据反馈改过什么？</div></div>
+    <div class="anchor"><b>5 分</b>：有高质量作品、有人看、有迭代。　<b>1 分</b>：从没写过任何教学内容。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q13　如果让你设计这门课的<b>第一节课</b>，你会怎么设计？目标是什么？</span><span class="id">产品思维</span></div>
+  <div class="qb">
+    <div class="anchor"><b>5 分</b>：第一节课就让学员做出一个能跑的东西、从"场景"而非"功能"切入、先给成就感。　<b>1 分</b>："把所有功能讲一遍，体系化教学"——这是讲师思维，不是产品思维。</div>
+  </div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q14　怎么判断一门课上得好不好？</span><span class="id">效果意识</span></div>
+  <div class="qb">
+    <div class="anchor"><b>5 分</b>："学员学完真的用起来了吗、真的提效了吗"。　<b>1 分</b>：只看"完课率"。</div>
+  </div>
+</div>
+
+<h3>维度五 · 软素质与文化匹配（权重 10%）</h3>
+
+<div class="q">
+  <div class="qh"><span>Q15　最近在学什么新 AI 工具？从哪知道的？用起来了吗？</span><span class="id">学习力</span></div>
+  <div class="qb"><div class="anchor"><b>5 分</b>：有具体工具 + 自己的信息渠道 + 实际使用体验。　<b>1 分</b>：说不出来。</div></div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q16　学员问了你也不会的问题，你怎么办？</span><span class="id">责任心</span></div>
+  <div class="qb"><div class="anchor"><b>5 分</b>：坦诚说不知道 + 承诺时间 + 真的追着回复。　<b>1 分</b>：瞎编，或"你自己百度"。</div></div>
+</div>
+
+<div class="q">
+  <div class="qh"><span>Q17　【必问】你为什么不想做开发了，想做讲师？</span><span class="id">★ 核心动机</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx">这是他从技术转教学的核心拐点。<b>有没有一个真实的故事</b>（比如自己用 AI 提效后想分享给更多人），比"我看好 AI 教育赛道"真诚得多。</div></div>
+    <div class="anchor"><b>5 分</b>：有真实故事和热情，讲得出"教人学会"的成就感。　<b>1 分</b>：只因为"行业火"或"讲师比开发轻松"。</div>
+  </div>
+</div>
+
+<div class="q" style="border-color:#c0392b;">
+  <div class="qh" style="background:#fdf0ee;"><span>Q18　【压力测试】你简历全是开发成果、也没提 Coze/Dify，我们这门课是教零基础职场人的。你凭什么能教？</span><span class="id" style="color:#c0392b;">★ 抗压</span></div>
+  <div class="qb">
+    <div class="row"><div class="lb">考察点</div><div class="tx">面对质疑的态度——是防御，还是坦诚 + 给方案。</div></div>
+    <div class="anchor"><b>5 分</b>：承认短板 + 给出清晰的补齐路径 + 讲清自己不可替代的价值（如能讲清"什么时候零代码不够用"）。　<b>1 分</b>：辩解、绕开，或贬低零代码平台。</div>
+  </div>
+</div>
+
+<h2>五、怎么考核：6 个验证手段</h2>
+<ol>
+  <li><b>即兴试讲（Q8，最高权重）</b>——单独打分。讲师岗不看试讲，其他都是空谈。</li>
+  <li><b>作品现场展示（Q9/Q12）</b>——强制。看不到实物，内容产出维度直接判 ≤2 分。</li>
+  <li><b>简历数字抽查（Q6）</b>——挑 1–2 个"X%"当场归因，判断数据是真是假。</li>
+  <li><b>转译测试（Q3/Q4/Q11）</b>——让他把 RAG、MCP、API 讲给"小白"听，现场模拟学员。</li>
+  <li><b>教学产品化小测</b>——现场让他出 <b>1 道课后作业题</b> 或设计 <b>1 个小案例</b>，看有没有把知识变成可交付内容的能力。</li>
+  <li><b>信息核实</b>——学历 / 工作时间线、2026/08 离职原因、广州→长沙意愿、投递岗位为何是"AI 产品经理"。</li>
+</ol>
+
+<h2>六、评分与决策规则</h2>
+<p style="font-size:13px;color:var(--ink2);">按《面试评估表》权重加权（技术 30% / 业务 25% / 表达教学 25% / 内容产出 10% / 软素质 10%），但<b>先过三条红线</b>：</p>
+<table>
+  <thead><tr><th style="width:14%">红线</th><th style="width:46%">触发条件</th><th>处理</th></tr></thead>
+  <tbody>
+    <tr><td class="c"><span class="tag t-red">红线 1</span></td><td>即兴试讲（Q8）&lt; 3 分</td><td><b>不通过</b>——技术再强也不行，试讲是讲师岗的生命线</td></tr>
+    <tr><td class="c"><span class="tag t-red">红线 2</span></td><td>无任何内容 / 教学作品，且无教学经历</td><td>内容产出维度封顶 ≤2 分，整体降为"待定"</td></tr>
+    <tr><td class="c"><span class="tag t-red">红线 3</span></td><td>Coze / Dify 零经验，且学习意愿弱 / 看不上零代码</td><td><b>不通过</b>或转为技术岗评估</td></tr>
+  </tbody>
+</table>
+<table>
+  <thead><tr><th style="width:24%">加权总分</th><th>建议结论</th></tr></thead>
+  <tbody>
+    <tr><td class="c">≥ 4.0</td><td><span class="tag t-green">强烈推荐</span>　试讲优秀 + 有作品 + 愿补 Coze/Dify</td></tr>
+    <tr><td class="c">3.5 – 3.9</td><td><span class="tag t-blue">推荐</span>　可先定位为"代码 / 进阶模块讲师"或带教培养</td></tr>
+    <tr><td class="c">3.0 – 3.4</td><td><span class="tag t-amber">待定</span>　给一道试讲作业题（录 5 分钟视频）再评</td></tr>
+    <tr><td class="c">&lt; 3.0</td><td><span class="tag t-red">不推荐</span></td></tr>
+  </tbody>
+</table>
+<div class="verdict">
+  <b>最终判断建议：</b>不要拿"技术强"直接兑换"能当讲师"。他极可能是 <b>"进阶 / 代码模块讲师"或课程技术顾问</b> 的好料，
+  但零基础入门课主讲的三个必要条件（会 Coze/Dify、会讲人话、有教学作品），简历上<b>一个都没证明</b>。
+  面试结论请严格绑定试讲表现和作品实物。
+</div>
+
+<h2>七、会前预筛查清单（先发 HR / 猎头，清掉硬伤）</h2>
+<ol>
+  <li>是否实际用过 <b>Coze / Dify / WorkBuddy</b>？做过几个可展示的智能体？</li>
+  <li>有无 <b>教学 / 内容作品</b>链接？（公众号、B 站、知乎、Coze 主页、课程视频）</li>
+  <li>现居广州，是否接受 <b>长沙</b>？期望薪资？</li>
+  <li>2026/08 离职原因？现在状态（在职/待业/接活）？</li>
+  <li>学历时间线：2023/08 入职时是否仍在读？是实习还是全职？</li>
+  <li>投递岗位名为"AI 产品经理"，本人真实意向是 <b>讲师 / 产品 / 开发</b> 哪一个？</li>
+</ol>
+
+<div class="foot">
+  本手册基于候选人简历（宋先栋 · 大模型开发工程师）与《智能体课程讲师》岗位 JD / 评估表 / 题库定制生成。<br>
+  使用建议：面试前 10 分钟通读第一、二、六节；面试中按第三节流程推进，用第四节问题按需取用。
+</div>
+
+</div>
+</div>
+</body>
+</html>

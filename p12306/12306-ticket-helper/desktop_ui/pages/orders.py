@@ -26,9 +26,11 @@ from PySide6.QtWidgets import (
 )
 
 from desktop_ui.api_client import ApiClient, ApiError
+from desktop_ui.theme import C
 
 # 状态值来自后端唯一的定义处；本页不再自建映射表。
 from ticket_helper.order.service import ORDER_FAILED, ORDER_SUCCESS
+from ticket_helper.edition import display_train_date
 
 log = logging.getLogger(__name__)
 
@@ -125,7 +127,7 @@ class OrdersPage(QWidget):
             cells = [
                 str(order.get("created_at") or ""),
                 str(order.get("train_no") or ""),
-                str(order.get("depart_date") or ""),
+                display_train_date(order.get("depart_date")),
                 str(order.get("seat_type") or ""),
                 str(order.get("passenger") or ""),
                 str(order.get("status_text") or status or "-"),
@@ -135,9 +137,9 @@ class OrdersPage(QWidget):
             for column, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if column == 5 and status == ORDER_SUCCESS:
-                    item.setForeground(QBrush(QColor("#15803d")))
+                    item.setForeground(QBrush(QColor(C["ok"])))
                 if column == 5 and status == ORDER_FAILED:
-                    item.setForeground(QBrush(QColor("#b91c1c")))
+                    item.setForeground(QBrush(QColor(C["bad"])))
                 self.table.setItem(row, column, item)
 
             pay_button = QPushButton("去 12306 支付")

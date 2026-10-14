@@ -30,7 +30,7 @@ ICON_FILE = PROJECT_ROOT / "assets" / "icon.ico"
 
 # ------------------------------------------------------------------ 命名
 APP_NAME = "UniversalURLPlayer"
-DISPLAY_NAME = "万能 URL 视频播放器"
+DISPLAY_NAME = "智泊AI版权所有，仅限智泊AI学员使用，https://www.zhipoai.com/"
 VERSION = "0.1.0"
 
 # ------------------------------------------------------------------ 必须保留

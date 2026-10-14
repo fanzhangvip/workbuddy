@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from desktop_ui.token_field import sync_list_height
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -28,8 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-#: 两个列表的高度（约 5 行），再多各自滚动
-LIST_HEIGHT = 124
+
 
 
 class PriorityList(QWidget):
@@ -67,7 +67,7 @@ class PriorityList(QWidget):
         picked_row = QHBoxLayout()
         picked_row.setSpacing(4)
         self.list_picked = QListWidget()
-        self.list_picked.setFixedHeight(LIST_HEIGHT)
+        self.list_picked.setObjectName("chipList")   # 同标签列表：自身不留纵向内边距
         self.list_picked.setToolTip("选中一行后可以 ↑↓ 调整优先级；双击一行即移出")
         picked_row.addWidget(self.list_picked, 1)
 
@@ -99,7 +99,7 @@ class PriorityList(QWidget):
         right_layout.setSpacing(4)
         right_layout.addWidget(self._muted(avail_title))
         self.list_available = QListWidget()
-        self.list_available.setFixedHeight(LIST_HEIGHT)
+        self.list_available.setObjectName("chipList")
         self.list_available.setToolTip("双击加进左边")
         right_layout.addWidget(self.list_available)
         root.addWidget(right, 1)
@@ -109,6 +109,20 @@ class PriorityList(QWidget):
         # 选中变化时刷新按钮可用状态，避免对着第一行点 ↑ 却毫无反应
         self.list_picked.itemSelectionChanged.connect(self._refresh_buttons)
         self._render()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        """显示时再同步两个列表的行高（理由同 ``ChipField.showEvent``）。"""
+        super().showEvent(event)
+        self._sync_heights()
+
+    def _sync_heights(self) -> None:
+        """按**内容与真实行高**重算两个列表的高度。
+
+        ``_render``（内容变化）与 ``showEvent``（首次显示、几何才可信）都要用，
+        收敛成一处：行高这件事只有一个实现，改错了也只有一个地方改。
+        """
+        sync_list_height(self.list_picked, want_rows=5)
+        sync_list_height(self.list_available, want_rows=5)
 
     # ------------------------------------------------------------------ #
     # 与其它表单控件一致的外部接口
@@ -207,6 +221,11 @@ class PriorityList(QWidget):
             placeholder = QListWidgetItem("都已加入")
             placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
             self.list_available.addItem(placeholder)
+
+        # 行高同步必须在**内容重建之后**：挂在 __init__ 时两个列表都还是空的，
+        # sizeHintForRow 量不到任何东西，只能退到兜底行高 —— 之后不管装多少行
+        # 都停在「1 行」的高度，第 2 行起整行被吞掉（回流 #66 的真机症状）。
+        self._sync_heights()
 
         self._refresh_buttons()
         self.changed.emit()

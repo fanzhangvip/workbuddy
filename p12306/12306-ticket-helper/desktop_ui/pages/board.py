@@ -20,6 +20,9 @@ from PySide6.QtWidgets import (
 )
 
 from desktop_ui.api_client import ApiClient, ApiError
+from desktop_ui.theme import C
+
+from ticket_helper.edition import display_train_date
 
 log = logging.getLogger(__name__)
 
@@ -129,7 +132,7 @@ class RemainBoardPage(QWidget):
         for row, item in enumerate(candidates):
             values = [
                 item.get("train_code", ""),
-                item.get("train_date", ""),
+                display_train_date(item.get("train_date")),
                 f"{item.get('from_station', '')} → {item.get('to_station', '')}",
                 item.get("start_time", ""),
                 item.get("arrive_time", ""),
@@ -140,9 +143,9 @@ class RemainBoardPage(QWidget):
                 cell = QTableWidgetItem(str(text))
                 cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 # 命中行整行高亮（UI-04 要求）
-                cell.setBackground(QBrush(QColor("#fff5f4")))
+                cell.setBackground(QBrush(QColor("#e8f5fe")))
                 if col == 6:
-                    cell.setForeground(QBrush(QColor("#15803d")))
+                    cell.setForeground(QBrush(QColor(C["ok"])))
                     font = cell.font()
                     font.setBold(True)
                     cell.setFont(font)
@@ -151,7 +154,7 @@ class RemainBoardPage(QWidget):
             self.table.setRowCount(1)
             placeholder = QTableWidgetItem("当前没有匹配的可购席位（任务运行中会自动刷新）")
             placeholder.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            placeholder.setForeground(QBrush(QColor("#64748b")))
+            placeholder.setForeground(QBrush(QColor(C["muted"])))
             self.table.setItem(0, 0, placeholder)
             self.table.setSpan(0, 0, 1, 7)
         else:

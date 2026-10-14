@@ -934,6 +934,38 @@ MUTATIONS: tuple[Mutation, ...] = (
         new="    return False  # 变异：回环判定失效",
         test="tests/test_ratelimit.py::test_ambient_env_proxy_never_covers_loopback",
     ),
+    # ---------------- 标签列表的行高必须「现量现用」（回流 #66） ----------------
+    # 2026-10-04 真机症状：任务配置页添加日期/站点后「显示不全」。
+    # 根因是行高写死：开发机离屏替身字体一行 19px 怎么写都够，真机雅黑一行
+    # 约 25px，两行起最后一行的字被拦腰削掉 —— 又一条「开发机全绿、真机必挂」。
+    Mutation(
+        name="行高：退回写死的 24px 预算（真机雅黑一行 25px，必削字）",
+        path="desktop_ui/token_field.py",
+        old="    row = list_widget.sizeHintForRow(0)",
+        new="    row = ROW_HEIGHT  # 变异：行高背数字",
+        test="tests/test_desktop.py::test_chip_rows_are_never_clipped_by_a_hardcoded_row_height",
+    ),
+    Mutation(
+        name="行高：上限按像素硬夹（底部露出半截行 = 显示不全）",
+        path="desktop_ui/token_field.py",
+        old="        rows = max(1, min(rows, max(1, cap // row)))",
+        new="        rows = max(1, rows - (1 if cap and row * rows > cap else 0))",
+        test="tests/test_desktop.py::test_date_field_caps_at_whole_rows",
+    ),
+    Mutation(
+        name="行高：外框占用退回 frameWidth 估计（实测差 4px，露下一行残影）",
+        path="desktop_ui/token_field.py",
+        old="    chrome = list_widget.height() - list_widget.viewport().height()",
+        new="    chrome = 2 * list_widget.frameWidth()  # 变异：不复核真实几何",
+        test="tests/test_desktop.py::test_priority_rows_are_never_clipped",
+    ),
+    Mutation(
+        name="行高：席别列表重算高度失效（内容变化后不再同步，只靠 showEvent 不够）",
+        path="desktop_ui/priority_field.py",
+        old="        sync_list_height(self.list_picked, want_rows=5)",
+        new="        pass  # 变异：内容变化后不再重新同步",
+        test="tests/test_desktop.py::test_priority_rows_are_never_clipped",
+    ),
 )
 
 

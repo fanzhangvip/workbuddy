@@ -1,0 +1,64 @@
+{
+  "rule_version": "v1.0",
+  "analyzed_at": 1791884236,
+  "raw_score": 5,
+  "positive_total": 5,
+  "negative_total": 0,
+  "grade": "A",
+  "priority": "高",
+  "advice": "每日 1 次有效跟进，重点推动到课和预定。",
+  "positive_items": [
+    {
+      "rule_id": "positive_ask_course",
+      "dimension": "主动问课",
+      "polarity": "positive",
+      "score": 2,
+      "evidence": [
+        "七叶: 老师，有没有vibecoding的课程？",
+        "七叶: 就是我们这个课程有没有专门讲vibecoding的录播？"
+      ],
+      "reason": "客户主动询问课程内容（vibecoding 相关课程/录播），属主动问课"
+    },
+    {
+      "rule_id": "positive_learning",
+      "dimension": "已学习一段时间",
+      "polarity": "positive",
+      "score": 1,
+      "evidence": [
+        "智泊AI-俏俏班主任老师: 距离同学报名已经半年啦",
+        "七叶: 这个deepresearch项目课还有几节"
+      ],
+      "reason": "已报名学习约半年，正在跟进 deepresearch 项目课，已具备较长时间大模型学习经历"
+    },
+    {
+      "rule_id": "positive_attended_class",
+      "dimension": "邀课成功",
+      "polarity": "positive",
+      "score": 1,
+      "evidence": [
+        "智泊AI-俏俏班主任老师: 今天晚上有课哦~上课地址：...",
+        "七叶: 收到老师，不知不觉要上完了呢[玫瑰]"
+      ],
+      "reason": "聊天记录显示客户在跟课、课程临近结课，但无明确到课事件或到课标签佐证，故只按较低档判断"
+    },
+    {
+      "rule_id": "positive_cooperative",
+      "dimension": "配合度、认可度高",
+      "polarity": "positive",
+      "score": 1,
+      "evidence": [
+        "七叶: 好的老师[OK]",
+        "七叶: 收到老师，不知不觉要上完了呢[玫瑰]",
+        "七叶: 好的收到"
+      ],
+      "reason": "回复及时积极，配合调研与沟通，对课程与班主任态度友好认可"
+    }
+  ],
+  "negative_items": [],
+  "invalid_items": [],
+  "customer_profile_summary": "客户「七叶」是 2624 期老学员，已报名学习约半年，课程本月底结课，目前正在跟进 deepresearch 项目课，录播可永久回看。客户配合度高、态度友好，会主动询问课程细节（如是否有 vibecoding 相关课程/录播）。聊天中未透露职业岗位、所在城市、具体业务痛点或新购课预算，也无明确的新需求紧迫性，当前处于结课前的续费/进阶课程窗口期。",
+  "sales_strategy": "1）以结课优惠为切入点，主动推介算法高阶课、解决方案类课程等进阶产品，强调老学员专属福利与名额。2）正面回应 vibecoding 需求，明确告知本期课程未覆盖，可推荐相关学习资源或后续开设的对应课程，保持价值输出而非硬推。3）延续既有良好关系，避免高频打扰，先确认客户接下来的学习目标（转型方向/岗位需求）再匹配课程。4）建议在结课前一周内跟进一次，结课后再做一次回访确认意向。",
+  "confidence": 0.78,
+  "needs_human_review": false,
+  "conversation_source": "俏俏老师 → 七叶"
+}

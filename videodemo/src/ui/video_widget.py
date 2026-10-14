@@ -9,23 +9,39 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtWidgets import QLabel, QStackedLayout, QWidget
+from PySide6.QtWidgets import QLabel, QStackedLayout, QVBoxLayout, QWidget
+
+from src.ui import branding
+from src.ui.theme import TOKENS
 
 _PLACEHOLDER_TEXT = "把视频地址粘贴到上方输入框，\n或直接把文件 / 链接拖到这里"
-_PLACEHOLDER_STYLE = "color: #9aa0a6; font-size: 14px;"
-_MESSAGE_STYLE = "color: #e8eaed; font-size: 13px;"
+
+#: 画面区是一块"黑玻璃"：黑底 + 一圈 1px 描边 + 圆角，
+#: 描边跟主题里的棱线同色，所以画面区和旁边的面板看起来是同一材质。
+#: 颜色从主题取，不在别处再写一份 hex（改主题时不会漏掉这块）。
+_SURFACE_STYLE = (
+    "VideoWidget {{"
+    "  background-color: #000000;"
+    "  border: 1px solid {edge};"
+    "  border-radius: 12px;"
+    "}}"
+)
+
+_PLACEHOLDER_STYLE = f"color: {TOKENS['text_faint']}; font-size: 14px;"
+_MESSAGE_STYLE = f"color: {TOKENS['text_dim']}; font-size: 13px;"
 
 
 class VideoWidget(QWidget):
     """黑底画面区。"""
 
     doubleClicked = Signal()
-    filesDropped = Signal(list)   # list[str]，本地路径或 URL 文本
+    filesDropped = Signal(list)   # list[str]，本地路径或文件 URL 文本
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setMinimumSize(320, 180)
+        self.setObjectName("videoSurface")
 
         self._placeholder = QLabel(_PLACEHOLDER_TEXT)
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -36,12 +52,35 @@ class VideoWidget(QWidget):
         self._placeholder.setContentsMargins(24, 16, 24, 16)
         self._placeholder.setStyleSheet(_PLACEHOLDER_STYLE)
 
-        self._stack = QStackedLayout(self)
-        self._stack.setContentsMargins(0, 0, 0, 0)
+        self._stack = QStackedLayout()
+        # 留出 1px 让主题画的那圈描边不被内容盖住，同时保证画面不被裁
+        self._stack.setContentsMargins(1, 1, 1, 1)
         self._stack.addWidget(self._placeholder)
+
+        # 未播放时在画面区底部留一行淡版权；一旦开播就隐藏，
+        # 把画面完整让出来（多 20px 的高度对成片画面是实打实的损失）。
+        self._brand = QLabel(
+            f'<a href="{branding.WEBSITE}" '
+            f'style="color:{TOKENS["text_faint"]}; text-decoration:none">'
+            f"{branding.STATUS_NOTICE}</a>"
+        )
+        self._brand.setTextFormat(Qt.TextFormat.RichText)
+        self._brand.setOpenExternalLinks(True)
+        self._brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._brand.setContentsMargins(0, 0, 0, 6)
+        self._brand.setToolTip(
+            f"{branding.COPYRIGHT}\n官方网址：{branding.WEBSITE}"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addLayout(self._stack, 1)
+        outer.addWidget(self._brand)
+
         self._video_widget: QWidget | None = None
 
-        self.setStyleSheet("background-color: #000;")
+        self.setStyleSheet(_SURFACE_STYLE.format(edge=TOKENS["edge"]))
 
     def set_video_widget(self, widget: QWidget) -> None:
         """挂载播放后端的画面控件。
@@ -67,6 +106,7 @@ class VideoWidget(QWidget):
         self._placeholder.setText(_PLACEHOLDER_TEXT)
         self._placeholder.setStyleSheet(_PLACEHOLDER_STYLE)
         self._stack.setCurrentWidget(self._placeholder)
+        self._brand.setVisible(True)
 
     def show_message(self, text: str, title: str = "") -> None:
         """在画面区显示一段说明（如具体失败原因）。
@@ -78,11 +118,13 @@ class VideoWidget(QWidget):
         self._placeholder.setText(body)
         self._placeholder.setStyleSheet(_MESSAGE_STYLE)
         self._stack.setCurrentWidget(self._placeholder)
+        self._brand.setVisible(True)
 
     def show_video(self) -> None:
         """切到画面（开始播放时）。"""
         if self._video_widget is not None:
             self._stack.setCurrentWidget(self._video_widget)
+            self._brand.setVisible(False)
 
     # ------------------------------------------------------------ 事件
     def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt 命名

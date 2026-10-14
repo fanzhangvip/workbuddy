@@ -16,26 +16,32 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Thread
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from src.ui import branding
+from src.ui.theme import TOKENS
 from src.utils import js_runtime
 from src.utils import settings as S
 from src.utils.logger import get_logger
@@ -57,17 +63,22 @@ class SettingsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("设置")
+        # 560 是"标签页 + 一行「标签 + 输入框 + 浏览按钮」"刚好不挤的宽度。
+        # 比这更窄的话，QFormLayout 会把输入框压到几十像素，
+        # 路径类内容完全看不出来是自己填错了还是被截了。
         self.setMinimumWidth(560)
+        self.resize(620, 560)
 
         self._original: dict[str, object] = {}
         self._restart_keys_changed = False
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_playback_tab(), "播放")
-        self.tabs.addTab(self._build_network_tab(), "网络")
-        self.tabs.addTab(self._build_proxy_tab(), "防盗链代理")
-        self.tabs.addTab(self._build_download_tab(), "下载")
-        self.tabs.addTab(self._build_clipboard_tab(), "剪贴板")
+        self.tabs.addTab(self._scrollable(self._build_playback_tab()), "播放")
+        self.tabs.addTab(self._scrollable(self._build_network_tab()), "网络")
+        self.tabs.addTab(self._scrollable(self._build_proxy_tab()), "防盗链代理")
+        self.tabs.addTab(self._scrollable(self._build_download_tab()), "下载")
+        self.tabs.addTab(self._scrollable(self._build_clipboard_tab()), "剪贴板")
+        self.tabs.addTab(self._scrollable(self._build_about_tab()), "关于")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -80,10 +91,19 @@ class SettingsDialog(QDialog):
 
         self.label_hint = QLabel("")
         self.label_hint.setWordWrap(True)
-        self.label_hint.setStyleSheet("color: palette(mid);")
+        self.label_hint.setStyleSheet(f"color: {TOKENS['text_dim']};")
+
+        # 底部区与标签页之间用一条分隔线划清界限：
+        # 「确定 / 取消 / 应用」是整张对话框的，不属于任何一个标签页
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setFrameShadow(QFrame.Shadow.Plain)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(9)
         layout.addWidget(self.tabs, 1)
+        layout.addWidget(divider)
         layout.addWidget(self.label_hint)
         layout.addWidget(buttons)
 
@@ -93,6 +113,25 @@ class SettingsDialog(QDialog):
         self.btn_defaults.clicked.connect(self._on_defaults)
 
         self._load()
+
+    @staticmethod
+    def _scrollable(page: QWidget) -> QScrollArea:
+        """把一页设置塞进滚动区。
+
+        网络页与播放页的内容高度都超过了 500px。窗口一矮（笔记本 768 高的屏上
+        很常见），Qt 会把放不下的控件压到最小高度——文字被裁、控件重叠，
+        这正是"挤占"。包一层滚动区之后，页面保持自己的自然高度，
+        装不下就出现滚动条，任何一个控件都不会被压变形。
+
+        `setWidgetResizable(True)` 是必须的：否则页面会保持自己的
+        sizeHint 宽度，窄窗口下横向溢出，右侧输入框被切掉。
+        """
+        area = QScrollArea()
+        area.setWidget(page)
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        return area
 
     # ------------------------------------------------------------ 播放
     def _build_playback_tab(self) -> QWidget:
@@ -111,7 +150,7 @@ class SettingsDialog(QDialog):
 
         self.label_backend_status = QLabel("")
         self.label_backend_status.setWordWrap(True)
-        self.label_backend_status.setStyleSheet("color: palette(mid);")
+        self.label_backend_status.setStyleSheet(f"color: {TOKENS['text_dim']};")
         form.addRow("", self.label_backend_status)
 
         self.check_prefer_mpv_live = QCheckBox("直播流优先使用 mpv 内核")
@@ -342,7 +381,7 @@ class SettingsDialog(QDialog):
             "不会上传到任何服务器。仅用于个人学习测试，请勿分享导出的 Cookie 文件。"
         )
         cookie_safety.setWordWrap(True)
-        cookie_safety.setStyleSheet("color: #c07a00;")
+        cookie_safety.setStyleSheet(f"color: {TOKENS['warn']};")
         form.addRow("", cookie_safety)
 
         self.spin_timeout = QSpinBox()
@@ -350,6 +389,15 @@ class SettingsDialog(QDialog):
         self.spin_timeout.setSuffix(" 秒")
         self.spin_timeout.setToolTip("解析 / 下载时单个网络请求的超时时间。")
         form.addRow("网络超时", self.spin_timeout)
+
+        self.spin_resolve_timeout = QSpinBox()
+        self.spin_resolve_timeout.setRange(10, 300)
+        self.spin_resolve_timeout.setSuffix(" 秒")
+        self.spin_resolve_timeout.setToolTip(
+            "网页地址解析的总超时（不含下载）。站点响应慢、或解析器要换几种方式\n"
+            "重试时，时间给足才拿得到地址；设得太短会把「慢但能成功」误报成「解析超时」。"
+        )
+        form.addRow("解析超时", self.spin_resolve_timeout)
 
         self.combo_rtsp = QComboBox()
         self.combo_rtsp.addItem("UDP（Qt 内核的实际行为）", "udp")
@@ -414,7 +462,7 @@ class SettingsDialog(QDialog):
 
         self.label_resolve_status = QLabel()
         self.label_resolve_status.setWordWrap(True)
-        self.label_resolve_status.setStyleSheet("color: palette(mid);")
+        self.label_resolve_status.setStyleSheet(f"color: {TOKENS['text_dim']};")
         layout.addWidget(self.label_resolve_status)
 
         note = QLabel(
@@ -423,7 +471,7 @@ class SettingsDialog(QDialog):
             "直链播放若因防盗链失败，请改用「防盗链代理」页的本地反向代理。"
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: palette(mid);")
+        note.setStyleSheet(f"color: {TOKENS['text_dim']};")
         layout.addWidget(note)
         layout.addStretch(1)
         return page
@@ -476,7 +524,7 @@ class SettingsDialog(QDialog):
             "此时仍需 mpv 内核或外部播放器。单文件直链与分片直链不受影响。"
         )
         limit.setWordWrap(True)
-        limit.setStyleSheet("color: palette(mid);")
+        limit.setStyleSheet(f"color: {TOKENS['text_dim']};")
         layout.addWidget(limit)
         layout.addStretch(1)
 
@@ -513,7 +561,7 @@ class SettingsDialog(QDialog):
 
         self.label_ffmpeg_status = QLabel("")
         self.label_ffmpeg_status.setWordWrap(True)
-        self.label_ffmpeg_status.setStyleSheet("color: palette(mid);")
+        self.label_ffmpeg_status.setStyleSheet(f"color: {TOKENS['text_dim']};")
         layout.addWidget(self.label_ffmpeg_status)
 
         self.btn_ffmpeg_check = QPushButton("检测 ffmpeg")
@@ -542,10 +590,78 @@ class SettingsDialog(QDialog):
             "程序会提示「剪贴板里发现视频地址」，按回车即可播放。"
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: palette(mid);")
+        note.setStyleSheet(f"color: {TOKENS['text_dim']};")
         layout.addWidget(note)
         layout.addStretch(1)
         return page
+
+    # ------------------------------------------------------------ 关于
+    def _build_about_tab(self) -> QWidget:
+        """版权与官网。
+
+        放在设置里而不是单独弹一个「关于」对话框：用户想找"这是谁做的、
+        去哪找官方"时第一反应就是翻设置，单独做个对话框反而要多找一个入口。
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(9)
+
+        title = QLabel(branding.APP_TITLE)
+        title.setStyleSheet(
+            f"color: {TOKENS['text']}; font-size: 18px; font-weight: 600;"
+        )
+        layout.addWidget(title)
+
+        usage = QLabel(branding.USAGE_NOTICE)
+        usage.setStyleSheet(f"color: {TOKENS['warn']};")
+        layout.addWidget(usage)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setFrameShadow(QFrame.Shadow.Plain)
+        layout.addWidget(divider)
+
+        notice = QLabel(branding.COPYRIGHT)
+        notice.setWordWrap(True)
+        notice.setStyleSheet(f"color: {TOKENS['text']};")
+        layout.addWidget(notice)
+
+        site = QLabel(
+            f'官方网址：<a href="{branding.WEBSITE}" '
+            f'style="color:{TOKENS["accent"]}; text-decoration:none">'
+            f"{branding.WEBSITE}</a>"
+        )
+        site.setTextFormat(Qt.TextFormat.RichText)
+        site.setOpenExternalLinks(True)
+        site.setWordWrap(True)
+        layout.addWidget(site)
+
+        row = QHBoxLayout()
+        btn_open = QPushButton("打开官网")
+        btn_open.clicked.connect(self._open_website)
+        self.btn_copy_site = QPushButton("复制网址")
+        self.btn_copy_site.clicked.connect(self._copy_website)
+        row.addWidget(btn_open)
+        row.addWidget(self.btn_copy_site)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        layout.addStretch(1)
+        return page
+
+    @staticmethod
+    def _open_website() -> None:
+        QDesktopServices.openUrl(QUrl(branding.WEBSITE))
+
+    def _copy_website(self) -> None:
+        """复制官网地址，并把按钮临时改成「已复制」当反馈。
+
+        用 QTimer 而不是 QMessageBox：复制网址是顺手动作，
+        再弹个框要用户点「确定」，比不反馈还烦。
+        """
+        QApplication.clipboard().setText(branding.WEBSITE)
+        self.btn_copy_site.setText("已复制")
+        QTimer.singleShot(1500, lambda: self.btn_copy_site.setText("复制网址"))
 
     # ------------------------------------------------------------ 小工具
     def _file_row(
@@ -590,6 +706,9 @@ class SettingsDialog(QDialog):
         self.edit_cookie.setText(S.get_str(S.K_COOKIE_FILE, ""))
         self._select_data(self.combo_cookie_browser, S.get_str(S.K_COOKIE_FROM_BROWSER, ""))
         self.spin_timeout.setValue(max(3, S.get_int(S.K_SOCKET_TIMEOUT, 10)))
+        self.spin_resolve_timeout.setValue(
+            max(10, S.get_int(S.K_RESOLVE_TIMEOUT_S, 60))
+        )
         self._select_data(self.combo_rtsp, S.get_str(S.K_RTSP_TRANSPORT, "udp"))
 
         self.edit_js_runtime.setText(S.get_str(S.K_JS_RUNTIME, ""))
@@ -679,6 +798,7 @@ class SettingsDialog(QDialog):
             S.K_COOKIE_FILE: self.edit_cookie.text().strip(),
             S.K_COOKIE_FROM_BROWSER: self.combo_cookie_browser.currentData(),
             S.K_SOCKET_TIMEOUT: self.spin_timeout.value(),
+            S.K_RESOLVE_TIMEOUT_S: self.spin_resolve_timeout.value(),
             S.K_RTSP_TRANSPORT: self.combo_rtsp.currentData(),
             S.K_JS_RUNTIME: self.edit_js_runtime.text().strip(),
             S.K_RESOLVE_PREFLIGHT: self.check_preflight.isChecked(),

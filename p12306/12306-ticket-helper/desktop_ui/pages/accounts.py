@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from desktop_ui.api_client import ApiClient, ApiError
+from desktop_ui.theme import C
 from ticket_helper.account import verify
 
 log = logging.getLogger(__name__)
@@ -35,11 +36,11 @@ STATUS_TEXT = {
     "disabled": "已禁用",
 }
 STATUS_COLOR = {
-    "online": "#15803d",
-    "risk": "#b91c1c",
-    "error": "#b45309",
-    "disabled": "#64748b",
-    "offline": "#64748b",
+    "online": C["ok"],
+    "risk": C["bad"],
+    "error": C["warn"],
+    "disabled": C["muted"],
+    "offline": C["muted"],
 }
 
 

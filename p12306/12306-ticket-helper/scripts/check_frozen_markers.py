@@ -37,8 +37,16 @@ MARKERS: dict[str, tuple[str, ...]] = {
     "ticket_helper.inter.parser": ("yp_info",),
     "ticket_helper.inter.api": ("yp_info", "_format_train_date_js"),
     "ticket_helper.inter.base": ("_is_loopback_host",),
-    "desktop_ui.token_field": ("_today_qdate", "_on_calendar_picked"),
+    "desktop_ui.token_field": ("sync_list_height", "sizeHintForRow", "_today_qdate", "_on_calendar_picked"),
     "desktop_ui.api_client": ("trust_env",),
+    "desktop_ui.theme": ("#0ea5e9",),
+    # 品牌版权：文案常量的名字必须在包里（值是不是最新由跑起来的界面验，
+    # 见 tests/test_desktop.py::test_window_title_and_status_bar_carry_the_copyright）
+    "ticket_helper": ("APP_COPYRIGHT", "APP_AUDIENCE", "APP_WEBSITE"),
+    "desktop_ui.main_window": ("setOpenExternalLinks",),
+    # 教学演示版：日期显示层（标记只能证明"代码进包了"，
+    # 「DEMO_MODE 到底是不是 True」必须跑起来验，见 docs/缺陷回流台账.md 第二十五节）
+    "ticket_helper.edition": ("DEMO_DATE_TEXT", "display_train_date", "display_train_dates"),
 }
 
 

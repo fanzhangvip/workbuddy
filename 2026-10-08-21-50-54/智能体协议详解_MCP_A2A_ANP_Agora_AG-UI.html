@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能体互操作协议详解 — MCP / A2A / ANP / Agora / AG-UI</title>
+<style>
+  :root{
+    --bg:#ffffff; --bg-alt:#f7f7f5; --bg-code:#f4f4f1;
+    --text:#1f1f1e; --text-2:#5f5e5a; --text-3:#8a8880;
+    --border:#e3e2dc; --border-2:#cfcec7;
+    --blue:#185fa5; --blue-50:#e6f1fb; --blue-800:#0c447c;
+    --amber:#ba7517; --amber-50:#faeeda; --amber-800:#633806;
+    --green:#3b6d11; --green-50:#eaf3de;
+    --red:#a32d2d; --red-50:#fcebeb;
+    --gray-50:#f1efe8;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    font-size:15px; line-height:1.75;
+  }
+  .wrap{max-width:900px;margin:0 auto;padding:0 24px 80px}
+
+  header.top{border-bottom:0.5px solid var(--border);padding:44px 0 28px;margin-bottom:8px}
+  .kicker{font-size:12px;letter-spacing:.08em;color:var(--text-3);text-transform:uppercase;margin:0 0 10px}
+  h1{font-size:28px;font-weight:500;line-height:1.35;margin:0 0 12px}
+  .lede{font-size:15px;color:var(--text-2);margin:0;max-width:70ch}
+  .meta{font-size:12px;color:var(--text-3);margin-top:16px}
+
+  h2{font-size:20px;font-weight:500;margin:52px 0 14px;padding-top:20px;border-top:0.5px solid var(--border)}
+  h2 .num{color:var(--text-3);font-size:15px;margin-right:8px}
+  h3{font-size:16px;font-weight:500;margin:30px 0 10px}
+  h4{font-size:14px;font-weight:500;margin:22px 0 8px;color:var(--text-2)}
+  p{margin:0 0 14px}
+  ul,ol{margin:0 0 14px;padding-left:22px}
+  li{margin-bottom:7px}
+  strong{font-weight:500;color:var(--text)}
+  a{color:var(--blue);text-decoration:none;border-bottom:0.5px solid var(--blue-50)}
+  a:hover{border-bottom-color:var(--blue)}
+  code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12.5px;background:var(--bg-code);padding:2px 5px;border-radius:4px;
+  }
+  pre{
+    background:var(--bg-code);border:0.5px solid var(--border);border-radius:10px;
+    padding:14px 16px;overflow-x:auto;margin:0 0 16px;
+  }
+  pre code{background:none;padding:0;font-size:12.5px;line-height:1.65}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:20px 0 8px}
+  .card{background:var(--bg-alt);border-radius:10px;padding:16px 18px}
+  .card .tag{font-size:11.5px;color:var(--text-3);letter-spacing:.04em}
+  .card .name{font-size:15px;font-weight:500;margin:4px 0 6px}
+  .card .desc{font-size:12.5px;color:var(--text-2);line-height:1.6}
+
+  table{width:100%;border-collapse:collapse;margin:8px 0 20px;font-size:13px;table-layout:fixed}
+  th,td{text-align:left;vertical-align:top;padding:9px 10px;border-bottom:0.5px solid var(--border);word-break:break-word}
+  thead th{background:var(--bg-alt);font-weight:500;font-size:12.5px;color:var(--text-2);border-bottom:0.5px solid var(--border-2)}
+  tbody tr:last-child td{border-bottom:0.5px solid var(--border-2)}
+
+  figure{margin:22px 0}
+  figure svg{width:100%;height:auto;display:block}
+  figcaption{font-size:12.5px;color:var(--text-3);margin-top:10px;text-align:center}
+
+  .note{background:var(--bg-alt);border-left:2px solid var(--border-2);border-radius:0 8px 8px 0;padding:12px 16px;margin:0 0 16px;font-size:13.5px;color:var(--text-2)}
+  .warn{background:var(--red-50);border-left:2px solid #e24b4a;border-radius:0 8px 8px 0;padding:12px 16px;margin:0 0 16px;font-size:13.5px;color:#501313}
+  .ok{background:var(--green-50);border-left:2px solid #97c459;border-radius:0 8px 8px 0;padding:12px 16px;margin:0 0 16px;font-size:13.5px;color:#173404}
+
+  .pill{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:20px;background:var(--blue-50);color:var(--blue-800);border:0.5px solid #b5d4f4;margin-right:6px}
+
+  nav.toc{background:var(--bg-alt);border-radius:12px;padding:18px 22px;margin:26px 0 0}
+  nav.toc ol{margin:0;padding-left:20px;font-size:13.5px}
+  nav.toc li{margin-bottom:5px}
+  nav.toc a{border-bottom:none}
+  nav.toc a:hover{color:var(--blue-800)}
+
+  footer{margin-top:56px;padding-top:20px;border-top:0.5px solid var(--border);font-size:12.5px;color:var(--text-3)}
+
+  .t{font-family:inherit;font-size:14px;fill:#1f1f1e}
+  .ts{font-family:inherit;font-size:12px;fill:#5f5e5a}
+  .th{font-family:inherit;font-size:14px;font-weight:500;fill:#1f1f1e}
+
+  @media (max-width:640px){
+    .wrap{padding:0 16px 60px}
+    h1{font-size:23px}
+    h2{font-size:18px}
+    table{font-size:12px}
+    th,td{padding:7px 8px}
+  }
+  @media print{
+    body{font-size:11pt}
+    h2{page-break-after:avoid}
+    figure,table{page-break-inside:avoid}
+    a{color:var(--text);border-bottom:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="kicker">Agent Interoperability Protocols</p>
+  <h1>智能体互操作协议详解<br>MCP · A2A · ANP · Agora · AG-UI</h1>
+  <p class="lede">这几个名字经常被并列讨论，但它们不在同一层，硬比"谁替代谁"是问错了问题。本文件把几条轴拆开，讲清各自是什么、原理如何、现状怎样、该用在什么场景。</p>
+  <p class="meta">整理时间：2026 年 10 月 · 依据各协议最新公开规范与公开报道</p>
+</header>
+
+<nav class="toc">
+  <ol>
+    <li><a href="#overview">一张图看懂：它们不在同一层</a></li>
+    <li><a href="#mcp">MCP — 工具接入层的赢家</a></li>
+    <li><a href="#a2a">A2A — Agent 之间的"外交协议"</a></li>
+    <li><a href="#anp">ANP — 面向开放互联网的那一版</a></li>
+    <li><a href="#agora">Agora — 不是协议，是"生产协议的协议"</a></li>
+    <li><a href="#agui">AG-UI — 智能体与用户之间的那条轴</a></li>
+    <li><a href="#compare">横向对比</a></li>
+    <li><a href="#choose">怎么选：五个问题</a></li>
+    <li><a href="#timeline">时间线：两年内发生了什么</a></li>
+    <li><a href="#myths">七个必须避开的误区</a></li>
+    <li><a href="#ietf">标准化动向：IETF 在做什么</a></li>
+    <li><a href="#glossary">术语表</a></li>
+    <li><a href="#refs">参考资料</a></li>
+  </ol>
+</nav>
+
+<h2 id="overview"><span class="num">01</span>一张图看懂：它们不在同一层</h2>
+
+<p>先把位置摆正。这几个判断记牢，后面就不会乱：</p>
+<ul>
+  <li><strong>MCP</strong> 解决"Agent 怎么用手边的工具和数据"——纵向的，从上往下够。</li>
+  <li><strong>A2A / ANP</strong> 解决"Agent 怎么找到别的 Agent 并派活、拿结果"——横向的，从旁边递过去。</li>
+  <li><strong>AG-UI</strong> 解决"用户怎么看见 Agent 在干什么、怎么中途干预"——面向用户的那一端。</li>
+  <li><strong>Agora</strong> 解决"通信协议本身从哪来"——它在协议<em>下面</em>，是生产协议的元层。</li>
+</ul>
+
+<div class="cards">
+  <div class="card">
+    <div class="tag">工具接入层</div>
+    <div class="name">MCP</div>
+    <div class="desc">Agent ↔ 工具 / 数据 / 资源。把 M×N 次集成变成 M+N 次。</div>
+  </div>
+  <div class="card">
+    <div class="tag">协作层 · 可信域</div>
+    <div class="name">A2A</div>
+    <div class="desc">Agent ↔ Agent 的任务发现、委派与交付，跨厂商跨框架。</div>
+  </div>
+  <div class="card">
+    <div class="tag">协作层 · 开放网络</div>
+    <div class="name">ANP</div>
+    <div class="desc">公网上陌生 Agent 的去中心化身份、发现与协商。</div>
+  </div>
+  <div class="card">
+    <div class="tag">元协议层</div>
+    <div class="name">Agora</div>
+    <div class="desc">让 Agent 在运行时协商并生成通信协议，而不是预先约定。</div>
+  </div>
+  <div class="card">
+    <div class="tag">用户交互层</div>
+    <div class="name">AG-UI</div>
+    <div class="desc">Agent 后端与用户界面之间的双向事件流，任意前端 × 任意框架。</div>
+  </div>
+</div>
+
+<figure>
+<svg viewBox="0 0 680 404" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>智能体协议分层地图</title>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="40" y="20" width="600" height="60" rx="10" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="ts" x="58" y="50" dominant-baseline="central">用户交互层</text>
+<rect x="175" y="28" width="410" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="380" y="42" text-anchor="middle" dominant-baseline="central" fill="#0C447C">AG-UI</text>
+<text class="ts" x="380" y="58" text-anchor="middle" dominant-baseline="central" fill="#185FA5">Agent 后端与用户前端的双向事件流</text>
+<rect x="40" y="96" width="600" height="60" rx="10" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="ts" x="58" y="126" dominant-baseline="central">协作层</text>
+<rect x="175" y="104" width="195" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="272" y="118" text-anchor="middle" dominant-baseline="central" fill="#0C447C">A2A</text>
+<text class="ts" x="272" y="134" text-anchor="middle" dominant-baseline="central" fill="#185FA5">Agent 之间横向协作</text>
+<rect x="390" y="104" width="195" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="487" y="118" text-anchor="middle" dominant-baseline="central" fill="#0C447C">ANP</text>
+<text class="ts" x="487" y="134" text-anchor="middle" dominant-baseline="central" fill="#185FA5">开放互联网互联</text>
+<rect x="40" y="172" width="600" height="60" rx="10" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="ts" x="58" y="202" dominant-baseline="central">元协议层</text>
+<rect x="175" y="180" width="195" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="272" y="194" text-anchor="middle" dominant-baseline="central" fill="#0C447C">Agora</text>
+<text class="ts" x="272" y="210" text-anchor="middle" dominant-baseline="central" fill="#185FA5">Agent 自己协商协议</text>
+<rect x="390" y="180" width="195" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="487" y="194" text-anchor="middle" dominant-baseline="central" fill="#0C447C">ANP 元协议层</text>
+<text class="ts" x="487" y="210" text-anchor="middle" dominant-baseline="central" fill="#185FA5">自然语言协商 + 生成代码</text>
+<rect x="40" y="248" width="600" height="60" rx="10" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="ts" x="58" y="278" dominant-baseline="central">工具接入层</text>
+<rect x="175" y="256" width="410" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="380" y="270" text-anchor="middle" dominant-baseline="central" fill="#0C447C">MCP</text>
+<text class="ts" x="380" y="286" text-anchor="middle" dominant-baseline="central" fill="#185FA5">Agent 到工具 / 数据 / 资源的统一接入</text>
+<rect x="40" y="324" width="600" height="60" rx="10" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="ts" x="58" y="354" dominant-baseline="central">底座</text>
+<rect x="175" y="332" width="125" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="ts" x="237" y="354" text-anchor="middle" dominant-baseline="central">HTTP / gRPC / SSE</text>
+<rect x="315" y="332" width="125" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="ts" x="377" y="354" text-anchor="middle" dominant-baseline="central">JSON-RPC 2.0</text>
+<rect x="455" y="332" width="130" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="ts" x="520" y="354" text-anchor="middle" dominant-baseline="central">DID / OAuth / mTLS</text>
+</svg>
+<figcaption>五层视图：AG-UI 面向用户，MCP 管纵向接入，A2A / ANP 管横向协作，Agora 管协议自身的生成，DID / OAuth / mTLS 是贯穿的身份底座。</figcaption>
+</figure>
+
+<h2 id="mcp"><span class="num">02</span>MCP — 工具接入层的赢家</h2>
+
+<p><span class="pill">Anthropic · 2024-11</span><span class="pill">AAIF 创始项目</span><span class="pill">事实标准</span></p>
+
+<h3>是什么</h3>
+<p>Model Context Protocol，2024 年 11 月由 Anthropic 开源的开放协议，常被称作"AI 世界的 USB-C"。它定义的是<strong>一个 Agent 如何接入外部的工具、数据和资源</strong>。</p>
+
+<h3>架构</h3>
+<p>经典的 Host / Client / Server 三段式：Host（宿主，如 IDE、桌面客户端）内运行 Client，Client 通过 JSON-RPC 2.0 连接 MCP Server。服务端暴露三类原语，后续版本又引入了 Sampling、Roots、Elicitation、Tasks。</p>
+
+<figure>
+<svg viewBox="0 0 680 286" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>MCP 架构与三类原语</title>
+<defs>
+<marker id="arrow2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="230" y="20" width="220" height="48" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="44" text-anchor="middle" dominant-baseline="central" fill="#0C447C">Host / MCP Client</text>
+<path d="M340 68 L340 96" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<text class="ts" x="352" y="84" dominant-baseline="central">JSON-RPC 2.0</text>
+<path d="M180 96 L500 96" fill="none" stroke="#888780" stroke-width="1.5"/>
+<path d="M180 96 L180 114" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<path d="M500 96 L500 114" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<rect x="80" y="114" width="200" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="180" y="132" text-anchor="middle" dominant-baseline="central" fill="#0C447C">MCP Server 本地</text>
+<text class="ts" x="180" y="150" text-anchor="middle" dominant-baseline="central" fill="#185FA5">stdio 传输</text>
+<rect x="400" y="114" width="200" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="500" y="132" text-anchor="middle" dominant-baseline="central" fill="#0C447C">MCP Server 远程</text>
+<text class="ts" x="500" y="150" text-anchor="middle" dominant-baseline="central" fill="#185FA5">Streamable HTTP</text>
+<path d="M180 166 L180 190" fill="none" stroke="#888780" stroke-width="1.5"/>
+<path d="M500 166 L500 190" fill="none" stroke="#888780" stroke-width="1.5"/>
+<path d="M145 190 L535 190" fill="none" stroke="#888780" stroke-width="1.5"/>
+<path d="M145 190 L145 214" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<path d="M340 190 L340 214" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<path d="M535 190 L535 214" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<rect x="60" y="214" width="170" height="52" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="145" y="232" text-anchor="middle" dominant-baseline="central">Tools</text>
+<text class="ts" x="145" y="250" text-anchor="middle" dominant-baseline="central">可执行动作</text>
+<rect x="255" y="214" width="170" height="52" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="340" y="232" text-anchor="middle" dominant-baseline="central">Resources</text>
+<text class="ts" x="340" y="250" text-anchor="middle" dominant-baseline="central">可读数据</text>
+<rect x="450" y="214" width="170" height="52" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="535" y="232" text-anchor="middle" dominant-baseline="central">Prompts</text>
+<text class="ts" x="535" y="250" text-anchor="middle" dominant-baseline="central">提示模板</text>
+</svg>
+<figcaption>MCP 的 Host / Client / Server 结构与三类核心原语。</figcaption>
+</figure>
+
+<h3>它真正解决了什么</h3>
+<p>在 MCP 之前，每个 AI 应用每接一个工具就要写一次私有适配。MCP 把 M × N 次集成压缩成 M + N 次。所以它赢得很彻底——目前公开的 MCP Server 已超过 <strong>1 万个</strong>，TypeScript 与 Python 官方 SDK 累计下载双双破 10 亿，月下载接近 5 亿。</p>
+
+<h3>2026-07-28 规范：MCP 历史上最大的一次修订</h3>
+<p>核心变化是：MCP 从"有状态双向协议"改成了<strong>无状态请求 / 响应协议</strong>。</p>
+<table>
+  <colgroup><col style="width:22%"><col style="width:44%"><col style="width:34%"></colgroup>
+  <thead><tr><th>变化</th><th>内容</th><th>为什么重要</th></tr></thead>
+  <tbody>
+    <tr><td>取消握手</td><td>删除 <code>initialize</code> / <code>initialized</code> 与 <code>Mcp-Session-Id</code></td><td>请求可落到任意实例，直接挂普通轮询负载均衡</td></tr>
+    <tr><td>请求自描述</td><td>协议版本、客户端身份、能力放进 <code>_meta</code></td><td>无需共享会话存储，Server 可纯 Serverless</td></tr>
+    <tr><td>头部路由</td><td>强制 <code>Mcp-Method</code>、<code>Mcp-Name</code> 头</td><td>网关 / WAF / 限流器不解析 JSON body 即可路由鉴权</td></tr>
+    <tr><td>MRTR</td><td>Multi Round-Trip Requests 替代长连接 elicitation</td><td>工具中途要用户确认，返回 <code>input_required</code> 后重试即可</td></tr>
+    <tr><td>可缓存</td><td>list 结果带 <code>ttlMs</code> / <code>cacheScope</code></td><td>客户端可缓存工具目录，上游 prompt cache 更稳定</td></tr>
+    <tr><td>授权加固</td><td>校验 RFC 9207 <code>iss</code>，CIMD 取代 DCR</td><td>补上授权服务器混淆漏洞；DCR 正式弃用</td></tr>
+    <tr><td>扩展框架</td><td>Tasks / MCP Apps / EMA 移出核心</td><td>配 12 个月最低弃用窗口，升级可排期</td></tr>
+  </tbody>
+</table>
+
+<h4>一次无状态请求长什么样</h4>
+<pre><code>POST /mcp HTTP/1.1
+Mcp-Method: tools/call
+Mcp-Name: search_customers
+Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
+
+{
+  "jsonrpc": "2.0",
+  "id": "req-1",
+  "method": "tools/call",
+  "params": {
+    "name": "search_customers",
+    "arguments": { "region": "SE", "segment": "enterprise" },
+    "_meta": {
+      "protocolVersion": "2026-07-28",
+      "client": { "name": "my-app", "version": "1.0" },
+      "capabilities": { "tools": {}, "resources": {} }
+    }
+  }
+}</code></pre>
+<p>每个请求自带全部上下文，不再需要"粘性会话 + 共享会话存储 + 网关深度包解析"。工程上的收益很直接：迁移到无状态运行时的团队普遍报告 p95 延迟明显下降，纯粹来自去掉了会话绑定。</p>
+
+<div class="warn">
+<strong>安全上必须知道的事。</strong>MCP 第一年积累了 40 多个 CVE，并形成了"工具投毒"（tool poisoning）这一攻击类别。核心教训只有一句：<strong>MCP Server 的返回内容是不可信输入</strong>——它会把 prompt injection 直接送进你的模型上下文。协议本身不负责内容净化。
+</div>
+
+<h3>典型场景</h3>
+<ul>
+  <li>Coding Agent 接入本地文件系统、Git、终端</li>
+  <li>企业 Agent 接入数据库、内部系统、知识库</li>
+  <li>Agent 调用搜索、地图、支付等第三方能力（PayPal、Stripe、Stripe、Cloudflare 等均发布了官方 MCP Server）</li>
+  <li>IDE 与桌面客户端把企业内部系统暴露给模型</li>
+</ul>
+<p class="note">一句话：<strong>单个 Agent 能力不够时，加一个 MCP Server，而不是写一个插件。</strong></p>
+
+<h2 id="a2a"><span class="num">03</span>A2A — Agent 之间的"外交协议"</h2>
+
+<p><span class="pill">Google · 2025-04</span><span class="pill">AAIF 正式项目</span><span class="pill">生产可用</span></p>
+
+<h3>是什么</h3>
+<p>如果 MCP 是"手"，A2A 就是"嘴和耳朵"。它解决的是：<strong>两个各自有推理、有规划、有自己任务生命周期的 Agent，怎么互相发现、互相派活、互相交付结果</strong>——而且跨厂商、跨框架、跨组织，双方都不需要了解对方的内部实现。</p>
+
+<h3>核心数据模型：只有五个对象</h3>
+<table>
+  <colgroup><col style="width:26%"><col style="width:74%"></colgroup>
+  <thead><tr><th>对象</th><th>作用</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Agent Card</strong></td><td>Agent 的"简历"，发布在 <code>/.well-known/agent-card.json</code>，声明 name、description、version、provider、supportedInterfaces、capabilities、defaultInputModes / outputModes、skills、securitySchemes、signatures</td></tr>
+    <tr><td><strong>Task</strong></td><td>有状态的工作单元，带明确定义的生命周期。这是关键对象——它不是一次无状态 API 调用</td></tr>
+    <tr><td><strong>Message / Part</strong></td><td>一个对话轮次，来自客户端或 Agent；Part 是类型化内容（文本 / 结构化数据 / 文件引用）</td></tr>
+    <tr><td><strong>Artifact</strong></td><td>任务的交付物，由 Part 组成，可流式增量下发</td></tr>
+    <tr><td><strong>PushNotificationConfig</strong></td><td>客户端注册的 webhook，用于超长任务的状态回调</td></tr>
+  </tbody>
+</table>
+
+<h3>一次完整交互</h3>
+<ol>
+  <li>客户端向目标域发起 <code>GET /.well-known/agent-card.json</code>，发现能力与鉴权方式</li>
+  <li>按 Card 中声明的 <code>securitySchemes</code> 协商凭证（API Key / HTTP Bearer / OAuth 2.0 / OpenID Connect / mTLS），版本协商走 <code>A2A-Version</code> 头</li>
+  <li>发送 <code>SendMessage</code>，携带一个或多个类型化 Part</li>
+  <li>服务端创建 Task，初始态 <code>submitted</code>；客户端通过 SSE 接收状态更新，或轮询 <code>tasks/get</code>，或等待 webhook 推送</li>
+  <li>任务到达终态，返回 Artifact，SSE 流关闭</li>
+</ol>
+
+<h3>任务状态机</h3>
+<figure>
+<svg viewBox="0 0 680 268" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>A2A 任务状态机</title>
+<defs>
+<marker id="arrow3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="270" y="20" width="140" height="48" rx="8" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="44" text-anchor="middle" dominant-baseline="central" fill="#0C447C">input-required</text>
+<path d="M340 110 L340 68" fill="none" stroke="#185FA5" stroke-width="1.5" marker-start="url(#arrow3)" marker-end="url(#arrow3)"/>
+<text class="ts" x="352" y="89" dominant-baseline="central">需要补充信息</text>
+<rect x="60" y="110" width="140" height="48" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="130" y="134" text-anchor="middle" dominant-baseline="central" fill="#0C447C">submitted</text>
+<rect x="270" y="110" width="140" height="48" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="134" text-anchor="middle" dominant-baseline="central" fill="#0C447C">working</text>
+<rect x="480" y="110" width="140" height="48" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="550" y="134" text-anchor="middle" dominant-baseline="central" fill="#0C447C">completed</text>
+<path d="M200 134 L270 134" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow3)"/>
+<path d="M410 134 L480 134" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow3)"/>
+<path d="M340 158 L340 200" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow3)"/>
+<rect x="230" y="200" width="220" height="48" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="ts" x="340" y="224" text-anchor="middle" dominant-baseline="central" fill="#444441">failed · canceled · rejected</text>
+</svg>
+<figcaption>九个状态分三组：Running（submitted、working）、Paused（input-required、auth-required）、Finished（completed、failed、canceled、rejected）。</figcaption>
+</figure>
+
+<p>有个设计细节值得注意：<strong>终态不可重启</strong>。要基于已完成的任务继续细化，必须在同一 <code>contextId</code> 下开一个新的 <code>task id</code>。这听着别扭，但它逼着双方对"什么算做完"达成一致——而这恰好是多 Agent 系统最先崩的地方。</p>
+
+<h3>A2A v1.0（2026 年 3 月）：让它真正生产可用的那一步</h3>
+<ol>
+  <li><strong>Signed Agent Card</strong>——用 JWS（RFC 7515）对凭证做签名，规范化用 JCS（RFC 8785）。接收方可密码学验证 Card 确实由该域名所有者签发。没有签名，攻击者可以伪造一张 Card 把对等 Agent 引到恶意端点，这是发现层的伪造漏洞。</li>
+  <li><strong>多租户</strong>——一个端点承载多个逻辑 Agent（SaaS 提供商必需）。</li>
+  <li><strong>多协议绑定</strong>——同一个逻辑 Agent 可同时暴露 JSON-RPC 2.0、gRPC、HTTP+JSON/REST，数据模型与传输解耦。</li>
+  <li><strong>版本协商</strong>——承诺从 v0.3 向后兼容迁移。</li>
+</ol>
+<div class="warn">如果你还在 v0.2，请本季度升级：v0.2 没有签名 Card，这是一个不该留在信任模型里的伪造入口。</div>
+
+<h3>现状</h3>
+<ul>
+  <li>Google 于 2025-04-09 发布，2025 年 6 月捐给 Linux 基金会</li>
+  <li>IBM 的 ACP 于 2025 年 8 月合并进 A2A——避免了一场协议战争</li>
+  <li>2026 年 8 月成为 AAIF 正式项目，与 MCP 同属一个中立治理机构</li>
+  <li>生态：150+ 组织签署（AWS、Microsoft、Salesforce、SAP、ServiceNow、Cisco、Atlassian、麦肯锡等）；GitHub 约 2.2 万星，约为 MCP 的 40%</li>
+  <li>生产落地：PayPal（配合 AP2 支付协议完成代理支付）、Google Cloud ADK / Agent Engine / Cloud Run / GKE、Microsoft Azure AI Foundry、AWS Bedrock AgentCore</li>
+</ul>
+
+<h3>场景</h3>
+<ul>
+  <li>CRM Agent 把工单升级委派给 ServiceNow ITSM Agent，两边团队不写定制集成</li>
+  <li>跨公司供应链对账：一个团队用 LangGraph，另一个团队用别的框架</li>
+  <li>安全运营（SOC）：把一堆单点 Agent 串成一套"神经系统"</li>
+  <li>代理支付：购物与商户 Agent 通过 A2A 完成发现、议价、下单</li>
+</ul>
+
+<div class="warn">
+<strong>两个必须注意的点。</strong>（1）A2A <strong>不做内容净化</strong>——prompt injection 会随任务负载一路传播，输入校验是应用层责任。（2）跨组织的信任模型比 MCP 难得多：MCP 是 client–server，A2A 是两端都有自主性的对等 Agent，信任建立、鉴权、审计都要重新设计。
+</div>
+
+<h2 id="anp"><span class="num">04</span>ANP — 面向开放互联网的那一版</h2>
+
+<p><span class="pill">ANP 开源社区 · 2024</span><span class="pill">MIT</span><span class="pill">生态早期</span></p>
+
+<h3>是什么</h3>
+<p>Agent Network Protocol，自我定位是"The HTTP of the Agentic Web"，由国内 ANP 开源技术社区主导。A2A 的隐含前提是<strong>可信环境</strong>（企业内部、合作方之间）；ANP 赌的是另一个未来：<strong>全球任意两个陌生 Agent，像人类访问网站一样，不需要中心平台撮合就能互相发现、验证身份、协商协作</strong>。</p>
+
+<h3>三层架构</h3>
+<figure>
+<svg viewBox="0 0 680 296" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>ANP 三层架构</title>
+<rect x="40" y="20" width="600" height="76" rx="10" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="th" x="58" y="58" dominant-baseline="central">应用协议层</text>
+<rect x="170" y="36" width="140" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="240" y="58" text-anchor="middle" dominant-baseline="central">ADP 描述</text>
+<rect x="322" y="36" width="140" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="392" y="58" text-anchor="middle" dominant-baseline="central">发现协议</text>
+<rect x="474" y="36" width="140" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="544" y="58" text-anchor="middle" dominant-baseline="central">任务执行</text>
+<rect x="40" y="110" width="600" height="76" rx="10" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="th" x="58" y="148" dominant-baseline="central">元协议协商层</text>
+<rect x="170" y="126" width="140" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="240" y="148" text-anchor="middle" dominant-baseline="central">需求声明</text>
+<rect x="322" y="126" width="140" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="392" y="148" text-anchor="middle" dominant-baseline="central">协议协商</text>
+<rect x="474" y="126" width="140" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="544" y="148" text-anchor="middle" dominant-baseline="central">生成代码联调</text>
+<rect x="40" y="200" width="600" height="76" rx="10" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="th" x="58" y="238" dominant-baseline="central">身份与加密层</text>
+<rect x="170" y="216" width="140" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="240" y="238" text-anchor="middle" dominant-baseline="central">DID did:wba</text>
+<rect x="322" y="216" width="140" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="392" y="238" text-anchor="middle" dominant-baseline="central">身份验证</text>
+<rect x="474" y="216" width="140" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="544" y="238" text-anchor="middle" dominant-baseline="central">ECDHE 加密</text>
+</svg>
+<figcaption>ANP 三层：身份与加密通信层、元协议协商层、应用协议层。</figcaption>
+</figure>
+
+<h4>第一层 · 身份与加密通信层</h4>
+<p>基于 W3C DID 标准，自创 <code>did:wba</code>（Web-Based Agent）方法：继承 <code>did:web</code> 的优点，补上跨平台身份认证流程与 Agent 描述服务。DID 的公私钥对同时承担身份验证和 <strong>ECDHE 端到端加密</strong>两件事。这带来一个很实际的效果：Agent 可以租用第三方平台的端口转发消息，而<strong>平台方无法解密内容</strong>。这是 ANP 最"互联网原教旨"的地方——身份不依赖任何中心平台。</p>
+
+<h4>第二层 · 元协议协商层（与 A2A 的根本差异）</h4>
+<ol>
+  <li>Agent A 用自然语言向 B 描述需求、输入、期望输出，并给出候选协议（传输层协议、数据格式、数据处理方式）</li>
+  <li>B 用 AI 判断能否满足；不能则拒绝，或不接受候选协议并提出自己的方案，进入下一轮协商</li>
+  <li>双方达成一致后，<strong>各自生成并部署协议处理代码</strong></li>
+  <li>协商测试数据，联合调试协议与 AI 生成的代码</li>
+  <li>正式通信，使用最终协商出的协议与生成代码</li>
+  <li>需求变更时重复上述过程，直到达成新一致</li>
+</ol>
+
+<h4>第三层 · 应用协议层</h4>
+<p>ADP（Agent Description Protocol）用 JSON-LD + schema.org 词汇描述能力，配合发现协议构成"AI 原生数据网络"——每个节点是可描述、可发现、可调用的 Agent，每条链接是有语义的协议连接，而不是给人看的超链接。传输基于 HTTP，数据格式用 JSON-LD。</p>
+
+<h3>定位</h3>
+<p>官方自己的说法最清楚：<strong>用 MCP 接工具，用 A2A 做企业内 Agent 协作，用 ANP 做开放互联网上的 Agent 连接。</strong>采用 P2P 架构，不依赖中心平台。</p>
+
+<h3>典型场景</h3>
+<p>个人助理用自己持有的 DID 直接与任意酒店 / 航司 / 商户 Agent 交互，无需在对方平台注册身份、无需模拟人类点击网页，也不依赖平台专属 API；助理可在本地处理信息，只把必要信息发给对方。</p>
+
+<div class="note">
+<strong>现状与不确定性。</strong>目前是 v1.1 白皮书加参考实现 AgentConnect（Python SDK），生态仍处早期。它最大的不确定性在于押注"开放互联网"这个前提会成立——如果 Agent 协作长期发生在可信企业边界内，A2A 就够了，ANP 的价值会被压缩。另外一个实际障碍：元协议层让 Agent 运行时生成并部署代码，在合规审计上很难解释"为什么这次通信用了这个格式"。
+</div>
+
+<h2 id="agora"><span class="num">05</span>Agora — 不是协议，是"生产协议的协议"</h2>
+
+<p><span class="pill">牛津大学 · 2024-10</span><span class="pill">MIT</span><span class="pill">概念验证</span></p>
+
+<h3>是什么</h3>
+<p>前三个协议都默认一个前提：<strong>通信协议在部署前就已经定好了</strong>。Agora 恰恰挑战这个前提。它由牛津大学工程科学系团队（Samuele Marro、Emanuele La Malfa、Jesse Wright、Guohao Li、Nigel Shadbolt、Michael Wooldridge、Philip Torr）在 2024 年 10 月提出，论文是《A Scalable Communication Protocol for Networks of Large Language Models》（arXiv:2410.11905）。</p>
+<p>它是一个<strong>元协议（zero-layer protocol）</strong>——不规定任何具体通信格式，而是让 Agent 在运行时自己协商并生成协议。</p>
+
+<h3>核心洞察：Agent 通信三难困境</h3>
+<p>论文指出，不存在一种协议能同时最优地满足三个属性：</p>
+<figure>
+<svg viewBox="0 0 680 275" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Agora 与 Agent 通信三难困境</title>
+<path d="M340 75 L140 230" fill="none" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="4 4"/>
+<path d="M340 75 L540 230" fill="none" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="4 4"/>
+<path d="M140 230 L540 230" fill="none" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="4 4"/>
+<rect x="265" y="25" width="150" height="50" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="42" text-anchor="middle" dominant-baseline="central" fill="#0C447C">通用性</text>
+<text class="ts" x="340" y="60" text-anchor="middle" dominant-baseline="central" fill="#185FA5">多种消息格式都能跑</text>
+<rect x="65" y="205" width="150" height="50" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="140" y="222" text-anchor="middle" dominant-baseline="central" fill="#0C447C">效率</text>
+<text class="ts" x="140" y="240" text-anchor="middle" dominant-baseline="central" fill="#185FA5">低算力低网络开销</text>
+<rect x="465" y="205" width="150" height="50" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="540" y="222" text-anchor="middle" dominant-baseline="central" fill="#0C447C">可移植性</text>
+<text class="ts" x="540" y="240" text-anchor="middle" dominant-baseline="central" fill="#185FA5">接入成本低</text>
+<rect x="265" y="125" width="150" height="50" rx="8" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="142" text-anchor="middle" dominant-baseline="central" fill="#0C447C">Agora 元协议</text>
+<text class="ts" x="340" y="160" text-anchor="middle" dominant-baseline="central" fill="#185FA5">按场景动态切换</text>
+</svg>
+<figcaption>通用性、效率、可移植性三者不可同时最优；Agora 的策略是按场景动态切换。</figcaption>
+</figure>
+
+<p>传统方案要么用固定结构化协议（牺牲通用性），要么纯自然语言（牺牲效率）。Agora 的解法是<strong>承认这个权衡存在，然后动态切换</strong>：</p>
+<ul>
+  <li><strong>罕见通信用自然语言</strong>——保通用性</li>
+  <li><strong>频繁通信用协商出的专用协议</strong>——保效率</li>
+  <li><strong>LLM 驱动协商本身</strong>——保可移植性</li>
+</ul>
+
+<h3>协商三步</h3>
+<ol>
+  <li><strong>自然语言初步协商。</strong>两个陌生 Agent 初次交互，直接对话。不管对方基于 LangChain、Camel 还是 Swarm，都能先聊起来。</li>
+  <li><strong>产出 Protocol Document（PD）。</strong>一份纯文本描述的协议规范，双方确认后用 PD 的 <strong>SHA1 哈希</strong>作为该协议的标识。PD 用去中心化方式存储与检索，因此两个从未交互过的 Agent 也能复用同一个协议——这就是它解决"可移植性"的方式。</li>
+  <li><strong>按 PD 执行，不再经过 LLM。</strong>后续通信直接按 PD 走，保效率。如果通信频繁，Agent 还会自动把 PD <strong>编译成代码例程</strong>（Python / JS），把开销再降一档。</li>
+</ol>
+
+<div class="note">
+<strong>现状与硬伤。</strong>仍属学术概念验证，MIT 许可；论文在 100 个 LLM Agent 构成的网络上验证了可扩展性，但<strong>没有主流开源框架实现</strong>。生产环境的硬伤是：让 Agent 自主协商通信规则，<strong>合规审计和确定性行为无法保证</strong>——"这次为什么用这个格式"给不出可解释的答案。
+</div>
+
+<p>它的价值不在于被部署，而在于指出一个方向：<strong>未来的 Agent 基础设施可能不是一组固定协议，而是一个能按需生成协议的元层。</strong>ANP 的元协议协商层就是这个思路的工程化尝试（ANP 白皮书的参考文献里就引了 Agora 那篇论文）。</p>
+
+<h3>同名排雷</h3>
+<p>"Agora"这个词在这个领域至少指四样东西：</p>
+<table>
+  <colgroup><col style="width:30%"><col style="width:70%"></colgroup>
+  <thead><tr><th>名字</th><th>是什么</th></tr></thead>
+  <tbody>
+    <tr><td>牛津 Agora</td><td>本文所讲的元协议，arXiv:2410.11905，MIT</td></tr>
+    <tr><td>声网 Agora</td><td>实时音视频 RTC 服务，与 Agent 协议无关</td></tr>
+    <tr><td>npm <code>agora-protocol</code></td><td>2026 年出现的多智能体投票 / 否决 / 法定人数 / 异议保留语义库，架在 MCP 和 A2A 之上，不改这两个规范</td></tr>
+    <tr><td>npm <code>@rookdaemon/agora</code></td><td>基于 Ed25519 签名信封的 Agent 协调网络，提供直连 HTTP、WebSocket 中继与本地信誉工具</td></tr>
+  </tbody>
+</table>
+<p>其中 <code>agora-protocol</code> 值得单独说一句：2026 年 9 月一份协议分析报告《Governance Gaps in Agent Interoperability Protocols》检查了 MCP、A2A、ACP、ANP、ERC-8004，发现这五个协议<strong>全都没有定义投票、法定人数、偏好聚合，也没有记录"提案被否以及为什么被否"的机制</strong>。于是每个团队都在自己的编排代码里手写一遍，而且写法各不相同。这类"补缺层"很可能会长出一批。</p>
+
+<h2 id="agui"><span class="num">06</span>AG-UI — 智能体与用户之间的那条轴</h2>
+
+<p><span class="pill">CopilotKit · 2025-05</span><span class="pill">MIT</span><span class="pill">1.0 稳定版</span></p>
+
+<h3>是什么</h3>
+<p>Agent-User Interaction Protocol，由 CopilotKit 创建，2025 年 5 月发布，MIT 许可，仓库在 <code>ag-ui-protocol/ag-ui</code>。它标准化的是<strong>Agent 后端与用户界面之间的双向事件流</strong>。注意它的出身——它是从 CopilotKit 与 LangGraph、CrewAI 的真实合作实践里长出来的，不是先设计规范再找人用。</p>
+
+<h3>为什么需要它：Agent 打破了请求-响应模型</h3>
+<p>传统 HTTP 一次请求返回一个响应。但 Agent 不是这样：它<strong>逐 token 流式输出、中途调用工具、还会派生 subagent</strong>。于是前端的处境是：得自己解析流、跟踪 Agent 此刻在干什么、再把这堆东西映射成 UI。</p>
+<p>问题在于<strong>每个 Agent 框架的流格式都不一样</strong>。LangGraph 一种、CrewAI 一种、OpenAI Agents SDK 又一种。换框架就要重写一遍胶水代码，而且前端和后端被死死绑在一起。</p>
+<p>AG-UI 做的事很朴素：<strong>定义一条共享的双向事件流</strong>。Agent 后端按标准事件发，前端按标准事件渲染。结果是解耦——换框架不用改前端，换前端不用改 Agent，同一个 Agent 能同时跑在 Web、移动端、终端和 Slack 里。</p>
+
+<h3>三轴定位</h3>
+<figure>
+<svg viewBox="0 0 680 221" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Agent 三轴协议地图</title>
+<defs>
+<marker id="arrow4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="265" y="25" width="150" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="43" text-anchor="middle" dominant-baseline="central" fill="#0C447C">MCP</text>
+<text class="ts" x="340" y="61" text-anchor="middle" dominant-baseline="central" fill="#185FA5">Agent 到工具 / 数据</text>
+<path d="M340 77 L340 145" fill="none" stroke="#185FA5" stroke-width="1.5" marker-start="url(#arrow4)" marker-end="url(#arrow4)"/>
+<rect x="55" y="147" width="150" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="130" y="165" text-anchor="middle" dominant-baseline="central" fill="#0C447C">A2A / ANP</text>
+<text class="ts" x="130" y="183" text-anchor="middle" dominant-baseline="central" fill="#185FA5">Agent 到 Agent</text>
+<path d="M205 173 L265 173" fill="none" stroke="#185FA5" stroke-width="1.5" marker-start="url(#arrow4)" marker-end="url(#arrow4)"/>
+<rect x="475" y="147" width="150" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="550" y="165" text-anchor="middle" dominant-baseline="central" fill="#0C447C">AG-UI</text>
+<text class="ts" x="550" y="183" text-anchor="middle" dominant-baseline="central" fill="#185FA5">Agent 到用户界面</text>
+<path d="M415 173 L475 173" fill="none" stroke="#185FA5" stroke-width="1.5" marker-start="url(#arrow4)" marker-end="url(#arrow4)"/>
+<rect x="265" y="145" width="150" height="56" rx="8" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="173" text-anchor="middle" dominant-baseline="central" fill="#0C447C">你的 Agent</text>
+</svg>
+<figcaption>MCP 管纵向工具接入，A2A / ANP 管横向 Agent 协作，AG-UI 管面向用户的前端连接。三者互补，不竞争。</figcaption>
+</figure>
+
+<h3>原理：只有一个核心抽象</h3>
+<pre><code>run(input: RunAgentInput) -&gt; Observable&lt;BaseEvent&gt;</code></pre>
+<p>Agent 只要实现这一个方法，返回一个事件流即可。</p>
+<p><strong>每个事件的结构极简</strong>：<code>type</code>（必填）、<code>timestamp?</code>、<code>rawEvent?</code>（转换前的原始框架事件——这个字段保留了溯源能力）。协议里 <code>type</code> 用 <code>SCREAMING_SNAKE_CASE</code>，SDK 类名用 <code>PascalCase</code>。</p>
+<p><strong>传输无关</strong>：SSE、WebSocket、webhook 都支持。官方 <code>HttpAgent</code> 提供两种通道——HTTP SSE（好读好调试）和 HTTP 二进制协议（protobuf，生产环境更省带宽）。AG-UI 是这些传输之上的抽象层，不需要任何特殊基础设施。</p>
+<p><strong>中间件层降低接入成本</strong>：事件不要求和 AG-UI 格式完全一致，只要"AG-UI 兼容"即可，现有框架把自己的原生事件格式做点适配就能接上。</p>
+
+<h4>一次 run 在 SSE 上的报文</h4>
+<pre><code>data: {"type":"RUN_STARTED","threadId":"thr_1","runId":"run_42"}
+data: {"type":"TEXT_MESSAGE_START","messageId":"msg_1","role":"assistant"}
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_1","delta":"Found 3 flights…"}
+data: {"type":"TEXT_MESSAGE_END","messageId":"msg_1"}
+data: {"type":"STATE_DELTA","delta":[{"op":"replace","path":"/search/status","value":"complete"}]}
+data: {"type":"RUN_FINISHED","threadId":"thr_1","runId":"run_42"}</code></pre>
+
+<h4>一次真实交互的事件方向</h4>
+<figure>
+<svg viewBox="0 0 680 340" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>AG-UI 一次 run 的事件流时序</title>
+<defs>
+<marker id="arrow5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="60" y="20" width="170" height="48" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="145" y="44" text-anchor="middle" dominant-baseline="central" fill="#0C447C">前端 AG-UI Client</text>
+<rect x="450" y="20" width="170" height="48" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="535" y="44" text-anchor="middle" dominant-baseline="central" fill="#0C447C">Agent 后端</text>
+<path d="M145 68 L145 330" fill="none" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="4 4"/>
+<path d="M535 68 L535 330" fill="none" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="4 4"/>
+<text class="ts" x="340" y="90" text-anchor="middle" dominant-baseline="central">POST RunAgentInput</text>
+<path d="M145 100 L535 100" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow5)"/>
+<text class="ts" x="340" y="126" text-anchor="middle" dominant-baseline="central">RUN_STARTED</text>
+<path d="M535 136 L145 136" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow5)"/>
+<text class="ts" x="340" y="162" text-anchor="middle" dominant-baseline="central">TOOL_CALL_START · ARGS · END</text>
+<path d="M535 172 L145 172" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow5)"/>
+<text class="ts" x="340" y="198" text-anchor="middle" dominant-baseline="central">TOOL_CALL_RESULT（前端工具）</text>
+<path d="M145 208 L535 208" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow5)"/>
+<text class="ts" x="340" y="234" text-anchor="middle" dominant-baseline="central">STATE_DELTA（RFC 6902）</text>
+<path d="M535 244 L145 244" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow5)"/>
+<text class="ts" x="340" y="270" text-anchor="middle" dominant-baseline="central">TEXT_MESSAGE_CONTENT → END</text>
+<path d="M535 280 L145 280" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow5)"/>
+<text class="ts" x="340" y="306" text-anchor="middle" dominant-baseline="central">RUN_FINISHED</text>
+<path d="M535 316 L145 316" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow5)"/>
+</svg>
+<figcaption>事件流是双向的：Agent 推送状态与内容，前端回传前端工具的执行结果。</figcaption>
+</figure>
+
+<h3>事件族：七大类，约 30 个标准事件</h3>
+<table>
+  <colgroup><col style="width:16%"><col style="width:56%"><col style="width:28%"></colgroup>
+  <thead><tr><th>类别</th><th>事件</th><th>用途</th></tr></thead>
+  <tbody>
+    <tr><td>Lifecycle</td><td><code>RUN_STARTED</code> <code>RUN_FINISHED</code> <code>RUN_ERROR</code> <code>STEP_STARTED</code> <code>STEP_FINISHED</code></td><td>run 边界与进度</td></tr>
+    <tr><td>Text</td><td><code>TEXT_MESSAGE_START</code> <code>TEXT_MESSAGE_CONTENT</code> <code>TEXT_MESSAGE_END</code> <code>TEXT_MESSAGE_CHUNK</code></td><td>流式文本</td></tr>
+    <tr><td>Tool Calls</td><td><code>TOOL_CALL_START</code> <code>TOOL_CALL_ARGS</code> <code>TOOL_CALL_END</code> <code>TOOL_CALL_RESULT</code> <code>TOOL_CALL_CHUNK</code></td><td>工具调用全生命周期</td></tr>
+    <tr><td>State</td><td><code>STATE_SNAPSHOT</code> <code>STATE_DELTA</code> <code>MESSAGES_SNAPSHOT</code></td><td>状态同步</td></tr>
+    <tr><td>Activity</td><td><code>ACTIVITY_SNAPSHOT</code> <code>ACTIVITY_DELTA</code></td><td>结构化进度</td></tr>
+    <tr><td>Reasoning</td><td><code>REASONING_START</code> <code>REASONING_END</code> <code>REASONING_MESSAGE_*</code> <code>REASONING_ENCRYPTED_VALUE</code></td><td>思维链可见性</td></tr>
+    <tr><td>Special</td><td><code>RAW</code> <code>CUSTOM</code></td><td>扩展点</td></tr>
+  </tbody>
+</table>
+
+<h4>几条硬规则（规范明确定义，不是建议）</h4>
+<ul>
+  <li>每个 run <strong>必须</strong>以 <code>RUN_STARTED</code> 开始，以 <code>RUN_FINISHED</code> 或 <code>RUN_ERROR</code> 结束</li>
+  <li><code>TEXT_MESSAGE_CONTENT.delta</code> 不能为空</li>
+  <li>工具调用事件靠 <code>toolCallId</code> 关联</li>
+  <li><code>STATE_DELTA</code> 使用 RFC 6902 JSON Patch 格式</li>
+  <li>多个 run 顺序执行，每个必须完成才能开始下一个；消息跨 run 累积</li>
+  <li><code>TEXT_MESSAGE_CHUNK</code> 与 <code>TOOL_CALL_CHUNK</code> 是便利事件，客户端的 <code>transformChunks</code> 管道会自动展开成 Start / Content / End 三件套，后端实现可以简化</li>
+</ul>
+
+<h3>超出"流式文本"的能力</h3>
+<ol>
+  <li><strong>双向共享状态</strong>——<code>STATE_SNAPSHOT</code> 全量加 <code>STATE_DELTA</code> 增量（JSON Patch），前端可实时渲染 Agent 正在处理的结构化对象，而不只是等最终结果</li>
+  <li><strong>人在环中中断</strong>——协议级一等公民，见下节</li>
+  <li><strong>生成式 UI</strong>——Agent 输出可渲染成真实 UI 组件，而不只是文字</li>
+  <li><strong>前端工具执行</strong>——Agent 可调用运行在用户浏览器里的工具，带类型化交接；这意味着 Agent 能拿到当前页面状态、用户本地数据这类只在客户端存在的东西</li>
+  <li><strong>Agent 引导（steering）</strong>——用户可在 run 执行中途改变方向</li>
+  <li><strong>多模态</strong>——文件、图片、音频、转录文本随文本一起传</li>
+  <li><strong>分支 / 时间旅行</strong>——<code>parentRunId</code> 把 run 组织成类似 git 的追加式日志</li>
+  <li><strong>推理可见性</strong>——<code>REASONING_*</code> 事件族单独成组，含加密推理内容的处理</li>
+</ol>
+
+<h3>人在环中：协议级的中断与恢复</h3>
+<figure>
+<svg viewBox="0 0 680 306" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>AG-UI 人在环中中断与恢复流程</title>
+<defs>
+<marker id="arrow6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="180" y="20" width="320" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="42" text-anchor="middle" dominant-baseline="central" fill="#0C447C">run 1 执行中 · Agent 需要确认</text>
+<path d="M340 64 L340 94" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow6)"/>
+<rect x="180" y="94" width="320" height="44" rx="8" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="116" text-anchor="middle" dominant-baseline="central" fill="#0C447C">RUN_FINISHED · outcome: interrupt</text>
+<path d="M340 138 L340 168" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow6)"/>
+<rect x="180" y="168" width="320" height="44" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="340" y="190" text-anchor="middle" dominant-baseline="central" fill="#444441">人在环中 · 批准 / 编辑 / 重试 / 升级</text>
+<path d="M340 212 L340 242" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow6)"/>
+<rect x="180" y="242" width="320" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="264" text-anchor="middle" dominant-baseline="central" fill="#0C447C">run 2 · RunAgentInput.resume 数组</text>
+</svg>
+<figcaption>中断不挂连接：run 以 interrupt 结束，人回来后再用一个带 resume 数组的新 run 继续。</figcaption>
+</figure>
+
+<p>当 Agent 需要一个确认（比如"要不要真的删掉这个生产环境里的桶"），它不是挂在流上傻等，而是<strong>结束当前 run 并声明自己被打断了</strong>。<code>RUN_FINISHED</code> 的 <code>outcome</code> 是一个判别联合：</p>
+<ul>
+  <li>省略——生产者还没采用中断感知生命周期，按正常完成处理</li>
+  <li><code>{ type: "success" }</code>——正常完成</li>
+  <li><code>{ type: "interrupt", interrupts: [...] }</code>——为了等人输入而暂停，未决中断放在 outcome 里</li>
+</ul>
+<p>客户端恢复的方式是<strong>发起一个新的 run</strong>，在 <code>RunAgentInput</code> 里带 <code>resume</code> 数组，逐个回应每一个未决中断。</p>
+<p>这个设计的好处是<strong>它没有破坏无状态性</strong>：中断期间服务端不需要挂着连接、不需要保存会话，只需要表达"我被打断了，这是我要问的问题"。人什么时候回来都行。这与 MCP 2026 版用 MRTR 替换长连接 elicitation 是同一个思路——两边独立演化到了同一个结论。</p>
+
+<h3>AG-UI 1.0：从"能用"到"稳定"</h3>
+<ul>
+  <li>发布完整规范加 <strong>JSON Schema</strong>，明确定义每个事件携带哪些字段；TypeScript、Python、.NET 三个 SDK <strong>由 schema 生成</strong>，不再手工维护</li>
+  <li>规范里每条规则都注明<strong>责任方</strong>：生产者（Agent）还是消费者（客户端）。schema 与规范冲突时以 schema 为准；实现违反规则时是实现的 bug，不用猜</li>
+  <li><strong>向后兼容</strong>，现有 Agent 和应用不受影响；1.0 规范不会再变</li>
+  <li>1.0 新增：subagent 支持、向前端发送自定义数据的 metadata、多模态工具结果、人在环中断、token 用量统计</li>
+  <li>规范先以草案发布、在 GitHub 公开讨论，Anthropic、Pydantic AI、TanStack 团队的反馈进入了最终版本</li>
+</ul>
+
+<h3>现状与生态</h3>
+<table>
+  <colgroup><col style="width:20%"><col style="width:80%"></colgroup>
+  <thead><tr><th>维度</th><th>情况</th></tr></thead>
+  <tbody>
+    <tr><td>采用方</td><td>Google、Microsoft、Amazon、Oracle</td></tr>
+    <tr><td>框架支持</td><td>LangChain、Mastra、Google ADK、Anthropic Claude Managed Agents、OpenAI Agents SDK、Strands Agents、Microsoft Agent Framework、Pydantic AI、AG2、CrewAI、TanStack</td></tr>
+    <tr><td>前端运行时</td><td>CopilotKit（React / Angular / Vue / React Native），以及 Slack、Teams、WhatsApp、Telegram、Discord</td></tr>
+    <tr><td>仓库</td><td><code>ag-ui-protocol/ag-ui</code>，约 1.48 万星（2026 年 7 月），32 个发布，MIT</td></tr>
+    <tr><td>上手</td><td><code>npx create-ag-ui-app@latest</code>；官方 AG-UI Dojo 提供 30 个实时集成示例</td></tr>
+  </tbody>
+</table>
+<p>接入方式在工程上很轻。以 Pydantic AI 为例，一个 FastAPI 端点四步就够：<code>build_run_input()</code> 解析请求体、<code>run_stream()</code> 跑 Agent 拿到事件流、<code>encode_stream()</code> 按 Accept 头编码、返回 <code>StreamingResponse</code>。换任何 ASGI 框架同理。</p>
+
+<h3>应用场景</h3>
+<ul>
+  <li><strong>"边想边看"的协作型产品</strong>——Cursor 那一类，用户在同一工作区和 AI 一起改文档、代码、表格。这类体验靠传统请求-响应做不出来</li>
+  <li><strong>需要工具审批的场景</strong>——Agent 执行敏感动作（发邮件、部署、退款）前暂停，等人点确认</li>
+  <li><strong>生成式 UI</strong>——Agent 返回直接变成可交互的表单、看板、图表</li>
+  <li><strong>多端复用同一个 Agent</strong>——Web、移动端、终端、Slack 共享一个后端</li>
+  <li><strong>前端工具</strong>——让 Agent 调用只在浏览器里存在的工具</li>
+</ul>
+
+<div class="warn">
+<strong>局限与容易踩的坑。</strong>
+<ol style="margin:8px 0 0">
+  <li>它只管 <strong>Agent ↔ 用户</strong>这一段。工具接入还是 MCP，Agent 间协作还是 A2A。</li>
+  <li><strong>取消语义还不完整。</strong>目前没有 <code>cancelled</code> 结果类型——一方主动取消时，适配器只发一个裸的 <code>RUN_FINISHED</code>，不会报 <code>RUN_ERROR</code>；而<strong>客户端断连会被服务端视为外部取消</strong>，不会触发取消回调。想实现"停止生成"手势，正确做法是保持流连接，通过独立的取消端点做一方取消。</li>
+  <li><strong>"人在环中"是协议级中断，不是业务级审批流。</strong>谁能批、批几级、怎么留痕，仍要自己实现。</li>
+  <li><strong>治理结构与前两者不同。</strong>MCP 和 A2A 已在 Linux 基金会下的 AAIF 做中立治理；AG-UI 由 CopilotKit 主导、MIT 开源。采用方名单很长，但治理集中度确实更高——如果评审流程会问"供应商弃用风险"，这一条要单独评估。</li>
+  <li><strong>与 MCP Apps 有重叠区。</strong>MCP Apps 是让 MCP Server 渲染 UI，AG-UI 是让 Agent 驱动任意前端。选择依据是 UI 的所有权在工具方还是应用方。</li>
+</ol>
+</div>
+
+<h3>AG-UI 时间线补充</h3>
+<ul>
+  <li><strong>2025-05</strong>：AG-UI 随 CopilotKit 与 LangGraph、CrewAI 的合作实践发布</li>
+  <li><strong>2026-07</strong>：仓库约 1.48 万星、32 个发布，采用方覆盖 Google、Microsoft、Amazon、Oracle</li>
+  <li><strong>2026</strong>：AG-UI 1.0 发布，规范冻结，三大 SDK 由 JSON Schema 生成</li>
+</ul>
+
+<h3>最容易混的两个名字：AG-UI ≠ A2UI</h3>
+<table>
+  <colgroup><col style="width:20%"><col style="width:40%"><col style="width:40%"></colgroup>
+  <thead><tr><th></th><th>AG-UI</th><th>A2UI</th></tr></thead>
+  <tbody>
+    <tr><td>出处</td><td>CopilotKit</td><td>Google</td></tr>
+    <tr><td>是什么</td><td>事件流<strong>线协议</strong></td><td>声明式<strong>载荷格式</strong></td></tr>
+    <tr><td>内容</td><td>Agent 后端与前端之间怎么通信</td><td>Agent 返回一棵 JSON 组件树，宿主渲染成交互式 UI</td></tr>
+    <tr><td>打个比方</td><td>管道</td><td>管道里流的东西</td></tr>
+  </tbody>
+</table>
+<p><strong>一个是管道，一个是载荷。</strong>A2UI 的载荷可以通过 AG-UI 传输，也可以通过 A2A 传输。两个名字只差一个字符，但层次完全不同——这是目前最容易搞混的一对。</p>
+
+<h3>AG-UI 与 MCP / A2A 的分工</h3>
+<table>
+  <colgroup><col style="width:22%"><col style="width:26%"><col style="width:26%"><col style="width:26%"></colgroup>
+  <thead><tr><th></th><th>MCP</th><th>A2A</th><th>AG-UI</th></tr></thead>
+  <tbody>
+    <tr><td>连接的两端</td><td>Agent ↔ 工具 / 数据</td><td>Agent ↔ Agent</td><td>Agent ↔ 用户界面</td></tr>
+    <tr><td>方向</td><td>纵向</td><td>横向</td><td>面向用户</td></tr>
+    <tr><td>主要载体</td><td>JSON-RPC 2.0</td><td>JSON-RPC / gRPC / REST</td><td>事件流（SSE 为主）</td></tr>
+    <tr><td>核心抽象</td><td>Tool / Resource / Prompt</td><td>Task / Artifact</td><td>Event（事件流）</td></tr>
+    <tr><td>状态</td><td>无状态（2026 版）</td><td>任务有状态</td><td>双向共享状态（快照 + 增量）</td></tr>
+    <tr><td>谁来实现</td><td>工具提供方</td><td>Agent 提供方</td><td>后端与前端各一半</td></tr>
+  </tbody>
+</table>
+
+<h2 id="compare"><span class="num">07</span>横向对比</h2>
+<table>
+  <colgroup><col style="width:12%"><col style="width:18%"><col style="width:17%"><col style="width:18%"><col style="width:17%"><col style="width:18%"></colgroup>
+  <thead><tr><th>维度</th><th>MCP</th><th>A2A</th><th>ANP</th><th>Agora</th><th>AG-UI</th></tr></thead>
+  <tbody>
+    <tr><td>层次</td><td>工具 / 数据接入（纵向）</td><td>Agent 协作（横向）</td><td>Agent 互联（横向·开放网络）</td><td>元协议（协议之下）</td><td>用户交互（面向用户）</td></tr>
+    <tr><td>提出方</td><td>Anthropic，2024-11</td><td>Google，2025-04</td><td>ANP 开源社区，2024</td><td>牛津大学，2024-10</td><td>CopilotKit，2025-05</td></tr>
+    <tr><td>治理</td><td>AAIF 创始项目</td><td>AAIF 正式项目（2026-08）</td><td>开源社区自持</td><td>学术，MIT</td><td>CopilotKit 主导，MIT</td></tr>
+    <tr><td>拓扑</td><td>Client–Server，一端只提供能力</td><td>对等，两端都有自主性</td><td>P2P，无中心</td><td>不限定</td><td>后端 ↔ 前端，点对点事件流</td></tr>
+    <tr><td>身份</td><td>OAuth 2.0 / CIMD</td><td>Agent Card + JWS 签名 + OAuth / OIDC / mTLS</td><td>W3C DID（did:wba）+ ECDHE</td><td>不涉及</td><td>复用应用既有会话鉴权</td></tr>
+    <tr><td>传输</td><td>JSON-RPC 2.0；stdio / 无状态 HTTP</td><td>JSON-RPC 2.0 / gRPC / HTTP+JSON，SSE + webhook</td><td>HTTP + JSON-LD</td><td>任意（运行时协商）</td><td>SSE / WebSocket / webhook（事件流）</td></tr>
+    <tr><td>核心对象</td><td>Tools / Resources / Prompts</td><td>Agent Card / Task / Message / Artifact</td><td>ADP 描述 / 发现协议 / 元协议</td><td>Protocol Document（PD）</td><td>Event（约 30 个标准事件）</td></tr>
+    <tr><td>成熟度</td><td>极高，1 万+ Server</td><td>生产可用，150+ 组织</td><td>早期，有参考实现</td><td>概念验证，无主流实现</td><td>生产可用，1.0 规范冻结</td></tr>
+    <tr><td>最适合</td><td>给一个 Agent 装工具</td><td>跨团队 / 跨厂商 / 跨组织派活</td><td>公网上陌生 Agent 互联</td><td>研究多智能体自组织</td><td>流式 + 可干预的 Agent 前端</td></tr>
+    <tr><td>主要风险</td><td>工具投毒，40+ CVE</td><td>注入随负载传播，跨组织信任难</td><td>"开放互联网"前提可能不成立</td><td>不可审计、行为不确定</td><td>治理集中度高；取消语义不完整</td></tr>
+  </tbody>
+</table>
+
+<h2 id="choose"><span class="num">08</span>怎么选：五个问题</h2>
+<ol>
+  <li><strong>"我这个 Agent 能碰到什么？"</strong> 这是 MCP 问题。一个 Agent 要接 10 个工具，用 MCP，别自己写插件。</li>
+  <li><strong>"谁能把这个活接走？"</strong> 这是 A2A 问题。两个团队的 Agent 要互相委派，用 A2A，别写私有胶水代码。</li>
+  <li><strong>"公网上的陌生 Agent 怎么找到我？"</strong> 这是 ANP 问题。但如果协作永远在可信边界内，A2A 就够了。</li>
+  <li><strong>"用户怎么看见并干预这个过程？"</strong> 这是 AG-UI 问题。只要 Agent 是流式、会调工具、需要人确认，就该用它，别让每个前端自己解析各家框架的流。</li>
+  <li><strong>"协议能不能自己长出来？"</strong> 这是 Agora 问题。今天别上生产，但值得理解它的思路，因为它正在被工程化项目吸收。</li>
+</ol>
+
+<div class="ok">
+<strong>一个自检方法。</strong>如果你已经写了一个"A 调 B"的接口，还顺带定义了 B 的能力描述、版本管理、超时与断连处理——那你其实在写一个没有文档化的私有 A2A。每个团队写出来的都不一样，这正是标准化要解决的问题。
+</div>
+
+<h3>参考技术栈分层</h3>
+<pre><code>交互层     AG-UI（Agent ↔ 用户前端的双向事件流）
+────────────────────────────────────────
+应用层     你的 Agent 与业务流程
+────────────────────────────────────────
+协作层     A2A（跨组织委派）  /  ANP（开放网络互联）
+编排层     框架内置的进程内编排（如 ADK 等）
+接入层     MCP（工具 / 数据 / 资源）
+身份层     Agent Card 签名 · DID · OAuth 2.0 · mTLS
+传输层     HTTP / gRPC / SSE / WebSocket</code></pre>
+
+<h2 id="timeline"><span class="num">09</span>时间线：两年内发生了什么</h2>
+<figure>
+<svg viewBox="0 0 680 338" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>智能体协议演进时间线</title>
+<path d="M150 40 L150 300" fill="none" stroke="#B4B2A9" stroke-width="0.5"/>
+<circle cx="150" cy="40" r="4" fill="#185FA5"/>
+<text class="ts" x="132" y="40" text-anchor="end" dominant-baseline="central">2024-10</text>
+<text class="t" x="170" y="40" dominant-baseline="central">Agora 论文发布（牛津大学）</text>
+<text class="ts" x="170" y="58" dominant-baseline="central">首个让 Agent 自己协商协议的元协议</text>
+<circle cx="150" cy="92" r="4" fill="#185FA5"/>
+<text class="ts" x="132" y="92" text-anchor="end" dominant-baseline="central">2024-11</text>
+<text class="t" x="170" y="92" dominant-baseline="central">MCP 发布（Anthropic）</text>
+<text class="ts" x="170" y="110" dominant-baseline="central">把工具接入标准化，后来成为事实标准</text>
+<circle cx="150" cy="144" r="4" fill="#185FA5"/>
+<text class="ts" x="132" y="144" text-anchor="end" dominant-baseline="central">2024</text>
+<text class="t" x="170" y="144" dominant-baseline="central">ANP 白皮书（国内开源社区）</text>
+<text class="ts" x="170" y="162" dominant-baseline="central">面向开放互联网的去中心化 Agent 网络</text>
+<circle cx="150" cy="196" r="4" fill="#185FA5"/>
+<text class="ts" x="132" y="196" text-anchor="end" dominant-baseline="central">2025-04</text>
+<text class="t" x="170" y="196" dominant-baseline="central">A2A 发布（Google）</text>
+<text class="ts" x="170" y="214" dominant-baseline="central">标准化 Agent 之间的横向协作与任务委派</text>
+<circle cx="150" cy="248" r="4" fill="#185FA5"/>
+<text class="ts" x="132" y="248" text-anchor="end" dominant-baseline="central">2025-12</text>
+<text class="t" x="170" y="248" dominant-baseline="central">AAIF 成立（Linux 基金会）</text>
+<text class="ts" x="170" y="266" dominant-baseline="central">MCP 成为创始项目，协议进入中立治理</text>
+<circle cx="150" cy="300" r="4" fill="#185FA5"/>
+<text class="ts" x="132" y="300" text-anchor="end" dominant-baseline="central">2026</text>
+<text class="t" x="170" y="300" dominant-baseline="central">收敛与硬化</text>
+<text class="ts" x="170" y="318" dominant-baseline="central">A2A v1.0 签名卡 → MCP 无状态化 → A2A 加入 AAIF</text>
+</svg>
+<figcaption>关键节点：协议从厂商主导走向中立治理，并在这个阶段集中补安全短板。</figcaption>
+</figure>
+
+<h3>几个容易被忽略的节点</h3>
+<ul>
+  <li><strong>2025-04</strong>：Google 发布 A2A</li>
+  <li><strong>2025-05</strong>：CopilotKit 发布 AG-UI，从与 LangGraph、CrewAI 的真实合作实践中长出来</li>
+  <li><strong>2025-06</strong>：Google 把 A2A 捐给 Linux 基金会</li>
+  <li><strong>2025-08</strong>：IBM 的 Agent Communication Protocol 合并进 A2A，工程师并入 A2A 技术指导委员会</li>
+  <li><strong>2025-12-09</strong>：Linux 基金会宣布成立 AAIF，三个创始项目为 Anthropic 的 MCP、Block 的 goose、OpenAI 的 AGENTS.md</li>
+  <li><strong>2026-03</strong>：A2A v1.0 稳定版发布，加入签名 Agent Card、多租户、多协议绑定、版本协商</li>
+  <li><strong>2026-07-28</strong>：MCP 2026-07-28 规范正式发布，协议核心变为无状态</li>
+  <li><strong>2026</strong>：AG-UI 1.0 发布，完整规范与 JSON Schema 冻结，三大 SDK 由 schema 生成</li>
+  <li><strong>2026-08</strong>：A2A 成为 AAIF 正式项目——两条轴的治理合流，AAIF 成员从 49 家增至 250+ 家</li>
+</ul>
+
+<h2 id="myths"><span class="num">10</span>七个必须避开的误区</h2>
+<ol>
+  <li><strong>把五者当竞品比较。</strong>层次不同。MCP 和 A2A 甚至已经同属 AAIF，官方定位是"垂直 / 水平两条互补的轴"，不会被合并，只是让路线图不再相撞；AG-UI 又在第三个方向上，面向用户。</li>
+  <li><strong>以为 MCP 能替代 A2A。</strong>MCP 管不了任务生命周期、能力发现、跨组织委派；它也不描述"对方是谁、凭什么信他"。</li>
+  <li><strong>以为 A2A 能替代 MCP。</strong>A2A 不定义工具调用原语。一个 Agent 接受任务之后，它怎么访问自己的数据库，仍然是 MCP 的事。</li>
+  <li><strong>把 AG-UI 和 A2UI 混为一谈。</strong>AG-UI 是事件流<strong>线协议</strong>（管道），A2UI 是声明式<strong>载荷格式</strong>（管道里流的东西）。名字只差一个字符，层次完全不同。</li>
+  <li><strong>以为协议写好了就安全了。</strong>协议只解决"怎么连"，不解决"连上之后对方会不会骗你"。MCP 第一年 40+ CVE、A2A 的注入传播，都是现成的例子。</li>
+  <li><strong>忽视治理归属。</strong>MCP 从 Anthropic、A2A 从 Google 都转到了 Linux 基金会下的 AAIF；AG-UI 仍由 CopilotKit 主导。做架构或采购评审时，"如果厂商弃用怎么办"这个问题，三者的答案并不一样。</li>
+  <li><strong>忽略 IETF 的存在。</strong>见下一节。</li>
+</ol>
+
+<h2 id="ietf"><span class="num">11</span>标准化动向：IETF 在做什么</h2>
+
+<p>IETF 第 126 次会议（2026 年 7 月，维也纳）组织了智能体相关的工作组组建讨论。目前的共识很清楚：<strong>聚焦可互操作的发现与通信协议，不覆盖语义层，坚持问题驱动，避免构建大而全的协议体系。</strong></p>
+
+<table>
+  <colgroup><col style="width:20%"><col style="width:80%"></colgroup>
+  <thead><tr><th>方向</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>agentproto</code></td><td>Agent 通信协议工作组。定义通用的 Agentic Dialog Management Protocol，处理对话标识、生命周期语义、对话上下文如何跨多方中介与信任边界传播；不替代应用层协议，也不定义新传输。里程碑：2026-12 用例草案、2027-02 架构草案、2027-03 协议草案、2028-03 提交 IESG</td></tr>
+    <tr><td><code>DAWN</code></td><td>智能体发现方向的工作组组建讨论</td></tr>
+    <tr><td><code>DMSC</code></td><td>多智能体动态安全交互方向</td></tr>
+    <tr><td>OAuth / WIMSE</td><td>两个安全工作组均已修改章程，把智能体授权与智能体身份认证纳入标准范围。讨论覆盖十大典型智能体授权场景、动态细粒度令牌的申请 / 授予 / 委托 / 撤销</td></tr>
+  </tbody>
+</table>
+
+<p>一个重要的概念转变：<strong>AI Agent 需要独立于所代表用户的、可验证的自身身份</strong>。这样才能独立撤销 Agent 的访问权、把 Agent 权限约束为用户权限的子集、并把 Agent 发起的动作与用户发起的动作在审计上区分开。</p>
+
+<h2 id="glossary"><span class="num">12</span>术语表</h2>
+<table>
+  <colgroup><col style="width:26%"><col style="width:74%"></colgroup>
+  <thead><tr><th>术语</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td>MCP</td><td>Model Context Protocol，Agent 与工具 / 数据之间的接入协议</td></tr>
+    <tr><td>A2A</td><td>Agent2Agent，Agent 之间的横向协作与任务委派协议</td></tr>
+    <tr><td>ANP</td><td>Agent Network Protocol，面向开放互联网的去中心化 Agent 互联协议</td></tr>
+    <tr><td>Agora</td><td>牛津大学提出的元协议，让 Agent 在运行时协商并生成通信协议</td></tr>
+    <tr><td>AG-UI</td><td>Agent-User Interaction Protocol，定义 Agent 后端与用户界面之间的双向事件流</td></tr>
+    <tr><td>A2UI</td><td>Google 提出的声明式 UI 载荷格式，Agent 返回一棵 JSON 组件树由宿主渲染（与 AG-UI 不同层）</td></tr>
+    <tr><td>AAIF</td><td>Agentic AI Foundation，Linux 基金会下托管 MCP、A2A、goose、AGENTS.md 等项目的机构</td></tr>
+    <tr><td>Agent Card</td><td>A2A 中 Agent 的公开能力描述文档，位于 <code>/.well-known/agent-card.json</code></td></tr>
+    <tr><td>ADP</td><td>Agent Description Protocol，ANP 中基于 JSON-LD 的 Agent 描述协议</td></tr>
+    <tr><td>DID / did:wba</td><td>W3C 去中心化标识符；<code>did:wba</code> 是 ANP 提出的面向 Agent 的 DID 方法</td></tr>
+    <tr><td>PD</td><td>Protocol Document，Agora 中由 Agent 协商生成的纯文本协议规范，以 SHA1 哈希标识</td></tr>
+    <tr><td>MRTR</td><td>Multi Round-Trip Requests，MCP 2026-07-28 引入的多轮往返请求机制，替代长连接 elicitation</td></tr>
+    <tr><td>JCS</td><td>JSON Canonicalization Scheme，RFC 8785，签名前对 JSON 做规范化</td></tr>
+    <tr><td>MCP Apps / Tasks</td><td>MCP 扩展框架中的两个扩展，分别对应服务端渲染 UI 与长任务</td></tr>
+    <tr><td>Run</td><td>AG-UI 中的一次 Agent 执行单元，必须以 <code>RUN_STARTED</code> 开始、以 <code>RUN_FINISHED</code> 或 <code>RUN_ERROR</code> 结束</td></tr>
+    <tr><td>Interrupt / resume</td><td>AG-UI 的人在环机制：run 以 <code>outcome=interrupt</code> 结束并携带未决问题，用户回应后发起带 <code>resume</code> 的新 run 继续</td></tr>
+  </tbody>
+</table>
+
+<h2 id="refs"><span class="num">13</span>参考资料</h2>
+<ul>
+  <li>MCP 官方规范与博客：<a href="https://blog.modelcontextprotocol.io/posts/2026-07-28/">The 2026-07-28 Specification</a></li>
+  <li>Cloudflare：<a href="https://blog.cloudflare.com/mcp-v2/">The next generation of MCP</a></li>
+  <li>A2A 规范说明：<a href="https://a2aproject.github.io/A2A/">Agent2Agent Protocol</a>（v1.0）</li>
+  <li>ANP 白皮书：<a href="https://agent-network-protocol.com/specs/1.1/white-paper">Agent Network Protocol Technical White Paper</a></li>
+  <li>ANP 入门指南：<a href="https://agent-network-protocol.com/guide/">ANP Getting Started Guide</a></li>
+  <li>AG-UI 协议与文档：<a href="https://docs.ag-ui.com/">AG-UI Documentation</a> ／ <a href="https://github.com/ag-ui-protocol/ag-ui">ag-ui-protocol/ag-ui</a></li>
+  <li>AG-UI 事件规范：<a href="https://docs.ag-ui.com/concepts/events">Events</a>（约 30 个标准事件的字段定义）</li>
+  <li>Agora 论文：<a href="https://arxiv.org/abs/2410.11905">A Scalable Communication Protocol for Networks of Large Language Models</a>（arXiv:2410.11905）</li>
+  <li>安全威胁建模对比：<a href="https://tomesphere.com/paper/2602.11327">Security Threat Modeling for Emerging AI-Agent Protocols: MCP, A2A, Agora, and ANP</a></li>
+  <li>IETF 工作组：<a href="https://datatracker.ietf.org/doc/charter-ietf-agentproto/00-02/">Agent Communication Protocols（agentproto）</a></li>
+  <li>Agentic AI Foundation：<a href="https://aaif.io">aaif.io</a></li>
+</ul>
+
+<footer>
+  <p>本文件由整理者依据各协议截至 2026 年 10 月的公开规范、官方博客与公开报道汇编，用于技术选型与分析参考。协议仍在快速演进，落地前请以官方最新规范为准。</p>
+</footer>
+
+</div>
+</body>
+</html>

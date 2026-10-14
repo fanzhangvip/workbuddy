@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="docx-page-size" content="A4">
+  <title>10 月交付冲刺方案</title>
+  <style>
+  @page {
+    @bottom-center { content: counter(page); }
+  }
+  @page cover {
+    @bottom-center { content: none; }
+  }
+  section[role="cover"] { page: cover; }
+
+  :root {
+    --fs-h1: var(--typography-fontSize-h1);
+    --fs-h2: var(--typography-fontSize-h2);
+    --fs-h3: var(--typography-fontSize-h3);
+    --fs-body: var(--typography-fontSize-body);
+    --fs-small: var(--typography-fontSize-small);
+    --ff-heading: var(--typography-fontFamily-heading);
+    --ff-body: var(--typography-fontFamily-body);
+    --lh-body: var(--typography-lineHeight-body);
+    --fw-bold: var(--typography-fontWeight-heading);
+    --color-primary: var(--color-primary);
+    --color-accent: var(--color-accent);
+    --color-text: var(--color-text);
+    --color-muted: var(--color-textSecondary);
+    --color-heading: var(--color-heading);
+    --color-border: var(--color-divider);
+    --color-bg: var(--color-background);
+    --color-highlight: var(--color-surface);
+    --spacing-paragraph: var(--spacing-paragraph);
+    --spacing-section: var(--spacing-sectionGap);
+    --spacing-block: var(--spacing-cardPadding);
+    --margin-page: var(--layout-marginLeft);
+    --color-summary-bg: var(--color-surface);
+    --color-summary-border: var(--color-primary);
+    --summary-border-width: 4px;
+    --color-emphasis: var(--color-text);
+    --page-content-width: var(--layout-maxContentWidth);
+    --space-xxs: 0.3em;
+    --space-xs: 0.4em;
+    --space-sm: 0.5em;
+    --space-md: 0.6em;
+    --space-lg: 0.8em;
+    --space-indent: 1.5em;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--ff-body);
+    font-size: var(--fs-body);
+    line-height: var(--lh-body);
+    color: var(--color-text);
+    background: var(--color-bg);
+    max-width: var(--page-content-width);
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .report-cover {
+    display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
+    min-height: 60vh; padding: var(--margin-page);
+    background: var(--color-highlight);
+  }
+  .cover-category {
+    font-size: var(--typography-fontSize-coverCategory);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-primary); letter-spacing: 0.08em; margin-bottom: var(--space-lg);
+    text-align: left;
+  }
+  .cover-title {
+    font-size: var(--typography-fontSize-coverTitle);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-primary); margin-bottom: var(--space-sm); text-align: left;
+  }
+  .cover-subtitle {
+    font-size: var(--typography-fontSize-subtitle);
+    color: var(--color-muted); margin-bottom: var(--spacing-section); text-align: left;
+  }
+  .cover-meta { font-size: var(--fs-small); color: var(--color-muted); text-align: left; }
+  .cover-meta p { margin-bottom: var(--space-xxs); color: var(--color-muted); font-size: var(--fs-small); }
+
+  .doc-toc {
+    padding: var(--spacing-block) var(--margin-page);
+    background: var(--color-bg); border-bottom: 1px solid var(--color-border);
+  }
+  .toc-title { font-weight: var(--fw-bold); margin-bottom: var(--space-sm); font-size: var(--fs-h3); color: var(--color-heading); }
+  .toc-list, .toc-list ol, .toc-list ul {
+    list-style: none; list-style-type: none; padding-left: var(--space-indent);
+  }
+  .toc-list li { margin-bottom: var(--space-xxs); text-indent: 0; font-size: var(--fs-body); color: var(--color-text); }
+  .toc-list a { color: var(--color-primary); text-decoration: none; }
+
+  .executive-summary {
+    margin: var(--spacing-section) var(--margin-page);
+    padding: var(--spacing-section);
+    border-left: var(--summary-border-width) solid var(--color-summary-border);
+    background: var(--color-summary-bg);
+  }
+  .summary-header { margin-bottom: var(--spacing-block); }
+  .summary-header h2 { font-size: var(--fs-h2); font-family: var(--ff-heading); color: var(--color-heading); font-weight: var(--fw-bold); }
+  .summary-badge { font-size: var(--fs-small); color: var(--color-muted); font-style: italic; }
+  .summary-body { color: var(--color-text); font-size: var(--fs-body); }
+  .summary-body p { margin-bottom: var(--spacing-paragraph); color: var(--color-text); font-size: var(--fs-body); }
+
+  .report-body { padding: var(--spacing-section) var(--margin-page); }
+  .report-body h2 {
+    font-size: var(--fs-h2); font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-heading);
+    margin-top: var(--spacing-section); margin-bottom: var(--spacing-paragraph);
+    text-align: left;
+  }
+  .report-body h3 {
+    font-size: var(--fs-h3); font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-heading);
+    margin-top: var(--spacing-block); margin-bottom: var(--spacing-paragraph);
+    text-align: left;
+  }
+  .report-body h4 {
+    font-size: var(--fs-body); font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-text);
+    margin-top: var(--spacing-block); margin-bottom: var(--spacing-paragraph);
+    text-align: left;
+  }
+  .report-body p { margin-bottom: var(--spacing-paragraph); color: var(--color-text); font-size: var(--fs-body); text-align: justify; }
+  .report-body ul, .report-body ol { margin: 0 0 var(--spacing-paragraph) var(--space-indent); }
+  .report-body li { margin-bottom: var(--space-xxs); color: var(--color-text); font-size: var(--fs-body); }
+  .report-body strong { font-weight: var(--fw-bold); color: var(--color-heading); }
+  .report-body blockquote {
+    margin: var(--spacing-paragraph) 0;
+    padding: var(--spacing-block);
+    border-left: var(--summary-border-width) solid var(--color-summary-border);
+    background: var(--color-summary-bg);
+    color: var(--color-text); font-size: var(--fs-body);
+  }
+  .report-body blockquote p { margin-bottom: 0; color: var(--color-text); font-size: var(--fs-body); }
+
+  table.content-table {
+    width: 100%; border-collapse: collapse; margin-bottom: var(--spacing-block);
+  }
+  table.content-table thead th {
+    background: var(--color-highlight); color: var(--color-heading);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    font-size: var(--fs-small); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+  }
+  table.content-table tbody td {
+    font-size: var(--fs-body); color: var(--color-text); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+    vertical-align: top;
+  }
+  table.content-table tbody tr:nth-child(even) td { background: var(--color-highlight); }
+  table.content-table caption {
+    caption-side: top; text-align: left;
+    font-size: var(--fs-small); color: var(--color-muted);
+    padding-bottom: var(--space-xs);
+  }
+
+  table.summary-table {
+    width: 100%; border-collapse: collapse; margin-bottom: var(--spacing-block);
+  }
+  table.summary-table thead th {
+    background: var(--color-primary); color: var(--color-bg);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    font-size: var(--fs-small); text-align: center;
+    padding: var(--space-sm) var(--space-md); border: 1px solid var(--color-border);
+  }
+  table.summary-table tbody td {
+    font-size: var(--fs-body); color: var(--color-text); text-align: center;
+    padding: var(--space-md) var(--space-md); border: 1px solid var(--color-border);
+  }
+  table.summary-table tbody td.card-label {
+    font-size: var(--fs-small); color: var(--color-muted); text-align: center;
+  }
+  table.summary-table tbody td.card-value {
+    font-family: var(--typography-fontFamily-data); font-size: var(--typography-fontSize-dataLabel);
+    font-weight: var(--fw-bold); color: var(--color-primary);
+  }
+
+  table.kv-table { width: 100%; border-collapse: collapse; margin-bottom: var(--spacing-block); }
+  table.kv-table thead th {
+    background: var(--color-highlight); color: var(--color-heading);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    font-size: var(--fs-small); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+  }
+  table.kv-table tbody td {
+    font-size: var(--fs-body); color: var(--color-text); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border); vertical-align: top;
+  }
+  table.kv-table tbody td.kv-key {
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-heading); white-space: nowrap;
+  }
+
+  .note-emphasis { color: var(--color-text); font-weight: var(--fw-bold); }
+  .appendix {
+    padding: var(--spacing-section) var(--margin-page);
+    border-top: 1px solid var(--color-border);
+  }
+  .appendix p { margin-bottom: var(--spacing-paragraph); font-size: var(--fs-body); color: var(--color-muted); }
+  </style>
+</head>
+<body>
+
+  <section role="cover" class="report-cover">
+    <p class="cover-category">内部汇报 · 初步方案</p>
+    <h1 class="cover-title">10 月交付冲刺方案</h1>
+    <p class="cover-subtitle">6 项硬约束、100 分、25 天窗口的作战计划</p>
+    <div class="cover-meta">
+      <p>提交人：研发体系负责人（拟）</p>
+      <p>提交对象：凯哥</p>
+      <p>日期：2026 年 10 月 7 日</p>
+      <p>版本：v3 交付冲刺版，替代前两版规划稿</p>
+      <p>文档性质：初步方案，供讨论与拍板，非最终方案</p>
+    </div>
+  </section>
+
+  <section role="body" class="report-body" data-page-restart="1">
+
+    <nav class="doc-toc" aria-label="文档目录">
+      <p class="toc-title">目录</p>
+      <ol class="toc-list">
+        <li><a href="#section-1">本稿说明</a></li>
+        <li><a href="#section-2">时间精算：先看清约束有多紧</a></li>
+        <li><a href="#section-3">核心策略：三层防守</a></li>
+        <li><a href="#section-4">25 天排期</a></li>
+        <li><a href="#section-5">质量自审机制</a></li>
+        <li><a href="#section-6">体系统筹议题（交付后展开）</a></li>
+        <li><a href="#section-7">风险与应对</a></li>
+        <li><a href="#section-8">待您拍板的事项</a></li>
+        <li><a href="#section-9">本周行动（10/7 – 10/15）</a></li>
+      </ol>
+    </nav>
+
+    <div class="executive-summary">
+      <div class="summary-header">
+        <h2>执行摘要</h2>
+      </div>
+      <table class="summary-table">
+        <thead>
+          <tr>
+            <th>交付项</th>
+            <th>总分值</th>
+            <th>时间窗口</th>
+            <th>已识别缺口</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="card-value">6 项</td>
+            <td class="card-value">100</td>
+            <td class="card-value">25 天</td>
+            <td class="card-value">−0.6 天</td>
+          </tr>
+          <tr>
+            <td class="card-label">10/15 至 10/31</td>
+            <td class="card-label">延一天扣 3 分</td>
+            <td class="card-label">10/7 起</td>
+            <td class="card-label">已用前端预埋消化</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="summary-body">
+        <p>本周期内有 6 项硬约束交付、合计 100 分、截止日集中在 10 月 15 日至 31 日。前两版按 90 天规划的节奏假设不成立，本稿据此把重心从体系规划调整为 <strong>25 天冲刺</strong>。</p>
+        <p>精算发现两处结构性事实：<strong>一是分值密度相差十倍</strong>，FAQ 引擎的单位时间分值是质量运营平台的 9.7 倍；<strong>二是五项交付构成串行链</strong>，按分值加权测算 FAQ 引擎存在 0.6 天缺口，其余四项尚有 1.6 天余量。</p>
+        <p>对策是三层防守：守死线不追完美、自审回路前置守住质量分、五项依赖弱故并行预埋。FAQ 缺口以图谱与加固的前期准备提前至 10/9 至 10/13 的方式消化，缺口消除并留出约 1 天余量。</p>
+      </div>
+    </div>
+
+    <main>
+
+      <h2 id="section-1">本稿说明</h2>
+      <p>本章交代本稿为何重做、本周期有哪些硬约束、以及本稿不回答哪些问题。</p>
+
+      <h3>（一）为什么重做</h3>
+      <p>前两版的 90 天节奏假设，在本周期硬约束下已不成立。</p>
+      <p>前两版按 90 天节奏规划体系。但本考核周期内有一组<strong>硬约束</strong>：6 项交付、100 分、截止日集中在 10 月 15 日至 31 日。这意味着前两版的节奏假设不成立。</p>
+      <p>本稿把重心从「体系规划」调整为「25 天冲刺」，并在第六章简要保留体系议题，供一次性向上汇报使用。</p>
+
+      <h3>（二）硬约束清单</h3>
+      <p>以下 6 项构成本周期的全部工作内容，不可用其他工作置换。</p>
+      <p>以下 6 项为本周期唯一确定的任务，不可用其他工作置换。</p>
+
+      <table class="content-table">
+        <caption>表 1　本周期硬约束清单（合计 100 分）</caption>
+        <thead>
+          <tr>
+            <th>序号</th>
+            <th>交付项</th>
+            <th>截止日</th>
+            <th>分值</th>
+            <th>扣分规则</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>开发课程更新：学习助手 V3.1 — FAQ 智能响应引擎</td>
+            <td>10 月 16 日</td>
+            <td><strong>35</strong></td>
+            <td>延一天扣 3 分；明显问题一处扣 3 分</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>开发课程更新：学习助手 V3.1 — 知识点关联图谱</td>
+            <td>10 月 19 日</td>
+            <td>10</td>
+            <td>同上</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>开发课程更新：学习助手 V3.1 — 可靠性加固</td>
+            <td>10 月 23 日</td>
+            <td>10</td>
+            <td>同上</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>开发课程更新：学习助手 V3.1 — 出题与判分的自审回路</td>
+            <td>10 月 27 日</td>
+            <td>25</td>
+            <td>同上</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>开发课程更新：学习助手 V3.1 — 构建质量运营平台</td>
+            <td>10 月 31 日</td>
+            <td>10</td>
+            <td>同上</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td>项目验收：医疗智能客服</td>
+            <td>10 月 15 日</td>
+            <td>10</td>
+            <td>按合同标准完成验收</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>交付物形态</strong>：前 5 项均为「教案 + 代码相关资料」，即课程内容与实现代码同步产出。</p>
+
+      <h3>（三）本稿不回答的问题</h3>
+      <p>明确不回答的内容，是为了保住本稿作为冲刺方案的实用性。</p>
+      <p>本稿<strong>不预设</strong>组织架构调整、不预设具体人选调整方案。相关内容以第八章「待您拍板的事项」提出，等您给方向后再展开。</p>
+
+      <h2 id="section-2">时间精算：先看清约束有多紧</h2>
+      <p>在制定计划前，先用剩余天数与分值密度把约束的真实强度算清楚。</p>
+
+      <h3>（一）时间盘</h3>
+      <p>下表以今天 10 月 7 日为基准，列出剩余天数与分值密度。</p>
+      <p>以今天 10 月 7 日（周三）为基准：</p>
+
+      <table class="content-table">
+        <caption>表 2　时间盘与分值密度</caption>
+        <thead>
+          <tr>
+            <th>交付项</th>
+            <th>截止日</th>
+            <th>剩余天数</th>
+            <th>分值</th>
+            <th>分值密度</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>医疗智能客服验收</td>
+            <td>10/15</td>
+            <td>8 天</td>
+            <td>10</td>
+            <td>1.2 分/天</td>
+          </tr>
+          <tr>
+            <td>FAQ 智能响应引擎</td>
+            <td>10/16</td>
+            <td>9 天</td>
+            <td><strong>35</strong></td>
+            <td><strong>3.9 分/天</strong></td>
+          </tr>
+          <tr>
+            <td>知识点关联图谱</td>
+            <td>10/19</td>
+            <td>12 天</td>
+            <td>10</td>
+            <td>0.8 分/天</td>
+          </tr>
+          <tr>
+            <td>可靠性加固</td>
+            <td>10/23</td>
+            <td>16 天</td>
+            <td>10</td>
+            <td>0.6 分/天</td>
+          </tr>
+          <tr>
+            <td>出题与判分自审回路</td>
+            <td>10/27</td>
+            <td>20 天</td>
+            <td>25</td>
+            <td>1.2 分/天</td>
+          </tr>
+          <tr>
+            <td>构建质量运营平台</td>
+            <td>10/31</td>
+            <td>24 天</td>
+            <td>10</td>
+            <td>0.4 分/天</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）两个结构性发现</h3>
+      <p>时间盘暴露出两个决定策略的事实。</p>
+
+      <h4>1. 分值密度相差十倍</h4>
+      <p>这是决定精力如何分配的第一依据。</p>
+      <p>FAQ 引擎的单位时间分值是质量运营平台的 9.7 倍。这意味着<strong>精力必须按分值密度分配，而不是按截止日先后平均分配</strong>。</p>
+
+      <h4>2. 五项交付构成串行链，延误会连带放大</h4>
+      <p>这是决定排期必须留缓冲的第二依据。</p>
+      <p>五项学习助手 V3.1 模块虽可并行（依赖弱），但截止日高度集中在月末。若其中任一项延误，后续模块的可用时间被同步压缩。</p>
+      <p>按分值加权测算：五项合计 90 分，在 22 个有效工作日内需按分值比例投入，<strong>FAQ 引擎单项即需约 8.6 天，而 10/9 至 10/16 仅 8 天——存在 0.6 天的结构性缺口</strong>。</p>
+      <p>其余四项合计 55 分需约 13.4 天，10/17 至 10/31 共 15 天，尚有 1.6 天余量。</p>
+
+      <h3>（三）缺口的解法</h3>
+      <p>缺口不做加班硬扛，改用前端预埋化解。</p>
+      <p>FAQ 的 0.6 天缺口不做加班硬扛，采用<strong>前端预埋</strong>方式化解。</p>
+      <p>将知识点关联图谱与可靠性加固的<strong>准备工作</strong>（选题、调研、素材梳理、接口对齐）提前至 10/9 至 10/13 完成，这两项因依赖弱可独立启动。FAQ 由此获得约 1 天缓冲，缺口消除并留有余量。</p>
+
+      <h2 id="section-3">核心策略：三层防守</h2>
+      <p>本周期有两重扣分风险，对应三层防守策略。</p>
+
+      <h3>（一）第一层——守死线，不追完美</h3>
+      <p>本策略回应的是「延误扣分不可追回」这一硬约束。</p>
+      <p>每项交付设两个日期：</p>
+
+      <table class="content-table">
+        <caption>表 3　双日期机制</caption>
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>定义</th>
+            <th>处置原则</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>对外死线</strong></td>
+            <td>考核截止日</td>
+            <td>不可移动</td>
+          </tr>
+          <tr>
+            <td><strong>对内死线</strong></td>
+            <td>死线前 1 至 2 天</td>
+            <td>必须完成并自查通过</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>执行规则</strong>：任一交付项到达对内死线时，无论完成度如何，一律进入交付状态，不做任何优化。</p>
+      <p>理由：本周期有两重扣分——延误扣分与质量问题扣分。质量问题的扣分门槛是「一处 3 分」，属于可修补项；而延误扣分是<strong>按天累加且不可追回</strong>。因此在时间不足时，用可控的质量瑕疵换不可控的延期风险，是唯一正确的取舍。</p>
+
+      <h3>（二）第二层——自审回路前置</h3>
+      <p>本策略回应的是「质量扣分敞口可能大于延误扣分」这一风险。</p>
+      <p><strong>出题与判分的自审回路</strong>既是 25 分考核项，也是守住其他四项质量分的工具。</p>
+      <p>评分规则中「明显问题一处扣 3 分」意味着：6 项共 100 分，若每项扣 2 至 3 处，质量扣分敞口将达 36 至 54 分——<strong>这个威胁大于延误扣分</strong>。</p>
+      <p>因此将该模块从「10/27 交付」提前为「10/9 启动、10/14 前可用」，先用它检查 FAQ 与后续模块的教案与代码，再交付自身。</p>
+      <p><strong>这是一份投入、两处收益</strong>：既拿下 25 分，又压住全周期的质量扣分敞口。</p>
+
+      <h3>（三）第三层——并行预埋</h3>
+      <p>本策略利用五项依赖弱的前提，把准备工作并行铺开。</p>
+      <p>因五项依赖弱，可将准备工作并行铺开，避免串行等待：</p>
+
+      <table class="content-table">
+        <caption>表 4　三阶段并行预埋安排</caption>
+        <thead>
+          <tr>
+            <th>时间段</th>
+            <th>主攻</th>
+            <th>并行预埋</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>10/9 – 10/14</td>
+            <td>FAQ 引擎（35 分）</td>
+            <td>图谱与加固的选题调研；自审回路框架</td>
+          </tr>
+          <tr>
+            <td>10/14 – 10/15</td>
+            <td>医疗客服验收（10 分）</td>
+            <td>FAQ 最终自查与资料封装</td>
+          </tr>
+          <tr>
+            <td>10/16 – 10/22</td>
+            <td>图谱（10 分）+ 自审回路（25 分）</td>
+            <td>平台与加固的素材准备</td>
+          </tr>
+          <tr>
+            <td>10/23 – 10/31</td>
+            <td>加固（10 分）+ 自审交付 + 平台（10 分）</td>
+            <td>—</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-4">25 天排期</h2>
+      <p>逐日安排主任务、并行任务与里程碑，所有时间均以考核截止日为锚点。</p>
+
+      <h3>（一）阶段划分</h3>
+      <p>全周期按剩余天数与分值密度划分为三个阶段，逐日安排主任务与并行任务。</p>
+
+      <h4>1. 阶段一：验收与 FAQ 攻坚（10/7 – 10/16）</h4>
+      <p>本阶段同时消化验收与分值最高项，是全周期最关键的一段。</p>
+
+      <table class="content-table">
+        <thead>
+          <tr>
+            <th>日期</th>
+            <th>主任务</th>
+            <th>并行任务</th>
+            <th>里程碑</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>10/7</td>
+            <td>医疗客服验收资料准备</td>
+            <td>FAQ 技术方案定稿</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/8</td>
+            <td>验收演示环境与流程演练</td>
+            <td>FAQ 骨架搭建</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/9</td>
+            <td>验收内部预检</td>
+            <td>FAQ 核心开发；图谱/加固选题启动；自审回路框架</td>
+            <td>FAQ 骨架完成</td>
+          </tr>
+          <tr>
+            <td>10/10</td>
+            <td>验收预检收尾</td>
+            <td>FAQ 核心开发</td>
+            <td>自审回路框架可用</td>
+          </tr>
+          <tr>
+            <td>10/11</td>
+            <td>—</td>
+            <td>FAQ 核心开发</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/12</td>
+            <td>—</td>
+            <td>FAQ 引擎逻辑完成</td>
+            <td><strong>FAQ 决策点</strong></td>
+          </tr>
+          <tr>
+            <td>10/13</td>
+            <td>—</td>
+            <td>FAQ 集成与测试</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/14</td>
+            <td><strong>医疗客服验收（对内）</strong></td>
+            <td>FAQ 交付资料封装、自查</td>
+            <td><strong>FAQ 对内死线</strong></td>
+          </tr>
+          <tr>
+            <td>10/15</td>
+            <td><strong>医疗客服验收（对外）</strong></td>
+            <td>FAQ 缓冲</td>
+            <td>验收交付完成</td>
+          </tr>
+          <tr>
+            <td>10/16</td>
+            <td>—</td>
+            <td><strong>FAQ 引擎交付（35 分）</strong></td>
+            <td><strong>FAQ 对外死线</strong></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>2. 阶段二：中期交付（10/17 – 10/23）</h4>
+      <p>本阶段交付两项分值合计 35 分，同时完成自审回路自身交付。</p>
+
+      <table class="content-table">
+        <thead>
+          <tr>
+            <th>日期</th>
+            <th>主任务</th>
+            <th>并行任务</th>
+            <th>里程碑</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>10/17</td>
+            <td>知识点关联图谱开发</td>
+            <td>自审回路完善</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/18</td>
+            <td>图谱开发 + 自审回路测试</td>
+            <td>平台素材准备</td>
+            <td>自审回路内部可用</td>
+          </tr>
+          <tr>
+            <td>10/19</td>
+            <td><strong>知识点关联图谱交付（10 分）</strong></td>
+            <td>自审回路继续</td>
+            <td><strong>图谱对外死线</strong></td>
+          </tr>
+          <tr>
+            <td>10/20</td>
+            <td>可靠性加固开发</td>
+            <td>自审回路继续</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/21</td>
+            <td>加固开发</td>
+            <td>—</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/22</td>
+            <td>加固收尾 + 自审回路收尾</td>
+            <td>自测</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/23</td>
+            <td><strong>可靠性加固交付（10 分）</strong></td>
+            <td>自审回路封装</td>
+            <td><strong>加固对外死线</strong></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>3. 阶段三：末段交付（10/24 – 10/31）</h4>
+      <p>本阶段含分值最高的自审回路（25 分）与最后的平台交付（10 分），截止日靠后，可从容收尾。</p>
+
+      <table class="content-table">
+        <thead>
+          <tr>
+            <th>日期</th>
+            <th>主任务</th>
+            <th>里程碑</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>10/24</td>
+            <td>出题与判分自审回路交付准备</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/25</td>
+            <td>自审回路最终自查</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/26</td>
+            <td><strong>出题与判分自审回路交付（25 分）</strong></td>
+            <td>自审回路对内死线</td>
+          </tr>
+          <tr>
+            <td>10/27</td>
+            <td>构建质量运营平台开发</td>
+            <td><strong>自审回路对外死线</strong></td>
+          </tr>
+          <tr>
+            <td>10/28</td>
+            <td>平台开发</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/29</td>
+            <td>平台开发</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>10/30</td>
+            <td>平台收尾 + 全量自查</td>
+            <td><strong>平台对内死线</strong></td>
+          </tr>
+          <tr>
+            <td>10/31</td>
+            <td><strong>构建质量运营平台交付（10 分）</strong></td>
+            <td><strong>平台对外死线</strong></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）缓冲设计</h3>
+      <p>全周期设三处缓冲，合计吸收约 6 天意外。</p>
+      <table class="content-table">
+        <caption>表 5　三处缓冲安排</caption>
+        <thead>
+          <tr>
+            <th>缓冲点</th>
+            <th>天数</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>FAQ 对内死线预留</td>
+            <td>2 天（10/14 → 10/16）</td>
+            <td>应对集成测试问题</td>
+          </tr>
+          <tr>
+            <td>图谱与自审重叠段</td>
+            <td>3 天</td>
+            <td>吸收并行开发的相互干扰</td>
+          </tr>
+          <tr>
+            <td>平台对内死线预留</td>
+            <td>1 天（10/30 → 10/31）</td>
+            <td>最终自查缓冲</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-5">质量自审机制</h2>
+      <p>质量扣分是本周期第二大风险源，需在交付前逐项拦截。</p>
+
+      <h3>（一）为什么自审优先</h3>
+      <p>因为问题数量比问题严重度更致命——一处就要 3 分。</p>
+      <p>质量扣分是本周期第二大风险源。6 项共 100 分，「明显问题一处扣 3 分」的规则下，<strong>问题数量比问题严重度更致命</strong>——一处就要 3 分。</p>
+      <p>因此每项交付必须过三道自查：</p>
+
+      <table class="content-table">
+        <caption>表 6　交付前三道自查</caption>
+        <thead>
+          <tr>
+            <th>检查维度</th>
+            <th>检查内容</th>
+            <th>判定标准</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>完整性</td>
+            <td>教案与代码资料是否齐全、章节是否完整</td>
+            <td>无缺失章节、无未完成标记</td>
+          </tr>
+          <tr>
+            <td>逻辑通顺</td>
+            <td>内容前后是否自洽、有无自相矛盾</td>
+            <td>无逻辑断点、无前后冲突</td>
+          </tr>
+          <tr>
+            <td>明显问题</td>
+            <td>错别字、公式错误、代码明显缺陷、示例失效</td>
+            <td>逐项清零</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）自审回路的用法</h3>
+      <p>自审回路应作为其他五项的交付前检查工具，而不只是自身考核项。</p>
+      <p>自审回路不只是自身考核项，应作为<strong>其他五项的交付前检查工具</strong>：</p>
+      <ol>
+        <li>每项交付前，用自审回路跑一遍内容完整性与逻辑检查；</li>
+        <li>出问题的的地方即为需要修正的地方，避免提交后被扣分；</li>
+        <li>自审回路自身在 10/26 交付，同样过三道自查。</li>
+      </ol>
+
+      <h2 id="section-6">体系统筹议题（交付后展开）</h2>
+      <p>本章内容不占用本周期冲刺精力，仅供一次性汇报时使用。</p>
+
+      <h3>（一）公司研发与 AI 能力现状</h3>
+      <p>以下内容不占用本周期冲刺精力，交付结束后推进。</p>
+      <p>以下内容不占用本周期冲刺精力，交付结束后推进。此处仅列要点，供一次性汇报时使用。</p>
+      <p>公司内部已存在若干 AI 与研发相关的能力沉淀——生成视频智能体、教学与排课系统、PPT 生成系统、内部业务系统等，但<strong>散落、无人统筹、各自为战</strong>，导致三个后果：重复造轮子、状态不可见、需求无出口。</p>
+      <blockquote>
+        <p>公司当前最缺的不是研发能力，而是把研发能力组织起来、统一调度、并让它自己转起来的人与机制。</p>
+      </blockquote>
+
+      <h3>（二）交付完成后的主线排序建议</h3>
+      <p>下表为交付完成后的主线排序建议，不占用本周期资源。</p>
+
+      <table class="kv-table">
+        <thead>
+          <tr>
+            <th>优先级</th>
+            <th>主线</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="kv-key">第一</td>
+            <td>课程研发体系化</td>
+            <td>本周期 6 项交付本身即为课程研发的落地形态，交付完成后可复用为完整课程体系</td>
+          </tr>
+          <tr>
+            <td class="kv-key">第二</td>
+            <td>内部工具与 AI 落地的统一盘点</td>
+            <td>现有工具散落，需盘点使用方、活跃度与重复建设情况</td>
+          </tr>
+          <tr>
+            <td class="kv-key">第三</td>
+            <td>AI 应用开发</td>
+            <td>与课程研发共用实战案例，一次投入两处产出</td>
+          </tr>
+          <tr>
+            <td class="kv-key">划出</td>
+            <td>品牌出书</td>
+            <td>划归科研线，只做研发侧接口配合</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-7">风险与应对</h2>
+      <p>本周期有五类风险，按影响程度排列如下。</p>
+
+      <table class="content-table">
+        <caption>表 7　主要风险与应对措施</caption>
+        <thead>
+          <tr>
+            <th>风险</th>
+            <th>触发条件</th>
+            <th>影响</th>
+            <th>应对措施</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>FAQ 再次滑期</strong></td>
+            <td>集成测试暴露重大问题</td>
+            <td>35 分连带扣分，且压缩后续四项时间</td>
+            <td>10/12 设决策点；并行预埋已备 0.6 天缓冲；必要时申请考核宽限</td>
+          </tr>
+          <tr>
+            <td><strong>质量问题集中爆发</strong></td>
+            <td>多项交付自查不充分</td>
+            <td>每处问题 3 分，敞口可达 30 分以上</td>
+            <td>自审回路前置，逐项过三道自查</td>
+          </tr>
+          <tr>
+            <td><strong>并行相互干扰</strong></td>
+            <td>五项模块同期推进，注意力分散</td>
+            <td>多项均不达标</td>
+            <td>按分值密度分配精力，不按截止日平均分配</td>
+          </tr>
+          <tr>
+            <td><strong>医疗验收超出预期</strong></td>
+            <td>验收发现问题需整改</td>
+            <td>吃掉 FAQ 关键窗口</td>
+            <td>10/9 起做内部预检，不把问题留到 10/14</td>
+          </tr>
+          <tr>
+            <td><strong>突发中断</strong></td>
+            <td>生病、临时任务</td>
+            <td>顺延即扣分</td>
+            <td>每日复查当天是否在计划轨道上；偏离立即上报而非硬扛</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-8">待您拍板的事项</h2>
+
+      <p><strong>请注意分界</strong>：8.1 需在 10 月 12 日前答复；8.2 至 8.5 为交付后议题，不占用本周期冲刺精力。</p>
+
+      <h3>（一）FAQ 引擎的考核宽限（紧急）</h3>
+      <p>本项是全稿唯一需要在 10 月 12 日前答复的事项。</p>
+      <p>FAQ 引擎按分值加权需约 8.6 天，而 10/9 至 10/16 仅 8 天。本方案已通过前端预埋消化该缺口，但<strong>缓冲仅约 1 天</strong>。</p>
+      <p>若 10 月 12 日 FAQ 未达可用状态，是否需要提前与您沟通申请宽限 1 至 2 天？</p>
+      <p><strong>建议</strong>：10 月 12 日为决策点。当日若完成度不足 80%，立即上报申请宽限，不做被动补救。</p>
+
+      <h3>（二）组织与汇报关系</h3>
+      <p><strong>问题</strong>：研发体系负责人向谁汇报？与科研线的关系如何界定？</p>
+      <p><strong>建议</strong>：向您汇报；科研线保持独立，不纳入研发体系汇报链。</p>
+      <p><strong>影响</strong>：决定需求从下到上的通道。</p>
+
+      <h3>（三）人力归属</h3>
+      <p><strong>问题</strong>：内部研发团队的人力归属是否调整？</p>
+      <p><strong>说明</strong>：现有成员归属不同部门，考核与汇报关系不变。若要调整，建议由您出面沟通。</p>
+      <p><strong>影响</strong>：若归属不变，跨部门排期需预留协调缓冲。</p>
+
+      <h3>（四）授课分工</h3>
+      <p><strong>问题</strong>：课程研发中授课环节如何安排？</p>
+      <p><strong>建议</strong>：内容生产与质量把控由我负责；授课按需承担关键课程，同时培养其他可承接授课的人。</p>
+      <p><strong>影响</strong>：影响精力分配与排期。</p>
+
+      <h3>（五）工具平台资源</h3>
+      <p><strong>问题</strong>：课程生产流水线与工具平台建设是否需要预算支持？</p>
+      <p><strong>建议</strong>：先基于现有教学与 PPT 生成系统验证，避免重复投入；确认规模后再评估预算。</p>
+      <p><strong>影响</strong>：影响交付完成后的平台一期能否如期上线。</p>
+
+      <h2 id="section-9">本周行动（10/7 – 10/15）</h2>
+
+      <table class="content-table">
+        <caption>表 8　本周行动清单</caption>
+        <thead>
+          <tr>
+            <th>序号</th>
+            <th>事项</th>
+            <th>时限</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>医疗客服验收资料与演示环境准备完成</td>
+            <td>10/8</td>
+            <td>待启动</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>FAQ 技术方案定稿、骨架搭建完成</td>
+            <td>10/9</td>
+            <td>待启动</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>图谱与加固的选题、调研启动（并行预埋）</td>
+            <td>10/9</td>
+            <td>待启动</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>自审回路框架可用</td>
+            <td>10/10</td>
+            <td>待启动</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>FAQ 引擎逻辑开发完成</td>
+            <td>10/12</td>
+            <td>待启动</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td>医疗客服验收内部预检通过</td>
+            <td>10/13</td>
+            <td>待启动</td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td>FAQ 交付资料封装与自查完成</td>
+            <td>10/14</td>
+            <td>待启动</td>
+          </tr>
+          <tr>
+            <td>8</td>
+            <td>医疗客服验收正式完成</td>
+            <td>10/15</td>
+            <td>待启动</td>
+          </tr>
+          <tr>
+            <td>9</td>
+            <td>FAQ 引擎正式交付</td>
+            <td>10/16</td>
+            <td>待启动</td>
+          </tr>
+        </tbody>
+      </table>
+
+    </main>
+
+    <div class="appendix">
+      <p>本稿为初步方案，欢迎直接批注修改。10 月 12 日为 FAQ 引擎的决策节点，届时若完成度不足将立即上报。</p>
+    </div>
+
+  </section>
+</body>
+</html>

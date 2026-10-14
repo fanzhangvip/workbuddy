@@ -1,11 +1,12 @@
-# 12306 抢票助手
+# 智泊AI抢票助手（Zhibo AI Ticket Helper）
 
 > 基于 Python 的 12306 自动化购票工具，**独立实现**（非任何仓库的 fork），
 > 协议行为参考开源项目 **pjialin/py12306** 与 **testerSunshine/12306**，
 > 补齐了 **Web 可视化配置、Windows 桌面客户端、智能候补、数据持久化、异常自愈、
 > 反检测限速** 六块能力。
 >
-> **定位：个人学习 + 自用工具。严禁商业牟利、代抢代购、黄牛倒票。**
+> **定位：智泊AI学员学习工具，仅限智泊AI学员使用。仅供学习使用，严禁商用；请勿用于代抢代购、黄牛倒票。**
+> 官方网站：<https://www.zhipoai.com/>
 > 商业/批量使用违反 12306 用户协议与相关法律法规。本工具**不保证买到票**，
 > 也不做任何资金操作（出票后仅提醒 + 引导跳转到官方渠道支付）。
 
@@ -418,18 +419,48 @@ pytest --cov=ticket_helper --cov-report=term-missing
 
 ```bash
 pip install pyinstaller pillow PySide6
-python scripts/build_exe.py            # 目录版（推荐）→ 产出图形版 + 命令行版两个 exe
-python scripts/build_exe.py --onefile  # 单文件图形版（只需一个文件时用）
+python scripts/build_exe.py                  # 目录版 → 图形版 + 命令行版两个 exe
+python scripts/build_exe.py --onefile        # 单文件版：只有一个 exe，方便发给别人
+python scripts/build_exe.py --demo           # 教学演示版：界面上的乘车日期一律显示「明天」
+python scripts/build_exe.py --onefile --demo # 教学演示版 + 单文件
 ```
 
-产物：`dist/TicketHelper/`
+产物：
 
 ```
-dist/TicketHelper/
-├── TicketHelper.exe       ← 双击这个（图形界面版，无控制台窗口）
-├── TicketHelper-CLI.exe   ← 命令行用这个
-└── _internal/             ← 两者共用的依赖
+dist/TicketHelper/              ← 目录版（默认，推荐自己用）
+├── TicketHelper.exe            ← 双击这个（图形界面版，无控制台窗口）
+├── TicketHelper-CLI.exe        ← 命令行用这个
+└── _internal/                  ← 两者共用的依赖（Python 本体也在这里）
+
+dist/TicketHelper.exe           ← 单文件版（--onefile）
+dist/TicketHelper-Demo/         ← 教学演示版目录版（--demo）
+dist/TicketHelper-Demo.exe      ← 教学演示版单文件（--onefile --demo）
 ```
+
+### 发给别人时选哪种
+
+| | 目录版（默认） | 单文件版（`--onefile`） |
+|---|---|---|
+| 怎么发 | **必须整个目录一起发** | 只发一个 exe |
+| 单独发 exe 会怎样 | 报 `Failed to load Python DLL ... python313.dll` | 正常 |
+| 首次启动 | 立刻 | 自解压十几秒（之后正常） |
+| 杀软误报 | 较低 | 略高 |
+
+⚠️ 目录版的 exe 只是个**启动器**，Python 解释器（`_internal\python313.dll`）和全部
+依赖都在旁边的目录里。少了 `_internal` 就必然报上面的 DLL 错误 —— 这不是包坏了。
+要发人的话用 `--onefile`，或把整个目录打包成 zip 再发。
+
+**教学演示版（`--demo`）**：给录播课程用。画面里写着具体日期（`2026-10-13`）的
+截图，明年回放就成了过期画面，所以演示版把界面上**所有乘车日期**统一显示成
+「明天」——相对表述，任何时间回放都成立。产物在 `dist/TicketHelper-Demo/`，
+与正式版**并存互不覆盖**：
+
+- **只改显示，不动数据**：任务里存的仍是真实日期，抢票链路一行没变；
+- 复选框里的「抢票时间 / 订票时间」是真实发生过的时间，保持原样；
+- 开关的唯一来源是 `ticket_helper/edition.py::DEMO_MODE`，打包脚本在打包期间
+  临时把它改成 `True`、打包结束**一定**还原（`with` 保证异常也会还原）；
+  网页端由后端 `/api/auth/me` 下发 `demo_mode`，不自己判断。
 
 **验收要求（干净 Windows、未装 Python）**：双击 `TicketHelper.exe` → **直接打开桌面客户端窗口**
 （不是黑窗一闪而过）、能配置账号与任务、能看板与日志、关窗进托盘继续挂机、出票有弹窗；

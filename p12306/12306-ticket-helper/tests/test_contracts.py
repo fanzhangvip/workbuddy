@@ -431,3 +431,157 @@ def test_web_date_guard_is_wired_on_both_buttons() -> None:
 
     add_calls = source.count("const problem = dateProblem(")
     assert add_calls == 2, f"「添加日期」与「连加 3 天」都要校验，实际只有 {add_calls} 处调用"
+
+
+# =========================================================================== #
+# 契约 7：品牌名与免责声明两端一致
+# =========================================================================== #
+def test_web_brand_matches_the_python_constant():
+    """★ 防的是：改名只改了一半。
+
+    桌面端与 CLI 读的是 ``ticket_helper.APP_NAME``；网页端是**静态 HTML**，
+    import 不到 Python 常量 —— 于是「改名」变成两处手工同步。
+    真实故障形态：桌面端已是新名字、网页端还是旧名字，两边都不报错，
+    使用者看到两个不同的产品名，只会怀疑自己是不是开错了程序。
+
+    这条把网页端文案钉在常量上：改常量而不改 HTML，立刻变红。
+    """
+    from ticket_helper import APP_AUDIENCE, APP_COPYRIGHT, APP_NAME, APP_WEBSITE
+
+    html = _read("ticket_helper/web/static/index.html")
+    assert f"<title>{APP_NAME}（{APP_AUDIENCE}）· 管理后台</title>" in html, "网页标题没跟着 APP_NAME 走"
+    assert f"<h1>{APP_NAME}</h1>" in html, "登录页主标题没跟着 APP_NAME 走"
+    assert APP_COPYRIGHT in html, f"网页端缺少版权声明「{APP_COPYRIGHT}」"
+    assert APP_WEBSITE in html, f"网页端缺少官网链接「{APP_WEBSITE}」"
+
+
+def test_old_brand_name_is_gone_from_every_surface():
+    """★ 防的是：旧品牌名残留在「不是标题的地方」。
+
+    最容易漏的恰恰是不在页面上、平时看不见的三处：托盘气泡、邮件 From 显示名、
+    exe 文件属性（右键 → 属性 → 详细信息）。改完界面就以为改完了，
+    直到收到一封署着旧名字的邮件、或在任务管理器里看到旧名字。
+    """
+    surfaces = [
+        "main.py",
+        "desktop_ui/app.py",
+        "desktop_ui/main_window.py",
+        "desktop_ui/tray.py",
+        "ticket_helper/notify/gateway.py",
+        "ticket_helper/notify/channels.py",
+        "ticket_helper/web/static/index.html",
+        "TicketHelper.spec",
+    ]
+    for name in surfaces:
+        text = _read(name)
+        for stale in ("12306 抢票助手", "12306抢票助手"):
+            assert stale not in text, f"{name} 里还留着旧品牌名「{stale}」"
+
+
+# =========================================================================== #
+# 契约 8：教学演示版「乘车日期一律显示成明天」的两端一致性
+# =========================================================================== #
+def test_demo_switch_defaults_to_the_official_edition():
+    """★ 演示开关的**默认值必须是关**。
+
+    演示版靠打包脚本临时打开（``scripts/build_exe.py --demo``）。一旦有人把源码
+    里的默认值改成 True 并提交，之后每一次正式打包都会悄悄变成演示版 ——
+    而症状极轻：界面照常跑、只是日期都写着「明天」，很容易被当成「新加的功能」
+    而不是「打包错了」。
+    """
+    from ticket_helper import edition
+
+    assert edition.DEMO_MODE is False, "源码里的 DEMO_MODE 必须是 False（演示版由打包脚本临时打开）"
+    assert edition.EDITION == "", "正式版不该带版本后缀"
+    assert edition.display_train_date("2026-10-13") == "2026-10-13"
+    assert edition.display_train_dates(["2026-10-13", "2026-10-14"]) == "2026-10-13 / 2026-10-14"
+
+
+def test_demo_switch_rewrites_train_dates_only(monkeypatch):
+    """★ 打开开关后：乘车日期一律「明天」，且**多个日期合并成一个**。
+
+    为什么必须合并：任务支持「连加 3 天」，不合并就会渲染成「明天 / 明天 / 明天」，
+    录播画面上一眼就是假的。
+
+    空值**不许**被编造成「明天」—— 列表里空着，比显示一个并不存在的日期诚实。
+    """
+    from ticket_helper import edition
+
+    monkeypatch.setattr(edition, "DEMO_MODE", True)
+
+    assert edition.display_train_date("2026-10-13") == edition.DEMO_DATE_TEXT
+    assert edition.display_train_dates(["2026-10-13", "2026-10-14", "2026-10-15"]) == edition.DEMO_DATE_TEXT
+    assert edition.display_train_date("") == "", "空值不该被编造成「明天」"
+    assert edition.display_train_dates([]) == "-", "空列表该落到 fallback 上"
+    assert edition.display_train_dates(["2026-10-13"], separator=", ") == edition.DEMO_DATE_TEXT
+
+
+def test_web_side_reads_the_switch_from_the_backend():
+    """★ 网页端**不许**自己判断「是不是演示版」，必须由后端下发。
+
+    网页是静态 HTML + 原生 JS，import 不到 Python 常量，所以「明天」这个词天然
+    会有两份实现（Python 一份、JS 一份）。这里钉住两件事：
+
+    1. 那个词两边**是同一个**（改一边不改另一边，立刻红）；
+    2. 开关的来源是**唯一**的 —— 后端把 ``edition.DEMO_MODE`` 塞进登录响应，
+       前端只消费它。否则「打包时是演示版、网页却按正式版渲染」这种只在一端
+       出现的错位，根本没地方能发现。
+    """
+    from ticket_helper import edition
+
+    js = _read("ticket_helper/web/static/app.js")
+    api = _read("ticket_helper/web/api.py")
+
+    assert f"const DEMO_DATE_TEXT = '{edition.DEMO_DATE_TEXT}';" in js, (
+        "网页端的「明天」与 ticket_helper/edition.py 的 DEMO_DATE_TEXT 不是同一个词"
+    )
+    assert "let DEMO_MODE = false;" in js, "网页端的演示开关默认值必须是 false"
+    assert '"demo_mode": edition.DEMO_MODE' in api, "后端没把演示开关下发给网页端"
+    assert "setEdition(data.demo_mode)" in js, "登录成功后没把后端下发的开关接住"
+    assert "setEdition(me && me.demo_mode)" in js, "已有令牌直接进入时没把开关接住"
+
+
+def test_both_ends_render_train_dates_through_the_shared_helper():
+    """★ 防「只改了本地、漏了网页」：两条渲染链都必须走同一个转换函数。
+
+    这是**接线检查**（静态），证明不了行为 —— 但它能在有人新加一处日期渲染而
+    忘了转换时变红，而这恰恰是这类改动最容易漏的地方。
+    """
+    js = _read("ticket_helper/web/static/app.js")
+    assert "function demoDate(value)" in js and "function demoDates(" in js, "网页端的转换函数没了"
+    # 订单记录、个人中心（待支付 / 历史订单）、余票看板（候选 + 全部车次）
+    assert js.count("escapeHtml(demoDate(") >= 5, "网页端还有乘车日期没走 demoDate（订单/看板）"
+    assert "escapeHtml(demoDates(t.dates))" in js, "拉车次结果里的日期没走 demoDates"
+    assert "display: demoDate," in js, "任务配置里的日期标签没接演示版"
+
+    desktop_hits = [
+        ("desktop_ui/pages/tasks.py", 'display_train_dates(task.get("left_dates"))'),
+        ("desktop_ui/pages/orders.py", 'display_train_date(order.get("depart_date"))'),
+        ("desktop_ui/pages/board.py", 'display_train_date(item.get("train_date"))'),
+        ("desktop_ui/train_picker.py", 'display_train_dates(train.get("dates"))'),
+    ]
+    for name, needle in desktop_hits:
+        assert needle in _read(name), f"{name} 里的乘车日期没走转换函数"
+
+    profile = _read("desktop_ui/profile_panel.py")
+    assert profile.count('display_train_date(order.get("train_date"))') == 2, (
+        "个人中心的「历史订单」与「待支付」两张表都要转换"
+    )
+    assert "edition.DEMO_DATE_TEXT" in _read("desktop_ui/token_field.py"), "任务配置里的日期标签没接演示版"
+
+
+def test_packaging_script_switches_the_same_anchor():
+    """★ 打包脚本改的那一行，就是 edition.py 里定义的那一行。
+
+    ``build_exe.py`` 用**文本锚点**把 ``DEMO_MODE = False`` 改成 True —— 这个约定
+    是隐式的：谁把那行换个写法（加类型注解、改名），打包就会在「找不到锚点」上
+    失败。失败是好事，但得让人一眼看明白，所以把两端的字面量对齐着钉住。
+    """
+    source = _read("ticket_helper/edition.py")
+    packer = _read("scripts/build_exe.py")
+
+    assert 'DEMO_MODE_ANCHOR = "DEMO_MODE = False"' in packer, "打包脚本的锚点常量被改了"
+    assert "DEMO_MODE = False\n" in source, "edition.py 里找不到打包脚本要改的那一行"
+    assert '"TICKET_HELPER_BUILD_NAME"' in packer, "打包脚本没告诉 spec 产物名"
+    assert 'DEMO_BUILD_NAME = "TicketHelper-Demo"' in packer, "演示版产物名没了"
+

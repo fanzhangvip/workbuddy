@@ -59,13 +59,21 @@ def _print_preflight(url: str, timeout: float) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="网页视频地址解析一站式排查")
     parser.add_argument("url", help="视频网站页面地址")
-    parser.add_argument("--timeout", type=float, default=30.0,
-                        help="解析硬超时秒数（默认 30）")
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="解析硬超时秒数（默认取设置里的「解析超时」）")
     parser.add_argument("--no-preflight", action="store_true",
                         help="跳过网络可达性预检，直接解析")
     parser.add_argument("--verbose", action="store_true",
                         help="输出 yt-dlp 详细步骤")
     args = parser.parse_args()
+
+    if args.timeout is None:
+        # 与主程序保持一致：默认用设置里的「解析超时」（60 秒）
+        from src.utils import settings as _S  # noqa: PLC0415
+
+        args.timeout = float(
+            _S.get_int(_S.K_RESOLVE_TIMEOUT_S, R.DEFAULT_TIMEOUT_S)
+        )
 
     url = args.url.strip()
     if not url:

@@ -51,6 +51,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from src.core.backends.factory import describe_backends  # noqa: E402
 from src.ui.main_window import MainWindow  # noqa: E402
+from src.ui.theme import apply_theme  # noqa: E402
 
 
 def _run_net_check(targets: list[str], argv: list[str]) -> int:
@@ -207,14 +208,22 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return _run_net_check(targets, argv)
 
-    log.info("启动万能 URL 视频播放器")
+    # 品牌信息在函数内导入：`src.ui` 包一旦被提前加载，可能连带拉起 PySide6，
+    # 而本模块顶部要求"环境变量早于任何 PySide6 导入"（见文件头说明）。
+    from src.ui import branding
+
+    log.info("启动 %s", branding.WINDOW_TITLE)
     log.info("环境变量:\n%s", describe_environment())
     log.info("播放后端: %s", describe_backends())
 
     app = QApplication(argv)
     app.setApplicationName("UniversalURLPlayer")
     app.setOrganizationName("videodemo")
-    app.setApplicationDisplayName("万能 URL 视频播放器")
+    app.setApplicationDisplayName(branding.WINDOW_TITLE)
+
+    # 主题必须在任何窗口创建之前装上：全局样式表会参与控件第一次 polish，
+    # 窗口建完再装的话，先建好的那些控件不会重新走一遍解析。
+    apply_theme(app)
 
     window = MainWindow()
     window.show()

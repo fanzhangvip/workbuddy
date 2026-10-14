@@ -1,0 +1,241 @@
+# -*- coding: utf-8 -*-
+"""单会话评分流程的 LangGraph 图化（阶段B）。
+
+设计原则
+    **节点是旧 ``_score_one`` 的逐字搬运，不夹带任何"顺手优化"。**
+    口径漂移的防线是 ``tests/test_graph_session_parity.py``：新旧路径跑同一批
+    会话，``raw_score / grade / positive_total / negative_total`` 差异必须为 0。
+
+图结构
+    ``prepare_context`` ──(kept < ctx_min_kept)──► END        （早退，不计 LLM 调用）
+            │
+            └─► emit_ctx_stats → facts → judge → items → local_score
+                 → persist(assessment + outbox 同事务) → writeback → review → progress → END
+
+为什么用「闭包注入 service」而不是把它放进 state
+    ``ScoringService`` 持有 ``threading.Lock``；若放进 state，一旦框架对 state 做
+    ``deepcopy``（不同版本行为不同）就会直接 ``TypeError``。用闭包彻底规避。
+
+为什么所有节点都是同步的、且不配 RetryPolicy
+    ``llm.chat`` 用 ``urllib``、``db`` 用 psycopg 同步池，天然同步；换成 async
+    只会徒增一层 ``to_thread``。重试有三层且职责已清晰（契约修复内循环 /
+    ``_llm_analyze`` 的 ``RetryableLLMError`` 退避 / outbox 退避），再加节点级
+    RetryPolicy 会造成重复计费与有副作用节点的危险重放。
+"""
+from __future__ import annotations
+
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+import rules as rules_mod
+import scoring_service as ss
+import trace
+
+NODE_PREPARE = "prepare_context"
+NODE_CTX_STATS = "emit_ctx_stats"
+NODE_FACTS = "facts"
+NODE_JUDGE = "judge"
+NODE_ITEMS = "items"
+NODE_LOCAL = "local_score"
+NODE_PERSIST = "persist"
+NODE_WRITEBACK = "writeback"
+NODE_REVIEW = "review"
+NODE_PROGRESS = "progress"
+
+
+class SessionState(TypedDict, total=False):
+    """图状态：只放**普通可序列化值**（不放 service 实例，见模块 docstring）。"""
+    # 外层注入
+    run_id: int
+    cand: dict
+    rules: dict
+    min_messages: int
+    mode: str
+    fetch_tags: bool
+
+    # 节点间传递
+    ctx: dict
+    facts: dict
+    res: dict
+    pos_items: list
+    neg_items: list
+    unchecked: list
+    score: dict
+    grade: dict
+    needs_review: bool
+    aid: int
+    wb_status: str
+    review_enqueued: bool
+
+    # 返回语义
+    outcome: str            # "scored" / "skipped"
+
+
+# ============================================================ 节点实现
+# 统一签名 (svc, state) -> dict；svc 由闭包注入。
+
+def n_prepare(svc, state: SessionState) -> dict:
+    """取消息 → 预处理层规范化 → 判定「有效条数是否够」。对应旧 L513-520。"""
+    cand = state["cand"]
+    staff_id, session_id = cand["staff_id"], cand["session_id"]
+    ctx = ss.build_context(staff_id, session_id,
+                           session_meta={"staff_id": staff_id, "session_id": session_id})
+    min_kept = ss.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4)
+    if ctx["stats"]["kept"] < min_kept:      # 有效条数太少 → 跳过（不计 llm 调用）
+        return {"ctx": ctx, "outcome": "skipped"}
+    return {"ctx": ctx}
+
+
+def route_after_prepare(state: SessionState) -> str:
+    return "skip" if state.get("outcome") == "skipped" else "go"
+
+
+def n_ctx_stats(svc, state: SessionState) -> dict:
+    """累计预处理观测指标（仅内存）。对应旧 L521。"""
+    svc._bump_ctx(state["ctx"]["stats"])
+    return {}
+
+
+def n_facts(svc, state: SessionState) -> dict:
+    """规则引擎事实（48h 未回复等）。对应旧 L523。"""
+    cand = state["cand"]
+    facts = ss.compute_facts(cand["staff_id"], cand["session_id"],
+                             fetch_tags=state["fetch_tags"])
+    return {"facts": facts}
+
+
+def n_judge(svc, state: SessionState) -> dict:
+    """大模型判定。对应旧 L524-525（llm_calls 在调用前 +1，失败也算一次调用）。"""
+    svc._bump(state["run_id"], llm_calls=1)
+    res = svc._llm_analyze(state["ctx"], state["facts"]["text"], state["rules"])
+    return {"res": res}
+
+
+def n_items(svc, state: SessionState) -> dict:
+    """拆分正/负项 + 叠加规则引擎硬指标。对应旧 L527-532。"""
+    res, rules, facts = state["res"], state["rules"], state["facts"]
+    # engine=rule 的规则已在 rules.derive_items 里排除，这里再兜一层（防御契约回退）
+    engine_ids = svc._engine_rule_ids(rules)
+    neg = [i for i in (res.get("negative_items") or []) if i.get("rule_id") not in engine_ids]
+    neg += svc._engine_negative_items(facts, rules)      # negative_no_reply_2d 等硬指标
+    return {"pos_items": res.get("positive_items") or [], "neg_items": neg}
+
+
+def n_local_score(svc, state: SessionState) -> dict:
+    """本地计分 + 代码判定是否需要人工复核。对应旧 L534-540。"""
+    score = rules_mod.compute_score(state["pos_items"], state["neg_items"], state["rules"])
+    grade = rules_mod.grade_of(score["raw_score"], state["rules"])
+    unchecked = list(state["res"].get("unchecked_rules") or [])
+    # 「要不要人看一眼」由代码判定（修 E4：不让可能出错的组件自证清白）
+    needs_review = bool(state["neg_items"] or unchecked)
+    return {"score": score, "grade": grade, "unchecked": unchecked,
+            "needs_review": needs_review}
+
+
+def n_persist(svc, state: SessionState) -> dict:
+    """落库（assessment + outbox 同事务）。对应旧 L542-566。"""
+    aid = svc._persist_assessment(state["run_id"], state["cand"], state["res"],
+                                  state["score"], state["grade"], state["needs_review"],
+                                  state["unchecked"], state["pos_items"], state["neg_items"],
+                                  state["mode"])
+    return {"aid": aid}
+
+
+def n_writeback(svc, state: SessionState) -> dict:
+    """回写微伴。对应旧 L568-570。"""
+    cand = state["cand"]
+    wb = svc._writeback(state["run_id"], f"{cand['staff_id']}:{cand['target_id']}",
+                        state["aid"], cand["staff_id"], cand["target_id"],
+                        state["score"]["positive_total"], state["mode"],
+                        bool(state["neg_items"]))
+    return {"wb_status": wb}
+
+
+def n_review(svc, state: SessionState) -> dict:
+    """负分进人工复核队列。对应旧 L572-574。"""
+    done = svc._enqueue_review(state["aid"], state["cand"], state["neg_items"],
+                               state["score"]["raw_score"], state["grade"]["grade"],
+                               state["wb_status"])
+    return {"review_enqueued": bool(done)}
+
+
+def n_progress(svc, state: SessionState) -> dict:
+    """进度自增（仅内存）。对应旧 L576-584。"""
+    wb, need = state["wb_status"], state["review_enqueued"]
+    svc._inc(assessment_new=1,
+             writeback_ok=1 if wb in ("ok", "dry_run") else 0,
+             writeback_fail=1 if wb == "failed" else 0,
+             review_new=1 if need else 0)
+    return {"outcome": "scored"}
+
+
+# ============================================================ 装配
+
+def _node(name: str, svc, fn):
+    """把 (svc, state) 适配成 LangGraph 的 (state)->dict，并套上追踪包装。"""
+    def bound(state, _fn=fn, _svc=svc):
+        return _fn(_svc, state)
+    return trace.traced(name)(bound)
+
+
+def build_graph(svc):
+    """编译单会话图（无 checkpointer：本阶段不做节点级断点续跑，见方案风险 7）。"""
+    g = StateGraph(SessionState)
+    g.add_node(NODE_PREPARE, _node(NODE_PREPARE, svc, n_prepare))
+    g.add_node(NODE_CTX_STATS, _node(NODE_CTX_STATS, svc, n_ctx_stats))
+    g.add_node(NODE_FACTS, _node(NODE_FACTS, svc, n_facts))
+    g.add_node(NODE_JUDGE, _node(NODE_JUDGE, svc, n_judge))
+    g.add_node(NODE_ITEMS, _node(NODE_ITEMS, svc, n_items))
+    g.add_node(NODE_LOCAL, _node(NODE_LOCAL, svc, n_local_score))
+    g.add_node(NODE_PERSIST, _node(NODE_PERSIST, svc, n_persist))
+    g.add_node(NODE_WRITEBACK, _node(NODE_WRITEBACK, svc, n_writeback))
+    g.add_node(NODE_REVIEW, _node(NODE_REVIEW, svc, n_review))
+    g.add_node(NODE_PROGRESS, _node(NODE_PROGRESS, svc, n_progress))
+
+    g.add_edge(START, NODE_PREPARE)
+    g.add_conditional_edges(NODE_PREPARE, route_after_prepare,
+                            {"skip": END, "go": NODE_CTX_STATS})
+    g.add_edge(NODE_CTX_STATS, NODE_FACTS)
+    g.add_edge(NODE_FACTS, NODE_JUDGE)
+    g.add_edge(NODE_JUDGE, NODE_ITEMS)
+    g.add_edge(NODE_ITEMS, NODE_LOCAL)
+    g.add_edge(NODE_LOCAL, NODE_PERSIST)
+    g.add_edge(NODE_PERSIST, NODE_WRITEBACK)
+    g.add_edge(NODE_WRITEBACK, NODE_REVIEW)
+    g.add_edge(NODE_REVIEW, NODE_PROGRESS)
+    g.add_edge(NODE_PROGRESS, END)
+    return g.compile()
+
+
+_GRAPHS = {}
+
+
+def graph_for(svc):
+    """按 service 实例缓存编译结果（单例场景下只会编译一次）。"""
+    key = id(svc)
+    g = _GRAPHS.get(key)
+    if g is None:
+        g = build_graph(svc)
+        _GRAPHS[key] = g
+    return g
+
+
+def run_session(svc, run_id, cand, rules, min_messages, mode, fetch_tags) -> str:
+    """同步执行单会话图。
+
+    返回 ``"scored"`` / ``"skipped"``（与旧 ``_score_one`` 的返回值逐字一致）；
+    异常（``FatalLLMError`` / ``ContractViolationError`` / 重试耗尽后的
+    ``RuntimeError`` / DB 异常）**原样穿透** ``invoke()``，交由 ``_run`` 的
+    ``except Exception`` 走既有失败分支（``_record_failure``）。
+    """
+    init = {
+        "run_id": run_id,
+        "cand": cand,
+        "rules": rules,
+        "min_messages": min_messages,
+        "mode": mode,
+        "fetch_tags": fetch_tags,
+    }
+    final = graph_for(svc).invoke(init, config={"recursion_limit": 25})
+    return final.get("outcome", "scored")

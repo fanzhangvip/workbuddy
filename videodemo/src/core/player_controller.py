@@ -326,7 +326,15 @@ class PlayerController(QObject):
                         page_url: str) -> None:
         """工作线程入口：只解析与上报，绝不碰界面状态。"""
         try:
-            result = resolver.resolve(page_url, log=self._resolve_log, cancel=cancel)
+            # 解析总超时交给设置（默认 60 秒）：站点慢、或解析器要换几种方式
+            # 重试时，时间给足才拿得到地址。此前固定 25 秒，慢站点会被误报成
+            # "解析超时"——用户看着像网络不通，其实是没等够。
+            result = resolver.resolve(
+                page_url,
+                log=self._resolve_log,
+                cancel=cancel,
+                timeout_s=S.get_int(S.K_RESOLVE_TIMEOUT_S, 60),
+            )
         except Exception as exc:  # noqa: BLE001 - 解析失败绝不能把界面搞崩
             log.warning("解析异常: %s", exc)
             result = ResolveResult(page_url=page_url, error=f"解析异常：{exc}")

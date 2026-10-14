@@ -1,0 +1,29 @@
+# 企微客户意向评分系统 —— 运行时依赖
+# 安装：.venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# 说明：
+#   · 这里只声明「直接依赖」并给出下限；精确可复现版本见 requirements.lock.txt（pip freeze 产物）。
+#   · 版本下限与当前已验证可用的版本对齐，升级需先跑通 tests/ 下全部脚本式测试。
+
+# ---- Web 服务 ----
+fastapi>=0.143.0
+uvicorn>=0.54.0
+
+# ---- 数据库（PostgreSQL，psycopg 3 同步池）----
+psycopg[binary]>=3.3.6
+psycopg-pool>=3.3.3
+
+# ---- 数据校验（模型输出双层契约）----
+pydantic>=2.14.1
+
+# ---- 定时任务 ----
+APScheduler>=3.11.3,<4
+
+# ---- 浏览器自动化（微伴登录态保活 / 聊天记录导出）----
+playwright>=1.63.0
+
+# ---- 阶段B：LangGraph 单会话流程图化 ----
+# 传递依赖自动带上：langchain-core>=1.4.7、langgraph-checkpoint>=4.3.0、
+# langgraph-prebuilt、langgraph-sdk、xxhash>=3.5.0
+# 刻意不装 langgraph-checkpoint-postgres（硬依赖 orjson；本阶段不使用检查点）
+langgraph>=1.2.15,<2

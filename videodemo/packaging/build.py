@@ -256,7 +256,7 @@ def verify(exe: Path, kind: str) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="打包万能 URL 视频播放器")
+    parser = argparse.ArgumentParser(description="打包智泊AI视频播放器")
     parser.add_argument("--onedir", action="store_true", help="只打目录版")
     parser.add_argument("--onefile", action="store_true", help="只打单文件版")
     parser.add_argument("--no-verify", action="store_true", help="不自动验证产物")

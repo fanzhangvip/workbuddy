@@ -1,0 +1,57 @@
+schema_version: 1
+request_id: 6f22e90a-161f-461c-845e-a992958f90d6
+created_at: 2026-10-07T20:01:30
+updated_at: 2026-10-07T20:01:30
+
+entry_type: full_pipeline
+stage_chain: [1, 2, 3]
+
+output_docx_path: "C:\\zero\\workbuddy\\2026-10-07-14-24-53\\output\\6f22e90a-161f-461c-845e-a992958f90d6\\stage3\\业务系统交接四步执行标准与验收条件.docx"
+output_docx_user_specified: false
+
+current_stage: completed
+
+stages:
+  stage_0:
+    status: completed
+    completed_at: 2026-10-07T20:01:30
+    decision: full_pipeline
+  stage_1:
+    status: completed
+    started_at: 2026-10-07T20:01:30
+    completed_at: 2026-10-07T20:10:00
+    output_path: "stage1/final_draft.md"
+    genre: work-report
+    expert_used: work-report-expert
+    route_tag: expert_work_report
+    critic_decision: PASS
+    critic_score: 90.0
+  stage_2:
+    status: completed
+    started_at: 2026-10-07T20:10:00
+    completed_at: 2026-10-07T20:20:00
+    route: html
+    html_sub: template
+    output_path: "stage2/formatted-业务系统交接四步执行标准.html"
+    output_format: html
+    skills_invoked: [design-token, doc-typeset, html-review]
+    design_tokens_path: "stage2/design_tokens.json"
+    fallback: false
+    fallback_reason: null
+  stage_3:
+    status: completed
+    started_at: 2026-10-07T20:22:00
+    completed_at: 2026-10-07T20:23:00
+    executor: doc-converter
+    input_format: html
+    output_path: "C:\\zero\\workbuddy\\2026-10-07-14-24-53\\output\\6f22e90a-161f-461c-845e-a992958f90d6\\stage3\\业务系统交接四步执行标准与验收条件.docx"
+    skill_used: ["html-to-docx"]
+    present_files_opened: true
+    fallback: false
+    fallback_reason: null
+
+consistency_check:
+  output_files_exist: pass
+  stage_chain_complete: pass
+  last_checked_at: 2026-10-07T20:23:00
+  errors: []

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
@@ -26,11 +29,19 @@ from src.core.playlist import (
     EntryStore,
     PlaylistModel,
 )
+from src.ui import branding
 from src.ui.control_bar import ControlBar
 from src.ui.downloads_dialog import DownloadsDialog
 from src.ui.fonts import ensure_app_font
 from src.ui.playlist_panel import PlaylistPanel
 from src.ui.settings_dialog import SettingsDialog
+from src.ui.theme import TOKENS, apply_theme, main_window_object_name
+from src.ui.title_bar import (
+    HTCLIENT,
+    TitleBar,
+    compute_hit_test,
+    polish_native_window,
+)
 from src.ui.video_widget import VideoWidget
 from src.utils import settings as S
 from src.utils.clipboard_watcher import ClipboardWatcher
@@ -51,8 +62,20 @@ class MainWindow(QMainWindow):
         super().__init__()
         # 保证中文可读，避免缺字体时全是方框
         ensure_app_font()
-        self.setWindowTitle("万能 URL 视频播放器")
+        # 主题正常由 main.py 在 QApplication 之后统一装；这里再确保一次，
+        # 是为了让"单独 new 一个 MainWindow"的调用方（测试、截图工具）
+        # 也拿到同一套外观，而不是系统默认的浅色。
+        apply_theme()
+        self.setWindowTitle(branding.WINDOW_TITLE)
+        # 无边框窗口 + 自绘标题栏（见 ui/title_bar.py 的模块注释）：
+        # 原生标题栏由系统绘制、只能放纯文本，标题里的官网网址点不动；
+        # 改成自绘后链接是真正的超链接，拖动/缩放等行为仍由系统接管。
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.resize(1180, 700)
+        # 给窗口一个下限：再小的话顶部按钮会先把地址栏挤没，反而不如不让缩。
+        # 高度下限按"播放列表标签页不跌破可用高度"定（自绘标题栏占 36px，
+        # 比当年的原生标题栏深一点，所以下限也要跟着抬）。
+        self.setMinimumSize(720, 540)
 
         self.controller = PlayerController(self)
 
@@ -122,26 +145,50 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ 构建界面
     def _build_ui(self) -> None:
         central = QWidget()
-        root = QVBoxLayout(central)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        # --- 顶部地址栏 ---
+        # --- 自绘标题栏：版权句 + 可点官网 + 最小化/最大化/关闭 ---
+        self.title_bar = TitleBar()
+        self.title_bar.minimize_requested.connect(self.showMinimized)
+        self.title_bar.toggle_maximize_requested.connect(self._toggle_maximize)
+        self.title_bar.close_requested.connect(self.close)
+        outer.addWidget(self.title_bar)
+
+        # 主体沿用 #glassRoot 玻璃面板
+        body = QWidget()
+        body.setObjectName(main_window_object_name())
+        root = QVBoxLayout(body)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
+
+        # --- 顶部：地址栏独占一行 + 按钮单独一行 ---
+        #
+        # 以前是"地址栏 + 8 个按钮"挤在同一行，光按钮的最小宽度加起来就有 520px，
+        # 窗口一窄地址栏就被压到只剩几十像素、输入内容完全看不见。
+        # 改成两行之后地址栏永远拿满整行宽度，按钮则按优先级分配——
+        # 越靠右越"配置类"（列表 / 设置 / 面板），窄窗口下最先收起来，
+        # 见 `resizeEvent`。
         self.address = QLineEdit()
         self.address.setPlaceholderText(
             "粘贴视频地址：网页地址（B站/YouTube…）· 直链 …mp4 · HLS …m3u8 · rtsp:// · 本地路径"
         )
         self.address.setClearButtonEnabled(True)
+        self.address.setMinimumWidth(240)
+        self.address.setToolTip("回车即开始播放；也可以直接把文件或链接拖进画面区")
 
         self.btn_play_url = QPushButton("播放")
-        self.btn_play_url.setMinimumWidth(64)
+        self.btn_play_url.setMinimumWidth(72)
+        self.btn_play_url.setToolTip("播放输入框里的地址（等同回车）")
         self.btn_paste = QPushButton("粘贴")
         self.btn_paste.setMinimumWidth(64)
         self.btn_paste.setToolTip("从剪贴板读取地址并填入输入框")
         self.btn_open = QPushButton("打开文件")
-        self.btn_open.setMinimumWidth(80)
+        self.btn_open.setMinimumWidth(84)
+        self.btn_open.setToolTip("从本地选择一个视频文件播放")
         self.btn_add = QPushButton("加入列表")
-        self.btn_add.setMinimumWidth(80)
+        self.btn_add.setMinimumWidth(84)
         self.btn_add.setToolTip("把当前地址加入播放列表（也可直接把文件拖进列表）")
         self.btn_download = QPushButton("下载")
         self.btn_download.setMinimumWidth(64)
@@ -152,23 +199,38 @@ class MainWindow(QMainWindow):
             "对当前地址做分层连通性诊断：地址解析 → DNS → TCP 连接 → 协议握手"
         )
         self.btn_panel = QPushButton("列表")
-        self.btn_panel.setMinimumWidth(56)
+        self.btn_panel.setMinimumWidth(60)
         self.btn_panel.setCheckable(True)
         self.btn_panel.setToolTip("显示 / 隐藏播放列表面板")
         self.btn_settings = QPushButton("设置")
-        self.btn_settings.setMinimumWidth(56)
+        self.btn_settings.setMinimumWidth(60)
+        self.btn_settings.setToolTip("打开设置（Ctrl+,）")
+
+        # 主按钮（播放）单独一组，紧挨地址栏；其余按功能分两组靠右。
+        # 分组的意义不只是好看：中间那段伸缩空间让"播放"永远贴着地址栏，
+        # 不会因为窗口变宽而飘到中间去。
+        self._nav_buttons = [
+            self.btn_play_url, self.btn_paste, self.btn_open,
+            self.btn_add, self.btn_download, self.btn_diagnose,
+        ]
+        self._tail_buttons = [self.btn_panel, self.btn_settings]
 
         top = QHBoxLayout()
         top.setSpacing(6)
-        top.addWidget(self.address, 1)
         top.addWidget(self.btn_play_url)
         top.addWidget(self.btn_paste)
         top.addWidget(self.btn_open)
         top.addWidget(self.btn_add)
         top.addWidget(self.btn_download)
         top.addWidget(self.btn_diagnose)
+        top.addStretch(1)
         top.addWidget(self.btn_panel)
         top.addWidget(self.btn_settings)
+
+        # 按钮行与画面区之间留一条极淡的分隔线，把"工具区"和"内容区"分开
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setFrameShadow(QFrame.Shadow.Plain)
 
         # --- 画面区 + 播放列表面板 ---
         self.video = VideoWidget()
@@ -185,14 +247,22 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setChildrenCollapsible(False)
+        # 分隔条本身不画东西（样式表里是透明的），但要有一定宽度当"抓手"
+        self.splitter.setHandleWidth(6)
 
         self.control = ControlBar()
 
+        root.addWidget(self.address)
         root.addLayout(top)
+        root.addWidget(divider)
         root.addWidget(self.splitter, 1)
         root.addWidget(self.control)
 
+        outer.addWidget(body)
         self.setCentralWidget(central)
+
+        # 状态栏右侧的常驻版权（见 _build_status_branding）
+        self._build_status_branding()
 
         # 面板可见性按上次的选择恢复
         visible = S.get_bool(S.K_PLAYLIST_PANEL_VISIBLE, True)
@@ -220,6 +290,28 @@ class MainWindow(QMainWindow):
         act_downloads.triggered.connect(self._open_downloads)
         self.addAction(act_downloads)
 
+    def _build_status_branding(self) -> None:
+        """状态栏右侧常驻一行版权，点击直接打开官网。
+
+        用 `addPermanentWidget` 而不是 `showMessage`：状态栏左边是临时消息区
+        （播放 / 下载 / 诊断都会往那儿写），`showMessage` 一写就把上一条顶掉；
+        常驻部件固定在右侧，两者互不干扰——版权不会被"正在诊断…"冲走。
+        """
+        self.brand_label = QLabel(
+            f'<a href="{branding.WEBSITE}" '
+            f'style="color:{TOKENS["accent"]}; text-decoration:none">'
+            f"{branding.STATUS_NOTICE}</a>"
+        )
+        self.brand_label.setTextFormat(Qt.TextFormat.RichText)
+        # 点了交给系统浏览器打开，不用自己接 clicked
+        self.brand_label.setOpenExternalLinks(True)
+        self.brand_label.setToolTip(
+            f"{branding.COPYRIGHT}\n官方网址：{branding.WEBSITE}"
+        )
+        # 右侧留一点边距，别贴着窗口边缘
+        self.brand_label.setContentsMargins(0, 0, 10, 0)
+        self.statusBar().addPermanentWidget(self.brand_label)
+
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         key = event.key()
         if key == Qt.Key.Key_Space:
@@ -239,6 +331,37 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    # ------------------------------------------------------------ 窄窗口收缩
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        """窗口变窄时按优先级收起按钮，换来"不挤占"。
+
+        与其让每个按钮都被压到文字截断（Qt 会把控件缩到 minimumSizeHint 就停住，
+        再窄就整行溢出，右端按钮被裁掉，看起来像界面坏了），不如明确地按重要性
+        依次隐藏：先收起最"配置类"的，再收起辅助操作，但**永远不收起「播放」**——
+        那是这个程序唯一不能少的功能。
+        """
+        super().resizeEvent(event)
+        # 全屏时顶部区被 _set_top_area_visible(False) 整体收起，
+        # 这时 resizeEvent（切全屏本身就会触发一次）不能再把它们点亮回来
+        if getattr(self, "_top_area_visible", True):
+            self._apply_compact_layout(event.size().width())
+
+    def _apply_compact_layout(self, width: int) -> None:
+        # 三档：宽 → 全部显示；中 → 收起配置类；窄 → 只留播放/粘贴/打开文件
+        if width >= 1080:
+            nav_count, tail = len(self._nav_buttons), True
+        elif width >= 880:
+            nav_count, tail = 5, True
+        else:
+            nav_count, tail = 3, False
+
+        for index, button in enumerate(self._nav_buttons):
+            button.setVisible(index < nav_count)
+        for button in self._tail_buttons:
+            button.setVisible(tail)
+        # 「列表」被收起时播放列表本身仍在，只是不能从这里开关；
+        # 「设置」还有 Ctrl+, 与窗口快捷键，功能不会丢。
 
     def _connect_signals(self) -> None:
         self.address.returnPressed.connect(self._play_from_address)
@@ -680,6 +803,106 @@ class MainWindow(QMainWindow):
         self.control.set_fullscreen(False)
         if getattr(self, "_was_maximized", False):
             self.showMaximized()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        """窗口状态变化时同步顶部工具区的显隐。
+
+        放在 `changeEvent` 而不是 `_enter_fullscreen` 里，是因为进入全屏的
+        路径不止一条：F11、双击画面、底部按钮走的是 toggle_fullscreen，
+        但窗口管理器/系统也能直接把窗口置成全屏态。挂在状态变化事件上，
+        无论哪条路进来行为都一致。
+        """
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            fullscreen = bool(self.windowState() & Qt.WindowState.WindowFullScreen)
+            self._set_top_area_visible(not fullscreen)
+            # 最大化/还原来回切，标题栏按钮的图形要跟着换
+            self.title_bar.update_max_button(
+                bool(self.windowState() & Qt.WindowState.WindowMaximized)
+            )
+
+    def _set_top_area_visible(self, visible: bool) -> None:
+        """整块顶部区（标题栏 + 地址栏 + 按钮行）的显隐。
+
+        `_top_area_visible` 是给 resizeEvent 看的闸门：全屏切换本身会触发
+        resize，没有这个标记的话收起动作会被 resizeEvent 立刻撤销。
+        """
+        self._top_area_visible = bool(visible)
+        # 全屏时标题栏一并收起，把每一行像素都让给画面
+        self.title_bar.setVisible(visible)
+        self.address.setVisible(visible)
+        for button in self._nav_buttons + self._tail_buttons:
+            button.setVisible(visible)
+        if visible:
+            self._apply_compact_layout(self.width())
+
+    def _toggle_maximize(self) -> None:
+        """标题栏最大化按钮：在最大化与还原之间切换。"""
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    # ------------------------------------------------------------ 原生窗口
+    _WM_NCHITTEST = 0x0084
+
+    def nativeEvent(self, eventType, message):  # noqa: N802 - Qt 命名
+        """把标题栏和窗口边缘的命中交还给系统（自绘标题栏的关键）。
+
+        返回 HTCAPTION 的区域，Windows 原生接管拖动、贴边分屏、
+        双击最大化、右键系统菜单；返回 HT*缩放边 的区域由系统做
+        带正确光标的边缘缩放。标题栏里的链接和按钮所在的矩形返回
+        HTCLIENT，点击正常落到控件上（否则会被当成"拖窗口"吞掉）。
+        """
+        if (
+            eventType in ("windows_generic_MSG", b"windows_generic_MSG")
+            and sys.platform == "win32"
+        ):
+            try:
+                from src.ui.title_bar import _MSG
+
+                msg = _MSG.from_address(int(message))
+                if msg.message == self._WM_NCHITTEST:
+                    return True, self._hit_test_result(msg)
+            except Exception:
+                return False, 0
+        return super().nativeEvent(eventType, message)
+
+    def _hit_test_result(self, msg) -> int:
+        """把 Windows 消息里的屏幕坐标换算成本窗口逻辑坐标后判定。"""
+        import ctypes
+
+        # lParam 低/高 16 位各是一个带符号的屏幕坐标（物理像素），
+        # 要除以设备像素比换算成 Qt 的逻辑坐标再比对
+        x = ctypes.c_short(msg.lParam & 0xFFFF).value
+        y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+        dpr = self.devicePixelRatioF() or 1.0
+        pos = self.mapFromGlobal(QPoint(round(x / dpr), round(y / dpr)))
+        if not self.rect().contains(pos):
+            return HTCLIENT
+
+        title_bar = getattr(self, "title_bar", None)
+        if title_bar is not None and title_bar.isVisible():
+            title_height = title_bar.height()
+            interactive = title_bar.interactive_rects()
+        else:
+            title_height = 0
+            interactive = ()
+        return compute_hit_test(
+            pos,
+            self.width(),
+            self.height(),
+            title_height,
+            interactive,
+            maximized=self.isMaximized() or self.isFullScreen(),
+        )
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().showEvent(event)
+        # 无边框窗口默认直角无投影，首次显示时向 DWM 讨回圆角与投影
+        if not getattr(self, "_window_polished", False):
+            self._window_polished = True
+            polish_native_window(int(self.winId()))
 
     # ------------------------------------------------------------ 窗口状态
     def _restore_window_state(self) -> None:

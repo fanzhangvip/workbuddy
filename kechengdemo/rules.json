@@ -1,0 +1,137 @@
+{
+  "rule_version": "v1.0",
+  "score_bounds": { "min": -12, "max": 13 },
+  "scoring_policy": {
+    "positive": "同一维度命中多个档位时只取最高分；不同维度可累加；总分上限 +13。",
+    "negative": "扣分维度可叠加；总分下限 -12。",
+    "final": "raw_score = 加分合计 + 扣分合计，并按上下限截断。"
+  },
+  "grade_thresholds": [
+    { "min": 6, "grade": "S", "priority": "最高", "advice": "每日重点跟进；课后 30 分钟内跟进并推动关单。" },
+    { "min": 4, "grade": "A", "priority": "高", "advice": "每日 1 次有效跟进，重点推动到课和预定。" },
+    { "min": 2, "grade": "B", "priority": "中", "advice": "隔日有效跟进，以价值内容和公开课邀约培育。" },
+    { "min": 0, "grade": "C", "priority": "低", "advice": "每周 1-2 次低打扰触达，等待主动咨询信号。" },
+    { "min": -999, "grade": "D", "priority": "暂停", "advice": "停止一对一深度跟进，进入长期激活池。" }
+  ],
+  "positive_rules": [
+    {
+      "rule_id": "positive_coder_profile",
+      "dimension": "程序员或转型画像",
+      "options": [
+        { "score": 2, "criteria": "在职编程技术岗" },
+        { "score": 1, "criteria": "非编程岗但明确转型 AI/大模型，或相关专业在校生" }
+      ],
+      "hint": "可结合微伴标签（如编程岗标签）辅助判断。"
+    },
+    {
+      "rule_id": "positive_clear_work_need",
+      "dimension": "明确的工作具体需求",
+      "options": [
+        { "score": 2, "criteria": "有可落地的业务痛点、AI 项目或明确场景" },
+        { "score": 1, "criteria": "仅有学习方向但需求不具体" }
+      ]
+    },
+    {
+      "rule_id": "positive_cooperative",
+      "dimension": "配合度、认可度高",
+      "options": [
+        { "score": 1, "criteria": "积极回复、配合画像收集，且认可课程、师资或平台" }
+      ]
+    },
+    {
+      "rule_id": "positive_urgency",
+      "dimension": "紧迫性高",
+      "options": [
+        { "score": 2, "criteria": "1 个月内的刚性需求" },
+        { "score": 1, "criteria": "1-3 个月的中期计划" }
+      ]
+    },
+    {
+      "rule_id": "positive_learning",
+      "dimension": "已学习一段时间",
+      "options": [
+        { "score": 1, "criteria": "已接触或自学大模型 1 个月以上，含实操、API、RAG、Agent 等" }
+      ]
+    },
+    {
+      "rule_id": "positive_attended_class",
+      "dimension": "邀课成功",
+      "options": [
+        { "score": 2, "criteria": "已实际到课" },
+        { "score": 1, "criteria": "已确认参加但尚未到课" }
+      ],
+      "external_event_preferred": true,
+      "hint": "实际到课以直播/课程平台事件或微伴到课/完课标签为准；仅凭聊天记录不得直接给 +2。"
+    },
+    {
+      "rule_id": "positive_high_tier_city",
+      "dimension": "高转地区",
+      "options": [
+        { "score": 1, "criteria": "一线或指定新一线城市" }
+      ]
+    },
+    {
+      "rule_id": "positive_ask_course",
+      "dimension": "主动问课",
+      "options": [
+        { "score": 2, "criteria": "客户主动询问课程、价格、师资、就业、方式等" },
+        { "score": 1, "criteria": "经销售引导后表示想了解" }
+      ],
+      "hint": "冲突规则：客户在具备学习或业务需求时主动问价格，按「主动问课」判断。"
+    }
+  ],
+  "negative_rules": [
+    {
+      "rule_id": "negative_price_haggling",
+      "dimension": "追着问价格",
+      "options": [
+        { "score": -1, "criteria": "未了解课程价值和服务、反复只比价" }
+      ],
+      "hint": "仅当客户不了解价值、反复只比价时才算。"
+    },
+    {
+      "rule_id": "negative_bad_attitude",
+      "dimension": "态度差",
+      "options": [
+        { "score": -2, "criteria": "不耐烦、粗鲁、挑衅或无理指责" }
+      ]
+    },
+    {
+      "rule_id": "negative_low_cooperation",
+      "dimension": "配合度低",
+      "options": [
+        { "score": -1, "criteria": "敷衍回复、拒绝提供基础信息、长期不配合沟通" }
+      ]
+    },
+    {
+      "rule_id": "negative_low_recognition",
+      "dimension": "认可度低",
+      "options": [
+        { "score": -1, "criteria": "明确否定在线教育、课程、公司或品牌" }
+      ]
+    },
+    {
+      "rule_id": "negative_self_study",
+      "dimension": "要自学",
+      "options": [
+        { "score": -2, "criteria": "明确选择免费自学并拒绝付费课程" }
+      ]
+    },
+    {
+      "rule_id": "negative_no_reply_2d",
+      "dimension": "连续 2 天不回复",
+      "options": [
+        { "score": -2, "criteria": "销售正常跟进后，客户连续 48 小时未回复；客户已说明「忙、晚点聊」等情形不计" }
+      ],
+      "engine": "rule",
+      "hint": "由后台规则引擎根据消息时间计算，不由大模型判断。"
+    },
+    {
+      "rule_id": "negative_refuse",
+      "dimension": "明确拒绝报课",
+      "options": [
+        { "score": -3, "criteria": "明确表示不报、不学、暂不考虑、没有需求等" }
+      ]
+    }
+  ]
+}

@@ -14,6 +14,8 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from ticket_helper import APP_COPYRIGHT, APP_DISPLAY_NAME
+
 log = logging.getLogger(__name__)
 
 
@@ -53,7 +55,7 @@ class TrayIcon(QObject):
 
     def _build(self) -> None:
         self.tray = QSystemTrayIcon(build_icon())
-        self.tray.setToolTip("12306 抢票助手 · 挂机中")
+        self.tray.setToolTip(f"{APP_DISPLAY_NAME} · 挂机中\n{APP_COPYRIGHT}")
 
         menu = QMenu()
         action_show = QAction("显示主界面", menu)

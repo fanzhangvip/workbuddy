@@ -1,4 +1,4 @@
-# 12306 抢票助手 · 容器镜像（CF-05：一套镜像多环境运行）
+# 智泊AI抢票助手 · 容器镜像（CF-05：一套镜像多环境运行）
 #
 # 构建：docker build -t ticket-helper:1.0 .
 # 运行：docker run -d --name th -p 8008:8008 \

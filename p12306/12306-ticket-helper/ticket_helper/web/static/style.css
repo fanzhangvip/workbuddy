@@ -1,4 +1,4 @@
-/* 12306 抢票助手 · 管理后台样式（浅色主题，无外部依赖）
+/* 智泊AI抢票助手 · 管理后台样式（浅色主题，无外部依赖）
  *
  * 设计取向：这个人打开后台只有一件事要做 —— 让票被抢到。
  * 所以页面结构按「总览 → 任务 → 余票」的行动顺序排，
@@ -94,6 +94,14 @@ select:focus-visible, a:focus-visible, summary:focus-visible {
 .conn.off { color: #94a3b8; }
 .link { background: none; border: 0; color: #94a3b8; cursor: pointer; text-align: left; padding: 0; font-size: 13px; }
 .link:hover { color: #fff; }
+/* 版权声明常驻侧边栏底部：每个页面都看得见，不用翻设置去找 */
+.tagline { margin: 0; font-size: 11px; line-height: 1.6; color: #94a3b8; }
+.tagline span { display: block; }
+/* 官网链接：浅色卡片上取主题蓝，深色侧栏上取亮蓝，两处都要看得清 */
+.site { color: var(--accent, #0369a1); text-decoration: none; border-bottom: 1px dotted currentColor; }
+.site:hover { color: #0ea5e9; }
+.sidebar .site { color: #7dd3fc; }
+.sidebar .site:hover { color: #bae6fd; }
 
 .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 

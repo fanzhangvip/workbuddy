@@ -1,4 +1,4 @@
-/* 12306 抢票助手 · 管理后台前端（原生 JS，无外部依赖）
+/* 智泊AI抢票助手 · 管理后台前端（原生 JS，无外部依赖）
  *
  * 与桌面客户端共用同一套 REST + WebSocket 接口，因此两端状态天然一致。
  */
@@ -11,6 +11,52 @@
 const TOKEN_KEY = 'th_token';
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+// --------------------------------------------------------------------------- //
+// 教学演示版：把「乘车日期」统一显示成「明天」
+// --------------------------------------------------------------------------- //
+// 后端 /api/auth/login 与 /api/auth/me 会下发 demo_mode。录播课程要求界面能
+// **长期复用** —— 画面里写着 2026-10-13 的截图，明年回放就成了过期画面。
+// **只改显示，不动数据**：hidden input 里存的、提交给 API 的仍是真实日期，
+// 抢票链路一行没改（唯一来源见 ticket_helper/edition.py，两端一致性由
+// tests/test_contracts.py 的契约 8 守住）。
+const DEMO_DATE_TEXT = '明天';
+let DEMO_MODE = false;
+const EDITION_SUFFIX = '（教学演示版）';
+
+function demoDate(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!text) return '';
+  return DEMO_MODE ? DEMO_DATE_TEXT : text;
+}
+
+function demoDates(values, separator = ' / ') {
+  const items = (values || []).map((v) => String(v == null ? '' : v).trim()).filter(Boolean);
+  if (!items.length) return '';
+  return DEMO_MODE ? DEMO_DATE_TEXT : items.join(separator);
+}
+
+// 页面标题与侧边栏品牌名在演示版下带「（教学演示版）」后缀 ——
+// 但 HTML 里那份**原样不动**（契约测试拿 APP_NAME 钉着它）。
+const PAGE_TITLE = document.title;
+const BRAND_NAME = $('.brand-text').textContent;
+
+function applyEditionBrand() {
+  if (!DEMO_MODE) return;
+  const brand = $('.brand-text');
+  if (brand && brand.textContent === BRAND_NAME) brand.textContent = BRAND_NAME + EDITION_SUFFIX;
+  const cut = PAGE_TITLE.indexOf(' · ');
+  document.title = cut > 0
+    ? PAGE_TITLE.slice(0, cut) + EDITION_SUFFIX + PAGE_TITLE.slice(cut)
+    : PAGE_TITLE + EDITION_SUFFIX;
+}
+
+function setEdition(demo) {
+  DEMO_MODE = !!demo;
+  applyEditionBrand();
+  // 已经渲染出来的日期标签也要跟着变（只是显示，数据没动）
+  datesField.render();
+}
 
 function getToken() {
   // 放 sessionStorage 而非 localStorage：关闭标签页即失效，降低 XSS 长尾风险
@@ -167,6 +213,7 @@ $('#login-form').addEventListener('submit', async (ev) => {
       body: { user: $('#login-user').value, pass: $('#login-pass').value },
     });
     setToken(data.token);
+    setEdition(data.demo_mode);
     showApp();
     await bootData();
     connectLogs();
@@ -658,7 +705,7 @@ function renderAccountPending(section) {
     return '<tr>' +
       '<td>' + escapeHtml(o.sequence_no || o.order_no || '') + '</td>' +
       '<td>' + escapeHtml(o.station_train_code || o.train_code || '') + '</td>' +
-      '<td>' + escapeHtml(o.train_date || '') + '</td>' +
+      '<td>' + escapeHtml(demoDate(o.train_date)) + '</td>' +
       '<td>' + escapeHtml(passengers) + '</td>' +
       '<td>' + escapeHtml(o.ticket_total_price || o.total_price || '') + '</td>' +
       '<td>' + escapeHtml(o.order_status_name || o.status || '') + '</td>' +
@@ -706,7 +753,7 @@ function renderAccountOrders(section) {
       '<td>' + escapeHtml(o.order_no) + '</td>' +
       '<td>' + escapeHtml(o.order_date) + '</td>' +
       '<td>' + escapeHtml(o.train_code) + '</td>' +
-      '<td>' + escapeHtml(o.train_date) + '</td>' +
+      '<td>' + escapeHtml(demoDate(o.train_date)) + '</td>' +
       '<td>' + escapeHtml(o.from_station) + '→' + escapeHtml(o.to_station) + '</td>' +
       '<td>' + escapeHtml(o.seat_type) + '</td>' +
       '<td>' + escapeHtml(o.passenger_names) + '</td>' +
@@ -1040,16 +1087,20 @@ $('#train-types-box').addEventListener('change', () => {
 // 结果是任务跑起来一条也查不到，还很难看出是站名写错了。
 // 所以日期给日期控件、站名从站点表里搜出来点选。
 // --------------------------------------------------------------------------- //
-function createTokenField({ hiddenId, chipsId, emptyText = '还没有添加' }) {
+function createTokenField({ hiddenId, chipsId, emptyText = '还没有添加', display = null }) {
   const hidden = $(hiddenId);
   const chipsBox = $(chipsId);
   const values = [];
+
+  // display 只决定**标签上写什么**（教学演示版把日期写成「明天」）；
+  // data-value / hidden.value / 提交给后端的一律是真实值 —— 两条路不交叉。
+  function label(value) { return display ? display(value) : value; }
 
   function render() {
     hidden.value = values.join(',');
     chipsBox.innerHTML = values.length
       ? values.map((v) =>
-          '<span class="chip">' + escapeHtml(v) +
+          '<span class="chip">' + escapeHtml(label(v)) +
           '<button type="button" class="chip-x" data-value="' + escapeHtml(v) + '" title="移除">×</button></span>'
         ).join('')
       : '<span class="chip-empty">' + escapeHtml(emptyText) + '</span>';
@@ -1061,7 +1112,7 @@ function createTokenField({ hiddenId, chipsId, emptyText = '还没有添加' }) 
     add(raw) {
       const value = String(raw || '').trim();
       if (!value) return false;
-      if (values.includes(value)) { toast('「' + value + '」已经在列表里了'); return false; }
+      if (values.includes(value)) { toast('「' + label(value) + '」已经在列表里了'); return false; }
       values.push(value);
       render();
       return true;
@@ -1082,7 +1133,9 @@ function createTokenField({ hiddenId, chipsId, emptyText = '还没有添加' }) 
   return field;
 }
 
-const datesField = createTokenField({ hiddenId: '#t-dates', chipsId: '#dates-chips', emptyText: '还没有添加日期' });
+const datesField = createTokenField({
+  hiddenId: '#t-dates', chipsId: '#dates-chips', emptyText: '还没有添加日期', display: demoDate,
+});
 const fromField = createTokenField({ hiddenId: '#t-from', chipsId: '#from-chips', emptyText: '还没有添加出发站' });
 const toField = createTokenField({ hiddenId: '#t-to', chipsId: '#to-chips', emptyText: '还没有添加到达站' });
 
@@ -1527,7 +1580,7 @@ function renderTrainPicker(data) {
       '<td>' + escapeHtml(t.arrive_time) + '</td>' +
       '<td>' + escapeHtml(t.duration) + '</td>' +
       '<td class="tp-remain' + (hasTicket ? '' : ' none') + '">' + escapeHtml(t.remain_text) + '</td>' +
-      '<td class="muted small">' + escapeHtml((t.dates || []).join(' / ')) + '</td>' +
+      '<td class="muted small">' + escapeHtml(demoDates(t.dates)) + '</td>' +
       '</tr>';
   }).join('');
   parts.push('<table class="data-table tp-table"><thead><tr>' +
@@ -1629,9 +1682,13 @@ async function refreshTasks() {
       '</div>' +
       '<div class="meta small muted" style="line-height:1.8">' +
         escapeHtml((t.from_stations || []).join('/')) + ' → ' + escapeHtml((t.to_stations || []).join('/')) +
-        ' ｜ ' + (t.left_dates || []).map((d) =>
-          (hints.some((h) => h.date === d) ? '<s title="该日期 12306 查不到余票">' + escapeHtml(d) + '</s>' : escapeHtml(d))
-        ).join(', ') + '<br>' +
+        ' ｜ ' + ((t.left_dates || []).length
+          ? (DEMO_MODE
+            ? escapeHtml(demoDates(t.left_dates, ', '))
+            : (t.left_dates || []).map((d) =>
+                (hints.some((h) => h.date === d) ? '<s title="该日期 12306 查不到余票">' + escapeHtml(d) + '</s>' : escapeHtml(d))
+              ).join(', '))
+          : '') + '<br>' +
         '席别：' + escapeHtml((t.seat_types || []).join('/')) + ' ｜ 策略：' + escapeHtml(t.strategy) +
         ' ｜ 间隔 ' + t.query_interval + 's' +
         (t.sale_open_time ? '<br>准点开售：' + escapeHtml(t.sale_open_time) : '') +
@@ -1682,17 +1739,21 @@ function renderBoard(data) {
   const window_ = data.date_window || {};
   const reason = data.empty_reason || '';
 
+  // 演示版不显示 12306 的可查日期窗口：录播画面里出现具体日期就失去了复用价值
+  //（乘车日期那一族已统一成「明天」，这里同理）。正式版原样显示。
+  const windowHint = (!DEMO_MODE && window_.today)
+    ? ' ｜ 12306 可查 ' + escapeHtml(window_.today) + ' ~ ' + escapeHtml(window_.last)
+    : '';
   const heading = '<div class="board-head">' + badge(data.state_text || data.state || '-',
       data.running ? 'info' : 'gray') +
-    ' <span class="muted small">账号：' + escapeHtml(data.account || '-') +
-    (window_.today ? ' ｜ 12306 可查 ' + escapeHtml(window_.today) + ' ~ ' + escapeHtml(window_.last) : '') +
+    ' <span class="muted small">账号：' + escapeHtml(data.account || '-') + windowHint +
     '</span></div>';
 
   if (candidates.length) {
     const rows = candidates.map((c) =>
       '<tr class="hit">' +
         '<td>' + escapeHtml(c.train_code) + '</td>' +
-        '<td>' + escapeHtml(c.train_date) + '</td>' +
+        '<td>' + escapeHtml(demoDate(c.train_date)) + '</td>' +
         '<td>' + escapeHtml(c.from_station) + ' → ' + escapeHtml(c.to_station) + '</td>' +
         '<td>' + escapeHtml(c.start_time) + ' - ' + escapeHtml(c.arrive_time) + '</td>' +
         '<td class="seat-cell has">' + escapeHtml(c.seat_type) + '</td>' +
@@ -1735,7 +1796,7 @@ function renderBoard(data) {
         : (t.buyable ? '' : ' <span class="muted small">（不可网订）</span>');
       return '<tr>' +
         '<td>' + escapeHtml(t.train_code) + flag + '</td>' +
-        '<td>' + escapeHtml(t.train_date) + '</td>' +
+        '<td>' + escapeHtml(demoDate(t.train_date)) + '</td>' +
         '<td>' + escapeHtml(t.from_station) + ' → ' + escapeHtml(t.to_station) + '</td>' +
         '<td>' + escapeHtml(t.start_time) + ' - ' + escapeHtml(t.arrive_time) + '</td>' +
         '<td>' + seats + '</td>' +
@@ -1949,7 +2010,7 @@ async function loadOrders() {
     const kind = o.status === 'success' ? 'ok' : (o.status === 'failed' ? 'err' : 'warn');
     const pay = o.pay_url ? '<a class="btn tiny" target="_blank" rel="noopener" href="' + escapeHtml(o.pay_url) + '">去支付</a>' : '-';
     return '<tr><td>' + escapeHtml(o.created_at) + '</td><td>' + escapeHtml(o.task_id) + '</td>' +
-      '<td>' + escapeHtml(o.train_no) + '</td><td>' + escapeHtml(o.depart_date) + '</td>' +
+      '<td>' + escapeHtml(o.train_no) + '</td><td>' + escapeHtml(demoDate(o.depart_date)) + '</td>' +
       '<td>' + escapeHtml(o.seat_type) + '</td><td>' + escapeHtml(o.passenger) + '</td>' +
       '<td>' + badge(o.status, kind) + '</td><td>' + escapeHtml(o.order_no) + '</td><td>' + pay + '</td></tr>';
   }).join('') || '<tr><td colspan="9" class="muted">暂无订单</td></tr>';
@@ -2055,7 +2116,8 @@ async function bootData() {
   // 若已有有效令牌，直接进入；否则等登录
   if (!getToken()) { showLogin(); return; }
   try {
-    await api('/api/auth/me');
+    const me = await api('/api/auth/me');
+    setEdition(me && me.demo_mode);
     showApp();
     await bootData();
     connectLogs();

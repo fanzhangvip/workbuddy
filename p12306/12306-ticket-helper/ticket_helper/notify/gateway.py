@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
+from ticket_helper import APP_NAME
 from ticket_helper.notify.channels import Channel, WebChannel, build_channels
 
 log = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     EventType.STANDBY.value: ("📝 候补动态：{task}", "{detail}\n\n车次：{train}\n日期：{date}\n{route}\n席别：{seat}"),
     EventType.ERROR.value: ("⚠️ 任务异常：{task}", "{detail}"),
     EventType.RISK.value: ("🚨 风控告警：{task}", "{detail}"),
-    EventType.INFO.value: ("ℹ️ 抢票助手：{task}", "{detail}"),
+    EventType.INFO.value: ("ℹ️ " + APP_NAME + "：{task}", "{detail}"),
 }
 
 #: 哪些事件属于「重大事件」（会触发语音拨号等 critical_only 渠道）
@@ -76,7 +77,7 @@ class NotifyEvent:
         if self.title and self.body:
             return self.title, self.body
         title_tpl, body_tpl = DEFAULT_TEMPLATES.get(
-            self.type, ("抢票助手", "{detail}")
+            self.type, (APP_NAME, "{detail}")
         )
         if self.type == EventType.STANDBY.value and not any(
             self.context.get(key) for key in _TRIP_KEYS

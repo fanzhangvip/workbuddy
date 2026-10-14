@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from desktop_ui.api_client import ApiClient, ApiError
+from desktop_ui.theme import C
 
 log = logging.getLogger(__name__)
 
@@ -205,7 +206,7 @@ class QrLoginDialog(QDialog):
 
     # ------------------------------------------------------------------ #
     def _set_status(self, text: str, *, ok: bool | None = None) -> None:
-        color = "#15803d" if ok is True else ("#b91c1c" if ok is False else "#1f2937")
+        color = C["ok"] if ok is True else (C["bad"] if ok is False else C["ink"])
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {color};")
 

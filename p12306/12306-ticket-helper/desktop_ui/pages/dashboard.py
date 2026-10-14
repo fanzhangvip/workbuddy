@@ -25,16 +25,18 @@ from PySide6.QtWidgets import (
 )
 
 from desktop_ui.api_client import ApiClient, ApiError
+from desktop_ui.theme import C
 
 log = logging.getLogger(__name__)
 
+# 语义色来自主题（成功绿 / 进行中蓝 / 等待琥珀 / 失败红 / 停滞灰）
 STATE_COLORS = {
-    "success": "#15803d",
-    "grabbing": "#1d4ed8",
-    "ready": "#b45309",
-    "error": "#b91c1c",
-    "stopped": "#64748b",
-    "idle": "#64748b",
+    "success": C["ok"],
+    "grabbing": C["info"],
+    "ready": C["warn"],
+    "error": C["bad"],
+    "stopped": C["muted"],
+    "idle": C["muted"],
 }
 
 
@@ -172,19 +174,19 @@ class DashboardPage(QWidget):
 
         self.cards["accounts"].set_value(
             f"{accounts.get('online', 0)} / {accounts.get('total', 0)}",
-            "#15803d" if accounts.get("online") else ("#b45309" if accounts.get("total") else "#b91c1c"),
+            C["ok"] if accounts.get("online") else (C["warn"] if accounts.get("total") else C["bad"]),
         )
         self.cards["running"].set_value(
             f"{scheduler.get('running', 0)} / {scheduler.get('total', 0)}",
-            "#15803d" if scheduler.get("running") else None,
+            C["ok"] if scheduler.get("running") else None,
         )
-        self.cards["success"].set_value(str(scheduler.get("success", 0)), "#15803d" if scheduler.get("success") else None)
+        self.cards["success"].set_value(str(scheduler.get("success", 0)), C["ok"] if scheduler.get("success") else None)
         self.cards["queries"].set_value(str(storage.get("queries_total", 0)))
         self.cards["today"].set_value(str(storage.get("queries_today", 0)))
         self.cards["latency"].set_value(f"{storage.get('latency_avg_ms', 0)} ms")
         self.cards["interval"].set_value(f"{rate.get('interval', 0)} s")
         self.cards["risk"].set_value(
-            str(rate.get("risk_count", 0)), "#b91c1c" if rate.get("risk_count") else "#15803d"
+            str(rate.get("risk_count", 0)), C["bad"] if rate.get("risk_count") else C["ok"]
         )
         self.status_label.setText(f"数据目录：{runtime.get('home', '-')}")
 
@@ -273,7 +275,7 @@ class DashboardPage(QWidget):
 
         state = task.get("state", "idle")
         title = QLabel(f"{task.get('task_name', '')}　[{task.get('state_text', state)}]")
-        title.setStyleSheet(f"font-weight: 600; color: {STATE_COLORS.get(state, '#1f2937')};")
+        title.setStyleSheet(f"font-weight: 600; color: {STATE_COLORS.get(state, C['ink'])};")
         layout.addWidget(title)
 
         stats = task.get("stats") or {}

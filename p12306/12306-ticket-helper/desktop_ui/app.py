@@ -21,134 +21,12 @@ if str(BASE_DIR) not in sys.path:
 
 from desktop_ui.api_client import ApiClient, ApiError, BackendLauncher  # noqa: E402
 from desktop_ui.local_env import load_web_credentials  # noqa: E402
+from ticket_helper import APP_DISPLAY_NAME  # noqa: E402
 
 log = logging.getLogger("desktop")
 
-STYLESHEET = """
-QWidget { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; font-size: 13px; color: #1f2937; }
-QMainWindow, QStackedWidget > QWidget { background: #f5f7fa; }
-QListWidget#navList {
-    background: #1f2a37; color: #cbd5e1; border: none; outline: none; padding-top: 8px;
-}
-QListWidget#navList::item { padding: 12px 16px; }
-QListWidget#navList::item:selected { background: #2f3d4f; color: #ffffff; }
-QListWidget#navList::item:hover { background: #273444; color: #ffffff; }
-
-QPushButton {
-    background: #ffffff; border: 1px solid #e3e8ef; border-radius: 6px;
-    padding: 7px 14px; color: #1f2937;
-}
-QPushButton:hover { background: #fafbfd; border-color: #c7d2dd; }
-QPushButton#primaryButton { background: #c0392b; border-color: #c0392b; color: #ffffff; }
-QPushButton#primaryButton:hover { background: #a5301f; }
-QPushButton#tinyButton { padding: 4px 9px; font-size: 12px; }
-/* 任务卡片上的「启动」：这是这一页最该被点到的按钮，给它一点重量 */
-QPushButton#tinyPrimary {
-    background: #c0392b; border: 1px solid #c0392b; color: #ffffff;
-    padding: 4px 13px; font-size: 12px;
-}
-QPushButton#tinyPrimary:hover { background: #a5301f; border-color: #a5301f; }
-
-QFrame#statCard, QFrame#taskCard {
-    background: #ffffff; border: 1px solid #e3e8ef; border-radius: 8px;
-}
-/* 总览页顶部的「下一步」引导条：左边一条红杠，让它明显区别于普通卡片 */
-QFrame#heroCard {
-    background: #ffffff; border: 1px solid #e3e8ef; border-left: 4px solid #c0392b;
-    border-radius: 8px;
-}
-QLabel#heroTitle { font-size: 15px; font-weight: 600; }
-QLabel#statTitle { color: #64748b; font-size: 12px; }
-QLabel#statValue { font-size: 20px; font-weight: 600; }
-/* 三张主卡片（已抢到 / 运行中 / 账号在线）比次要指标大一号 */
-QLabel#statValueBig { font-size: 28px; font-weight: 600; }
-QLabel#sectionTitle { font-size: 15px; font-weight: 600; margin-top: 6px; }
-/* 页面主标题（任务配置 / 已有任务）：比分组标题再大一档，页面的落点 */
-QLabel#pageTitle { font-size: 17px; font-weight: 600; color: #0f172a; }
-QLabel#muted { color: #64748b; }
-/* 字段小标题右边的补充说明：比 muted 再淡一档，避免和字段名抢注意力 */
-QLabel#hint { color: #94a3b8; font-size: 12px; }
-/* 字段名（「标签在左」那一列的、以及复合控件自己的标题）：比说明文字深一档，
-   让它读起来是「标签」而不是「提示」 */
-QLabel#fieldLabel { color: #475569; font-size: 13px; }
-
-/* ---------- 任务配置页：白卡 + 分组标题 ---------- */
-/* 表单整列一张白卡，与灰底页面拉开层次；分组之间靠「序号 + 细分隔线」区隔，
-   不再用一圈圈 QGroupBox 边框（四五个方框叠起来眼睛没有落点） */
-QFrame#formSheet { background: #ffffff; border: 1px solid #e3e8ef; border-radius: 10px; }
-QLabel#stepBadge {
-    background: #c0392b; color: #ffffff; border-radius: 11px;
-    font-size: 12px; font-weight: 700;
-}
-QLabel#sectionName { font-size: 14px; font-weight: 600; color: #1f2937; }
-QFrame#sectionRule { background: #eef1f5; border: none; }
-/* 底部操作条：固定在滚动区外面，永远看得见「保存任务」 */
-QFrame#actionBar { background: #ffffff; border-top: 1px solid #e3e8ef; }
-
-/* 车次白/黑名单的分段切换：两个连体按钮，一次只看一个名单 */
-QPushButton#segmentLeft, QPushButton#segmentRight {
-    background: #f3f5f8; border: 1px solid #e3e8ef; color: #475569;
-    padding: 7px 18px; font-size: 13px;
-}
-QPushButton#segmentLeft { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: none; }
-QPushButton#segmentRight { border-top-left-radius: 0; border-bottom-left-radius: 0; }
-QPushButton#segmentLeft:hover, QPushButton#segmentRight:hover { background: #eef1f5; }
-QPushButton#segmentLeft:checked, QPushButton#segmentRight:checked {
-    background: #ffffff; color: #c0392b; font-weight: 600; border-color: #c7d2dd;
-}
-
-/* 车次类型：做成可点的小标签。默认的勾选框只有 18px 高，点起来也费劲 */
-QCheckBox#chipCheck {
-    background: #ffffff; border: 1px solid #e3e8ef; border-radius: 14px;
-    padding: 4px 8px; color: #475569; font-size: 12px;
-}
-QCheckBox#chipCheck:hover { border-color: #c7d2dd; background: #fafbfd; }
-QCheckBox#chipCheck:checked { background: #fdf2f0; border-color: #c0392b; color: #c0392b; font-weight: 600; }
-
-/* 右栏任务卡片：名称 + 状态徽章 + 「键：值」两列信息 */
-QLabel#taskName { font-size: 14px; font-weight: 600; color: #0f172a; }
-QLabel#stateBadgeOn, QLabel#stateBadgeOff { border-radius: 9px; padding: 2px 10px; font-size: 12px; }
-QLabel#stateBadgeOn { background: #e8f7ee; color: #1a7f4b; }
-QLabel#stateBadgeOff { background: #eef1f5; color: #64748b; }
-QLabel#metaKey { color: #94a3b8; font-size: 12px; }
-QLabel#metaValue { color: #334155; font-size: 12.5px; }
-QLabel#emptyState { color: #94a3b8; font-size: 13px; padding: 16px 2px; }
-
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-    background: #ffffff; border: 1px solid #e3e8ef; border-radius: 6px; padding: 8px 9px;
-}
-/* 列表 / 表格 / 多行文本保持紧凑，它们不需要打字时的手感 */
-QTextEdit, QListWidget, QTableWidget {
-    background: #ffffff; border: 1px solid #e3e8ef; border-radius: 6px; padding: 5px 7px;
-}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: #c0392b; }
-QGroupBox {
-    border: 1px solid #e3e8ef; border-radius: 8px; margin-top: 14px;
-    /* 内边距给足：默认那点留白会让一圈控件像贴在一起 */
-    padding: 18px 14px 14px 14px; background: #ffffff; font-weight: 600;
-}
-QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #1f2937; }
-/* 分组内的普通标签都是小字说明，交给它们自己的 objectName 控制 */
-QGroupBox QLabel { font-weight: 400; }
-
-/* 滚动区：不要白底也不要边框，让它和页面背景连成一片 */
-QScrollArea { border: none; background: transparent; }
-QScrollArea > QWidget > QWidget { background: transparent; }
-
-QTabWidget::pane { border: 1px solid #e3e8ef; border-radius: 8px; background: #ffffff; }
-QTabBar::tab { padding: 8px 16px; background: #eef1f5; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; }
-QTabBar::tab:selected { background: #ffffff; color: #c0392b; }
-
-QTableWidget { gridline-color: #eef1f5; }
-QHeaderView::section {
-    background: #f8fafc; color: #64748b; padding: 6px; border: none; border-bottom: 1px solid #e3e8ef;
-}
-QTextEdit#logView {
-    background: #0f172a; color: #cbd5e1; font-family: Consolas, "Courier New", monospace;
-    font-size: 12.5px; border: none;
-}
-QStatusBar { background: #ffffff; border-top: 1px solid #e3e8ef; }
-"""
+# 全局样式已收敛到 desktop_ui/theme.py（天蓝玻璃主题，唯一来源）。
+from desktop_ui.theme import C, STYLESHEET  # noqa: F401  （C 供本模块少量着色用）
 
 
 class LoginDialog:
@@ -159,7 +37,7 @@ class LoginDialog:
         from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit
 
         dialog = QDialog()
-        dialog.setWindowTitle("登录抢票助手后台")
+        dialog.setWindowTitle(f"登录 {APP_DISPLAY_NAME} 后台")
         dialog.resize(360, 170)
         layout = QFormLayout(dialog)
 
@@ -286,7 +164,7 @@ def _install_qt_message_handler() -> None:
 
 
 def _run(argv: list[str] | None = None, *, port: int | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="ticket-helper-desktop", description="12306 抢票助手桌面客户端")
+    parser = argparse.ArgumentParser(prog="ticket-helper-desktop", description=f"{APP_DISPLAY_NAME}桌面客户端")
     parser.add_argument("--port", type=int, default=port, help="后台服务端口（默认 8008）")
     parser.add_argument("--base-url", default="", help="直接指定后台地址")
     parser.add_argument("--no-autostart", action="store_true", help="不自动拉起后台服务")
@@ -304,7 +182,7 @@ def _run(argv: list[str] | None = None, *, port: int | None = None) -> int:
     from desktop_ui.realtime import RealtimeClient
 
     app = QApplication(sys.argv)
-    app.setApplicationName("12306抢票助手")
+    app.setApplicationName(APP_DISPLAY_NAME)
     app.setStyleSheet(STYLESHEET)
     # 关掉最后一个窗口不退出（托盘挂机）
     app.setQuitOnLastWindowClosed(False)
@@ -439,7 +317,7 @@ def main(argv: list[str] | None = None, *, port: int | None = None) -> int:
             except Exception:  # noqa: BLE001
                 path = None
         _fatal_dialog(
-            "抢票助手发生错误",
+            f"{APP_DISPLAY_NAME}发生错误",
             f"程序遇到未处理的错误，已停止运行。\n\n"
             f"{type(exc).__name__}: {exc}\n\n"
             f"崩溃日志：{path or '(写入失败)'}\n"

@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  12306 ticket helper - start the WEB UI (packaged build)
+rem  Zhibo AI ticket helper - start the WEB UI (packaged build)
 rem
 rem  NOTE: this file is intentionally ASCII-only.
 rem  cmd.exe reads .bat files using the OEM code page (GBK on a
@@ -21,11 +21,13 @@ if not exist "%EXE%" (
 )
 
 echo ============================================================
-echo  12306 ticket helper - WEB UI
+echo  Zhibo AI ticket helper - WEB UI
 echo  URL   : http://127.0.0.1:8008
 echo  Login : user/password are in  %%USERPROFILE%%\.ticket-helper\env.py
 echo          (web.auth_user / web.auth_pass)
 echo  Stop  : close this window
+echo  Notice: (c) Zhibo AI. For Zhibo AI students only.
+echo  Site  : https://www.zhipoai.com/
 echo ============================================================
 echo.
 

@@ -31,12 +31,15 @@ K_COOKIE_FILE = "network/cookie_file"
 #: 直接从浏览器读 cookie 的浏览器名（chrome/edge/firefox/brave/opera...），空 = 不用
 K_COOKIE_FROM_BROWSER = "network/cookie_from_browser"
 K_SOCKET_TIMEOUT = "network/socket_timeout"
+#: 网页地址解析的总超时（秒）。站点响应慢、或解析器要换几种方式重试时，
+#: 给足时间才拿得到地址；调得太小会把"慢但能成功"误报成"解析超时"。
+K_RESOLVE_TIMEOUT_S = "network/resolve_timeout_s"
 K_RTSP_TRANSPORT = "network/rtsp_transport"    # tcp | udp
 K_LOAD_TIMEOUT_MS = "network/load_timeout_ms"
 
 # 网页地址解析的"尽可能拿到"策略
 #: 解析前先做 DNS/TCP 可达性预检：站点整段不通时立刻给出精确原因，
-#: 而不是让 yt-dlp 白跑满 25 秒
+#: 而不是让 yt-dlp 白跑满「解析超时」（默认 60 秒）
 K_RESOLVE_PREFLIGHT = "network/resolve_preflight"
 #: 预检发现"系统 DNS 解析出来的地址连不上"时，改用 DoH 再查一次；
 #: 只有 DoH 的地址实测可用才启用改写（治 DNS 污染）
@@ -167,6 +170,7 @@ DEFAULTS: dict[str, object] = {
     K_COOKIE_FILE: "",
     K_COOKIE_FROM_BROWSER: "",
     K_SOCKET_TIMEOUT: 10,
+    K_RESOLVE_TIMEOUT_S: 60,
     K_RTSP_TRANSPORT: "udp",
     K_LOAD_TIMEOUT_MS: 0,          # 0 = 使用 src/core/url_router.py 里按类型定的超时
     # 三项"尽可能拿到视频地址"的默认全开：它们只在"本来就要失败"的路径上

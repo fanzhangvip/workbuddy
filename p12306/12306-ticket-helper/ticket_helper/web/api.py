@@ -27,6 +27,7 @@ from ticket_helper.config.settings import (
 from ticket_helper.errors import NotFoundError, ValidationError
 from ticket_helper.order.service import ORDER_STATUS_TEXT
 from ticket_helper.runtime.context import AppContext
+from ticket_helper import edition
 from ticket_helper import train_date as train_date_util
 from ticket_helper.web.auth import TokenManager, current_user, require_auth, require_internal
 
@@ -123,7 +124,13 @@ def login():
     _TOKENS.clear_failures(client)
     token = _TOKENS.issue(str(data["user"]))
     log.info("后台登录成功: %s", data["user"])
-    return jsonify({"token": token, "user": data["user"], "expires_in": _TOKENS.ttl})
+    return jsonify({
+        "token": token,
+        "user": data["user"],
+        "expires_in": _TOKENS.ttl,
+        # 教学演示版：前端据此把「乘车日期」显示成「明天」（见 edition.py）
+        "demo_mode": edition.DEMO_MODE,
+    })
 
 
 @api.post("/auth/logout")
@@ -138,7 +145,11 @@ def logout():
 @api.get("/auth/me")
 @guard
 def me():
-    return jsonify({"user": current_user(), "version": __import__("ticket_helper").__version__})
+    return jsonify({
+        "user": current_user(),
+        "version": __import__("ticket_helper").__version__,
+        "demo_mode": edition.DEMO_MODE,
+    })
 
 
 # =========================================================================== #

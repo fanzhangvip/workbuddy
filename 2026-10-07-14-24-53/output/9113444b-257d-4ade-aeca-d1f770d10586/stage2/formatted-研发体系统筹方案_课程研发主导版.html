@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="docx-page-size" content="A4">
+  <title>研发体系统筹方案（课程研发主导版）</title>
+<style>
+  @page {
+    @bottom-center { content: counter(page); }
+  }
+  @page cover {
+    @bottom-center { content: none; }
+  }
+  section[role="cover"] { page: cover; }
+
+  :root {
+    --fs-h1: var(--typography-fontSize-h1);
+    --fs-h2: var(--typography-fontSize-h2);
+    --fs-h3: var(--typography-fontSize-h3);
+    --fs-body: var(--typography-fontSize-body);
+    --fs-small: var(--typography-fontSize-small);
+    --ff-heading: var(--typography-fontFamily-heading);
+    --ff-body: var(--typography-fontFamily-body);
+    --lh-body: var(--typography-lineHeight-body);
+    --fw-bold: var(--typography-fontWeight-heading);
+    --color-primary: var(--color-primary);
+    --color-accent: var(--color-accent);
+    --color-text: var(--color-text);
+    --color-muted: var(--color-textSecondary);
+    --color-heading: var(--color-heading);
+    --color-border: var(--color-divider);
+    --color-bg: var(--color-background);
+    --color-highlight: var(--color-surface);
+    --spacing-paragraph: var(--spacing-paragraph);
+    --spacing-section: var(--spacing-sectionGap);
+    --spacing-block: var(--spacing-cardPadding);
+    --margin-page: var(--layout-marginLeft);
+    --color-summary-bg: var(--color-surface);
+    --color-summary-border: var(--color-primary);
+    --summary-border-width: 4px;
+    --color-emphasis: var(--color-text);
+    --page-content-width: var(--layout-maxContentWidth);
+    --space-xxs: 0.3em;
+    --space-xs: 0.4em;
+    --space-sm: 0.5em;
+    --space-md: 0.6em;
+    --space-lg: 0.8em;
+    --space-indent: 1.5em;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--ff-body);
+    font-size: var(--fs-body);
+    line-height: var(--lh-body);
+    color: var(--color-text);
+    background: var(--color-bg);
+    max-width: var(--page-content-width);
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .report-cover {
+    display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
+    min-height: 60vh; padding: var(--margin-page);
+    background: var(--color-highlight);
+  }
+  .cover-category {
+    font-size: var(--typography-fontSize-coverCategory);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-primary); letter-spacing: 0.08em; margin-bottom: var(--space-lg);
+    text-align: left;
+  }
+  .cover-title {
+    font-size: var(--typography-fontSize-coverTitle);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-primary); margin-bottom: var(--space-sm); text-align: left;
+  }
+  .cover-subtitle {
+    font-size: var(--typography-fontSize-subtitle);
+    color: var(--color-muted); margin-bottom: var(--spacing-section); text-align: left;
+  }
+  .cover-meta { font-size: var(--fs-small); color: var(--color-muted); text-align: left; }
+  .cover-meta p { margin-bottom: var(--space-xxs); color: var(--color-muted); font-size: var(--fs-small); }
+
+  .doc-toc {
+    padding: var(--spacing-block) var(--margin-page);
+    background: var(--color-bg); border-bottom: 1px solid var(--color-border);
+  }
+  .toc-title { font-weight: var(--fw-bold); margin-bottom: var(--space-sm); font-size: var(--fs-h3); color: var(--color-heading); }
+  .toc-list, .toc-list ol, .toc-list ul {
+    list-style: none; list-style-type: none; padding-left: var(--space-indent);
+  }
+  .toc-list li { margin-bottom: var(--space-xxs); text-indent: 0; font-size: var(--fs-body); color: var(--color-text); }
+  .toc-list a { color: var(--color-primary); text-decoration: none; }
+
+  .executive-summary {
+    margin: var(--spacing-section) var(--margin-page);
+    padding: var(--spacing-section);
+    border-left: var(--summary-border-width) solid var(--color-summary-border);
+    background: var(--color-summary-bg);
+  }
+  .summary-header { margin-bottom: var(--spacing-block); }
+  .summary-header h2 { font-size: var(--fs-h2); font-family: var(--ff-heading); color: var(--color-heading); font-weight: var(--fw-bold); }
+  .summary-badge { font-size: var(--fs-small); color: var(--color-muted); font-style: italic; }
+  .summary-body { color: var(--color-text); font-size: var(--fs-body); }
+  .summary-body p { margin-bottom: var(--spacing-paragraph); color: var(--color-text); font-size: var(--fs-body); }
+
+  .report-body { padding: var(--spacing-section) var(--margin-page); }
+  .report-body h2 {
+    font-size: var(--fs-h2); font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-heading);
+    margin-top: var(--spacing-section); margin-bottom: var(--spacing-paragraph);
+    text-align: left;
+  }
+  .report-body h3 {
+    font-size: var(--fs-h3); font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-heading);
+    margin-top: var(--spacing-block); margin-bottom: var(--spacing-paragraph);
+    text-align: left;
+  }
+  .report-body h4 {
+    font-size: var(--fs-body); font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-text);
+    margin-top: var(--spacing-block); margin-bottom: var(--spacing-paragraph);
+    text-align: left;
+  }
+  .report-body p { margin-bottom: var(--spacing-paragraph); color: var(--color-text); font-size: var(--fs-body); text-align: justify; }
+  .report-body ul, .report-body ol { margin: 0 0 var(--spacing-paragraph) var(--space-indent); }
+  .report-body li { margin-bottom: var(--space-xxs); color: var(--color-text); font-size: var(--fs-body); }
+  .report-body strong { font-weight: var(--fw-bold); color: var(--color-heading); }
+  .report-body blockquote {
+    margin: var(--spacing-paragraph) 0;
+    padding: var(--spacing-block);
+    border-left: var(--summary-border-width) solid var(--color-summary-border);
+    background: var(--color-summary-bg);
+    color: var(--color-text); font-size: var(--fs-body);
+  }
+  .report-body blockquote p { margin-bottom: 0; color: var(--color-text); font-size: var(--fs-body); }
+
+  table.content-table {
+    width: 100%; border-collapse: collapse; margin-bottom: var(--spacing-block);
+  }
+  table.content-table thead th {
+    background: var(--color-highlight); color: var(--color-heading);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    font-size: var(--fs-small); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+  }
+  table.content-table tbody td {
+    font-size: var(--fs-body); color: var(--color-text); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+    vertical-align: top;
+  }
+  table.content-table tbody tr:nth-child(even) td { background: var(--color-highlight); }
+  table.content-table caption {
+    caption-side: top; text-align: left;
+    font-size: var(--fs-small); color: var(--color-muted);
+    padding-bottom: var(--space-xs);
+  }
+
+  table.summary-table {
+    width: 100%; border-collapse: collapse; margin-bottom: var(--spacing-block);
+  }
+  table.summary-table thead th {
+    background: var(--color-primary); color: var(--color-bg);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    font-size: var(--fs-small); text-align: center;
+    padding: var(--space-sm) var(--space-md); border: 1px solid var(--color-border);
+  }
+  table.summary-table tbody td {
+    font-size: var(--fs-body); color: var(--color-text); text-align: center;
+    padding: var(--space-md) var(--space-md); border: 1px solid var(--color-border);
+  }
+  table.summary-table tbody td.card-label {
+    font-size: var(--fs-small); color: var(--color-muted); text-align: center;
+  }
+  table.summary-table tbody td.card-value {
+    font-family: var(--typography-fontFamily-data); font-size: var(--typography-fontSize-dataLabel);
+    font-weight: var(--fw-bold); color: var(--color-primary);
+  }
+
+  table.kv-table { width: 100%; border-collapse: collapse; margin-bottom: var(--spacing-block); }
+  table.kv-table thead th {
+    background: var(--color-highlight); color: var(--color-heading);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    font-size: var(--fs-small); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+  }
+  table.kv-table tbody td {
+    font-size: var(--fs-body); color: var(--color-text); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border); vertical-align: top;
+  }
+  table.kv-table tbody td.kv-key {
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-heading); white-space: nowrap;
+  }
+
+  .note-emphasis { color: var(--color-text); font-weight: var(--fw-bold); }
+  .divider-line { border: none; border-top: 1px solid var(--color-border); }
+
+  .appendix {
+    padding: var(--spacing-section) var(--margin-page);
+    border-top: 1px solid var(--color-border);
+  }
+  .appendix p { margin-bottom: var(--spacing-paragraph); font-size: var(--fs-body); color: var(--color-muted); }
+  </style></head>
+<body>
+
+  <section role="cover" class="report-cover">
+    <p class="cover-category">内部汇报 · 初步方案</p>
+    <h1 class="cover-title">研发体系统筹方案</h1>
+    <p class="cover-subtitle">课程研发主导版：把已有规划落成可复制的课程体系</p>
+    <div class="cover-meta">
+      <p>提交人：研发体系负责人（拟）</p>
+      <p>提交对象：凯哥</p>
+      <p>日期：2026 年 10 月 7 日</p>
+      <p>版本：v2 修订版，替代 10 月 7 日初稿</p>
+      <p>文档性质：初步方案，供讨论与拍板，非最终方案</p>
+    </div>
+  </section>
+
+  <section role="body" class="report-body" data-page-restart="1">
+
+    <nav class="doc-toc" aria-label="文档目录">
+      <p class="toc-title">目录</p>
+      <ol class="toc-list">
+        <li><a href="#section-1">写在前面：本稿的定位与边界</a></li>
+        <li><a href="#section-2">核心判断：公司缺的不是能力，是归口</a></li>
+        <li><a href="#section-3">四条工作主线的定位与边界</a></li>
+        <li><a href="#section-4">九十天执行节奏</a></li>
+        <li><a href="#section-5">精力分配原则</a></li>
+        <li><a href="#section-6">风险与应对</a></li>
+        <li><a href="#section-7">待您拍板的事项</a></li>
+        <li><a href="#section-8">下一步</a></li>
+      </ol>
+    </nav>
+
+    <div class="executive-summary">
+      <div class="summary-header">
+        <h2>执行摘要</h2>
+      </div>
+      <table class="summary-table">
+        <thead>
+          <tr>
+            <th>第一优先主线</th>
+            <th>执行周期</th>
+            <th>精力投入</th>
+            <th>待拍板事项</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="card-value">课程研发</td>
+            <td class="card-value">90 天</td>
+            <td class="card-value">45%</td>
+            <td class="card-value">4 项</td>
+          </tr>
+          <tr>
+            <td class="card-label">本人主导到底</td>
+            <td class="card-label">分四阶段推进</td>
+            <td class="card-label">四主线并行</td>
+            <td class="card-label">需您给方向</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="summary-body">
+        <p>本版将<strong>课程研发升为第一优先主线，并由我本人亲自主导到底</strong>。课程研发规划已有成型基础，当前的重心是把规划落地为可交付、可复制、可持续的课程体系。</p>
+        <p>课程升为第一优先的三个理由：它是主营业务最直接的支持；它最能验证研发体系是否可用；它已有基础、见效路径最短。内部工具与AI 落地转为并行支撑线，AI 应用开发与之共用案例实现一次投入两处产出，品牌出书仍划归科研线。</p>
+        <p>本稿不预设组织与人事方案，相关事项列入第七章待您拍板。</p>
+      </div>
+    </div>
+
+    <main>
+
+      <h2 id="section-1">写在前面：本稿的定位与边界</h2>
+
+      <p>本稿回答三个问题，不回答第四个。</p>
+
+      <h3>（一）要回答的三个问题</h3>
+      <p>本稿聚焦三个可执行的问题，明确边界。</p>
+      <ol>
+        <li>公司研发与 AI 能力目前到底散在哪儿（现状盘点）</li>
+        <li>接下来九十天，先做什么、后做什么、什么不做（优先级与节奏）</li>
+        <li>哪些事需要您拍板，我才能往下推（待决事项）</li>
+      </ol>
+
+      <h3>（二）本稿刻意不回答的第四个问题</h3>
+      <p>明确不回答的内容，是为了保住本稿的讨论价值。</p>
+      <p>本稿<strong>不预设</strong>具体人选调整方案、不预设组织架构调整方案、不预设任何需要您先行授权才能讨论的内容。涉及人事与组织的内容，以第七章「待您拍板事项」的形式提出，等您给方向后再展开。</p>
+      <p>原因很简单：盘点与规划我可以独立完成，但组织调整必须由您推动。我把这两件事混在一起写，会让本稿失去讨论价值。</p>
+
+      <h3>（三）关于课程研发主线的说明（v2 修订要点）</h3>
+      <p>本版最核心的变化是课程研发升为第一优先并由我本人主导。</p>
+      <p>本版将<strong>课程研发升为第一优先主线，并由我本人亲自主导</strong>。课程研发规划已有成型基础，当前的工作重心是把规划落地为可交付的课程体系与运行机制。</p>
+      <p>因此本版相对初版做了三处结构性调整：</p>
+
+      <table class="content-table">
+        <caption>表 1　v2 相对初版的三处结构性调整</caption>
+        <thead>
+          <tr>
+            <th>调整项</th>
+            <th>初版</th>
+            <th>本版</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>主线排序</td>
+            <td>内部工具盘点优先</td>
+            <td><strong>课程研发优先</strong></td>
+          </tr>
+          <tr>
+            <td>课程研发定位</td>
+            <td>定机制、他人执行</td>
+            <td><strong>本人主导，负责到底</strong></td>
+          </tr>
+          <tr>
+            <td>授课安排</td>
+            <td>明确不承担授课</td>
+            <td><strong>按需承担，纳入排期</strong></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-2">核心判断：公司缺的不是能力，是归口</h2>
+
+      <h3>（一）问题的本质</h3>
+      <p>先把问题的真实形态说清楚，再谈解法。目前公司内部已经存在若干 AI 与研发相关的能力沉淀——生成视频智能体、教学与排课系统、PPT 生成系统、内部业务系统等。它们不是不存在，而是<strong>散落、无人统筹、各自为战</strong>。</p>
+      <p>由此产生三个后果：</p>
+
+      <table class="content-table">
+        <caption>表 2　能力散落导致的三个直接后果</caption>
+        <thead>
+          <tr>
+            <th>后果</th>
+            <th>具体表现</th>
+            <th>代价</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>重复造轮子</strong></td>
+            <td>不同团队各自尝试同类工具，缺少复用机制</td>
+            <td>资源浪费，且没有沉淀</td>
+          </tr>
+          <tr>
+            <td><strong>状态不可见</strong></td>
+            <td>无人能完整回答「我们有多少工具、谁在用、进展如何」</td>
+            <td>决策缺乏依据，管理层无法判断投入产出</td>
+          </tr>
+          <tr>
+            <td><strong>需求无出口</strong></td>
+            <td>各部门提需求后没有统一受理与排期路径</td>
+            <td>需求要么积压，要么被私下消化</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）关键结论</h3>
+      <p>由上述现象可以推出一个关于优先级的判断。</p>
+      <blockquote>
+        <p>公司当前最缺的不是研发能力，而是把研发能力组织起来、统一调度、并且让它自己转起来的人与机制。</p>
+      </blockquote>
+      <p>课程研发之所以升为第一优先，正是因为它是<strong>最能直接产生业务价值、也最能验证研发体系是否可用</strong>的那条线。</p>
+
+      <h3>（三）我的能力匹配度</h3>
+      <p>下表对照五个能力维度，说明我与该岗位的匹配情况及短板应对。</p>
+
+      <table class="content-table">
+        <caption>表 3　能力维度与新岗位的匹配情况</caption>
+        <thead>
+          <tr>
+            <th>维度</th>
+            <th>我的情况</th>
+            <th>与新岗位的匹配</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>课程研发与教学</td>
+            <td>已有成型课程规划，并有实际授课经验</td>
+            <td>课程研发落地的主要承担者</td>
+          </tr>
+          <tr>
+            <td>传统研发工程能力</td>
+            <td>完整承担过内部系统的从设计到上线全周期</td>
+            <td>内部系统与工具落地，具备可直接复用的方法论</td>
+          </tr>
+          <tr>
+            <td>AI 技术认知</td>
+            <td>持续跟进大模型能力演进，能判断技术可行性</td>
+            <td>决定「哪些 AI 想法值得做、哪些是伪需求」</td>
+          </tr>
+          <tr>
+            <td>管理与排期</td>
+            <td>有过带团队、跑需求排期的经验</td>
+            <td>承接研发体系统筹的排期与交付管理</td>
+          </tr>
+          <tr>
+            <td>跨部门沟通</td>
+            <td>做过多部门对接与需求落地</td>
+            <td>打通部门间流程断点</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>短板与应对</strong>：AI 深度认知仍在建设期，且课程研发落地会占用大量时间。应对方式是把 AI 判断纳入持续学习计划，在方案评审中主动引入外部技术视角做交叉验证；同时课程生产本身尽量借助 AI 工具形成流水线，用工具替代重复劳动。</p>
+
+      <h2 id="section-3">四条工作主线的定位与边界</h2>
+
+      <p>四条主线不是并列平行的，而是<strong>分层定位</strong>。分层是本稿最重要的结构设计。</p>
+
+      <h3>（一）分层结构</h3>
+      <p>下表按承担方式与见效周期排出四层，层级关系即优先级关系。</p>
+      <p>四条主线按承担方式与见效周期分为四层，层级关系即优先级关系。</p>
+
+      <table class="kv-table">
+        <thead>
+          <tr>
+            <th>层级</th>
+            <th>主线</th>
+            <th>定位</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="kv-key">第一层</td>
+            <td><strong>课程研发（本人主导）</strong></td>
+            <td><strong>第一优先，已有成型规划，当前重心</strong></td>
+          </tr>
+          <tr>
+            <td class="kv-key">第二层</td>
+            <td>内部工具与 AI 落地</td>
+            <td>并行推进，为运营赋能</td>
+          </tr>
+          <tr>
+            <td class="kv-key">第三层</td>
+            <td>AI 应用开发</td>
+            <td>与课程研发共用案例，一次投入两处产出</td>
+          </tr>
+          <tr>
+            <td class="kv-key">划出</td>
+            <td>品牌出书</td>
+            <td>划归科研线，我只做接口不做执行</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）逐条说明</h3>
+      <p>以下逐条说明每条主线的定位理由、关键边界与工作内容。</p>
+
+      <h4>1. 主线 A：课程研发（第一优先，本人主导）</h4>
+      <p>这条线是本稿建议的第一优先，也是我本人负责到底的主线。</p>
+      <p>本稿建议的第一优先主线。课程研发规划已有成型基础，本阶段的工作是<strong>把规划落地为可交付、可复制、可持续的课程体系</strong>。</p>
+      <p><strong>为什么升为第一优先</strong>：三条理由。</p>
+      <ol>
+        <li><strong>它是主营业务最直接的支持。</strong>课程体系是公司主营业务的交付载体，课程研发的进展直接决定业务能否跑通。</li>
+        <li><strong>它最能验证研发体系是否可用。</strong>一门课程从设计到交付涉及 AI 工具、内容工程、排期协调，正好是研发体系能力的一次完整演练。</li>
+        <li><strong>它已有基础，见效路径最短。</strong>规划已成型，无需从零搭建，前两个月即可产出可见成果。</li>
+      </ol>
+      <p><strong>关键边界</strong>：<strong>课程研发由我本人主导到底</strong>，包括课程体系设计、内容标准制定、教学内容生产与质量把控。授课环节按需承担，并纳入排期；不是我独立承担的部分（如班级运营、学员服务）另行划定归属。</p>
+      <p><strong>工作内容</strong>：</p>
+      <ol>
+        <li><strong>落地既有课程规划</strong>：把成型规划拆解为可执行的模块清单与时间节点</li>
+        <li><strong>建立课程内容标准</strong>：明确每门课的内容要求、深度标准与验收方式</li>
+        <li><strong>搭建课程生产流水线</strong>：借助 AI 工具覆盖备课、知识点录入、PPT 生成、排课等环节，用工具替代重复劳动</li>
+        <li><strong>建立课程质量验收机制</strong>：每门课上线前有明确的评审标准</li>
+        <li><strong>按第七章 7.3 确认的分工推进授课能力建设</strong>：课程标准化后，把讲授环节逐步交给可承接的人，我保留内容与质量把控权</li>
+      </ol>
+
+      <table class="content-table">
+        <caption>表 4　主线 A 的阶段产出与可验证标准</caption>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>交付物</th>
+            <th>可验证标准</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>第 15 天</td>
+            <td>课程规划落地为模块化排期表</td>
+            <td>模块、负责人、时间节点明确</td>
+          </tr>
+          <tr>
+            <td>第 30 天</td>
+            <td>第一门课程完成内容生产并可试讲</td>
+            <td>试讲可用，非 PPT</td>
+          </tr>
+          <tr>
+            <td>第 60 天</td>
+            <td>课程生产流水线跑通，至少一门课程全流程走通</td>
+            <td>流水线可复用至其他课程</td>
+          </tr>
+          <tr>
+            <td>第 90 天</td>
+            <td>课程体系初步成型 + 质量验收标准确立</td>
+            <td>体系可自我复制扩展</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>2. 主线 B：内部工具与 AI 落地</h4>
+      <p>这条线是课程研发的并行支撑线，为运营赋能。</p>
+      <p>主线 A 的并行支撑线，为运营赋能。课程研发要跑起来，工具必须跟上。</p>
+      <p><strong>关键边界</strong>：这条线我<strong>不亲自执行开发</strong>，负责方向把控、优先级排序与验收；执行由内部研发团队承担。</p>
+      <p><strong>工作内容</strong>：</p>
+      <ol>
+        <li><strong>存量工具盘点</strong>：梳理公司现有 AI 工具与内部系统，逐个标注使用方、活跃度、维护责任人、是否重复建设</li>
+        <li><strong>效能缺口识别</strong>：梳理各部门从提出需求到交付上线的完整链路，定位断点</li>
+        <li><strong>统一工具入口规划</strong>：规划公司级 AI 工具平台，明确工具准入、复用与淘汰机制</li>
+        <li><strong>迭代节奏落地</strong>：建立以一至两周为周期的迭代流程，每个迭代必须有可演示的交付物</li>
+      </ol>
+
+      <table class="content-table">
+        <caption>表 5　主线 B 的阶段产出与可验证标准</caption>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>交付物</th>
+            <th>可验证标准</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>第 10 天</td>
+            <td>存量工具清单 + 部门流程断点清单</td>
+            <td>清单由相关部门确认</td>
+          </tr>
+          <tr>
+            <td>第 45 天</td>
+            <td>首批工具的可见交付物</td>
+            <td>演示可用，非 PPT</td>
+          </tr>
+          <tr>
+            <td>第 60 天</td>
+            <td>工具平台一期上线 + 迭代机制跑通</td>
+            <td>至少两个部门在用</td>
+          </tr>
+          <tr>
+            <td>第 90 天</td>
+            <td>工具效能评估报告</td>
+            <td>有可量化数据支撑</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>3. 主线 C：AI 应用开发</h4>
+      <p>这条线与课程研发共用素材，一次投入两处产出。</p>
+      <p>这条线与主线 A 共用素材，一次投入两处产出。<strong>只做一条线，做深，不铺开</strong>；本阶段不建设完整体系，目标是产出一个能证明「这套能力可以带人就业」的实战样板。</p>
+      <p><strong>工作内容</strong>：</p>
+      <ol>
+        <li>选定一个实战方向（需结合公司主营业务确定）</li>
+        <li>设计端到端实战案例，覆盖从需求分析到交付的完整链路</li>
+        <li>沉淀可直接用于教学的案例文档与素材</li>
+        <li><strong>直接转化为课程内容</strong>，形成「研发一个案例、产出一门课」的闭环</li>
+      </ol>
+      <p><strong>预期产出</strong>：九十天内产出至少一个完整实战案例，并转化为课程内容，具备可对外验证「学完能就业」的说服力。</p>
+
+      <h4>4. 主线 D：品牌出书</h4>
+      <p>出书是科研成果的自然产出，执行环节划归科研线。</p>
+      <p><strong>理由</strong>：科研线的核心价值本就是科研与成果沉淀。您也已明确「科研就专注把科研做好，充其量把书出出来」。若研发体系负责人介入出书执行，会同时造成两个后果：科研线被干扰，以及本人在最能产生效能的主线上分散精力。</p>
+      <p><strong>本人在此条线上的唯一动作</strong>：明确书稿所需的研发侧内容边界，配合完成技术资料供给。</p>
+
+      <h2 id="section-4">九十天执行节奏</h2>
+
+      <h3>（一）节奏原则</h3>
+      <p>以下五条原则决定推进速度，不容妥协。</p>
+      <ol>
+        <li><strong>一周一迭代，双周复盘</strong>。每个迭代必须产出可演示的东西，看不见进展即视为未完成。</li>
+        <li><strong>课程优先，但不挤压其他线</strong>。课程研发投入最多精力，但内部工具线不能停摆，只压缩单次投入量。</li>
+        <li><strong>先盘点后动手</strong>。前两周做现状摸底，避免在错误认知上做投入。</li>
+        <li><strong>科研线保持独立</strong>。不将科研线纳入研发体系汇报链，保持其专注度。</li>
+        <li><strong>每月一次股东会汇报</strong>。汇报内容以可见成果为主，不做过程叙述。</li>
+      </ol>
+
+      <h3>（二）分阶段安排</h3>
+      <p>九十天分为四个阶段，每阶段有明确产出与归属。课程规划落地的优先级高于一切：第一门课必须尽早跑完全流程，后面才有复制的基础。</p>
+
+      <h4>1. 第一阶段：规划落地与摸底并行（第 1–15 天）</h4>
+      <table class="content-table">
+        <thead>
+          <tr>
+            <th>事项</th>
+            <th>产出</th>
+            <th>归属</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>将既有课程规划拆解为模块化排期表</td>
+            <td>课程排期表</td>
+            <td>主线 A</td>
+          </tr>
+          <tr>
+            <td>明确课程内容标准与验收方式初稿</td>
+            <td>内容标准初稿</td>
+            <td>主线 A</td>
+          </tr>
+          <tr>
+            <td>与内部研发团队逐人沟通，梳理现状</td>
+            <td>存量工具清单</td>
+            <td>主线 B</td>
+          </tr>
+          <tr>
+            <td>梳理各部门工具使用与未打通流程</td>
+            <td>流程断点清单</td>
+            <td>主线 B</td>
+          </tr>
+          <tr>
+            <td>明确科研线与研发线的职责边界</td>
+            <td>职责边界说明（一页纸）</td>
+            <td>综合</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>本阶段关键动作</strong>：与团队成员沟通时以「请你一起把家盘点清楚」为姿态，不使用「接管」的表述。原因在于团队成员对管理者的信任需要时间建立，而坦诚沟通的成本远低于后续的信任修复。</p>
+
+      <h4>2. 第二阶段：第一门课全流程跑通（第 16–30 天）</h4>
+      <p>第一门课是整个计划的样板，它的产出质量决定了后面所有课程能否复制。</p>
+
+      <table class="content-table">
+        <thead>
+          <tr>
+            <th>事项</th>
+            <th>产出</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>第一门课程内容生产完成</td>
+            <td>课程内容包</td>
+          </tr>
+          <tr>
+            <td>第一门课程试讲与迭代</td>
+            <td>试讲复盘记录</td>
+          </tr>
+          <tr>
+            <td>首批工具的可见交付物</td>
+            <td>可演示的交付物</td>
+          </tr>
+          <tr>
+            <td>迭代评审机制建立</td>
+            <td>迭代流程文档</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>本阶段关键动作</strong>：<strong>必须走完全流程，不要在第一门课就追求规模</strong>。</p>
+
+      <h4>3. 第三阶段：流水线与机制固化（第 31–60 天）</h4>
+      <p>本阶段从「做出第一门课」转向「让批量生产成为可能」。</p>
+
+      <table class="content-table">
+        <thead>
+          <tr>
+            <th>事项</th>
+            <th>产出</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>课程生产流水线跑通</td>
+            <td>流水线原型</td>
+          </tr>
+          <tr>
+            <td>第二至第三门课程完成内容生产</td>
+            <td>课程内容包（批量）</td>
+          </tr>
+          <tr>
+            <td>课程质量验收标准确立</td>
+            <td>质量标准文档</td>
+          </tr>
+          <tr>
+            <td>工具平台一期上线 + 迭代机制跑通</td>
+            <td>可用平台</td>
+          </tr>
+          <tr>
+            <td>实战案例启动</td>
+            <td>案例选题与框架</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>4. 第四阶段：体系闭环与复制（第 61–90 天）</h4>
+      <p>本阶段验证体系能否自行运转并实现复制扩展。</p>
+
+      <table class="content-table">
+        <thead>
+          <tr>
+            <th>事项</th>
+            <th>产出</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>课程体系初步成型</td>
+            <td>课程体系总览</td>
+          </tr>
+          <tr>
+            <td>授课执行方培养到位</td>
+            <td>可承接授课的团队</td>
+          </tr>
+          <tr>
+            <td>首个完整实战案例产出并转化为课程</td>
+            <td>实战案例包</td>
+          </tr>
+          <tr>
+            <td>首次效能数据评估</td>
+            <td>效能评估报告</td>
+          </tr>
+          <tr>
+            <td>九十天整体复盘与下一阶段规划</td>
+            <td>复盘报告</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-5">精力分配原则</h2>
+      <p>课程研发升为第一优先后，精力分配随之调整，核心约束不变。</p>
+
+      <p>课程研发升为第一优先后，精力分配随之调整。核心约束不变：<strong>课程研发是主战场，但深度工作时间仍受保护。</strong></p>
+
+      <table class="content-table">
+        <caption>表 6　九十天精力分配建议</caption>
+        <thead>
+          <tr>
+            <th>主线</th>
+            <th>精力占比</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>主线 A 课程研发（本人主导）</td>
+            <td><span class="note-emphasis">45%</span></td>
+            <td>第一优先，亲自主导，负责到底</td>
+          </tr>
+          <tr>
+            <td>主线 B 内部工具与 AI 落地</td>
+            <td>25%</td>
+            <td>方向把控与验收，执行由团队承担</td>
+          </tr>
+          <tr>
+            <td>主线 C AI 应用开发</td>
+            <td>15%</td>
+            <td>与课程研发共用案例，一次投入两处产出</td>
+          </tr>
+          <tr>
+            <td>主线 D 品牌出书</td>
+            <td>5%</td>
+            <td>仅做接口配合</td>
+          </tr>
+          <tr>
+            <td>固定留给 AI 能力提升</td>
+            <td>10%</td>
+            <td>不可被会议与沟通挤占</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>相比初版的调整</strong>：课程研发由 15% 提到 45%，AI 应用开发由 25% 降到 15%（因为案例与课程共用素材），AI 能力提升由 5% 提到 10%（课程生产靠工具，工具判断力是前提）。</p>
+      <p><strong>两条不可让步的原则</strong>：</p>
+      <ol>
+        <li><strong>深度工作时间受保护</strong>。每周固定留出不被打断的时间做课程内容生产与 AI 能力提升。这是课程质量与判断力的来源。一旦被管理事务吃掉，后续所有决策质量都会下降。</li>
+        <li><strong>不重复做已被覆盖的事</strong>。同步、开会、跨部门对接等事项，只做尚未有人承担的部分。</li>
+      </ol>
+
+      <h2 id="section-6">风险与应对</h2>
+      <p>本阶段存在五个需要提前识别的风险，及其对应措施。</p>
+
+      <table class="content-table">
+        <caption>表 7　主要风险与应对措施</caption>
+        <thead>
+          <tr>
+            <th>风险</th>
+            <th>表现</th>
+            <th>应对措施</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>课程研发与工具线双线作战</strong></td>
+            <td>两条线都需要本人深度投入，容易两边都做不透</td>
+            <td>工具线只做方向把控与验收，不亲自开发；压缩单次投入量而非取消</td>
+          </tr>
+          <tr>
+            <td><strong>团队信任尚未建立</strong></td>
+            <td>内部研发团队对空降管理者存在疑虑，配合度存疑</td>
+            <td>以「一起盘家底」姿态切入，不使用「接管」表述；用首个可见成果建立信任</td>
+          </tr>
+          <tr>
+            <td><strong>精力被会议挤占</strong></td>
+            <td>汇报、对接类事务吞掉深度工作时间</td>
+            <td>每周固定保护不被打断的时间块；事务性工作尽量转为异步书面沟通</td>
+          </tr>
+          <tr>
+            <td><strong>课程与实战脱节</strong></td>
+            <td>课程内容与真实业务脱节，学员学完无法应用</td>
+            <td>实战案例与课程内容一体化设计，做到研发一个案例、产出一门课</td>
+          </tr>
+          <tr>
+            <td><strong>人力归属不清导致排期受阻</strong></td>
+            <td>现有成员归属不同部门，跨部门协调成本高</td>
+            <td>列入待拍板事项，由您出面明确后再启动跨部门排期</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-7">待您拍板的事项</h2>
+
+      <p>以下四项需要您明确后，我才能推进对应工作。</p>
+
+      <h3>（一）组织与汇报关系</h3>
+      <p>此项不明确，需求通道无法建立。</p>
+      <p><strong>问题</strong>：研发体系负责人向谁汇报？与科研线的关系如何界定？</p>
+      <p><strong>建议</strong>：向您汇报；科研线保持独立，不纳入研发体系汇报链。</p>
+      <p><strong>影响</strong>：这决定了需求从下到上的通道，以及我能否推动跨部门流程打通。</p>
+
+      <h3>（二）人力归属</h3>
+      <p>此项影响排期计划的缓冲设计。</p>
+      <p><strong>问题</strong>：内部研发团队的人力归属是否调整？</p>
+      <p><strong>说明</strong>：现有成员归属不同部门，各自的考核与汇报关系不变。若要调整，建议由您出面沟通。</p>
+      <p><strong>影响</strong>：若归属不变，跨部门排期需要额外的协调成本，这需要在排期计划中预留缓冲。</p>
+
+      <h3>（三）授课与课程研发的分工</h3>
+      <p>此项直接决定精力分配与排期。</p>
+      <p><strong>问题</strong>：课程研发由我本人主导，其中授课环节如何安排？</p>
+      <p><strong>建议</strong>：课程内容生产与质量把控由我负责；授课环节我按需承担关键课程，同时培养其他可承接授课的人。是否需要我承担部分授课，请明确。</p>
+      <p><strong>影响</strong>：这直接决定精力分配与排期。若需承担授课，需要预留备课时间。</p>
+
+      <h3>（四）资源与工具选型</h3>
+      <p>此项影响第六十天流水线能否如期跑通。</p>
+      <p><strong>问题</strong>：课程生产流水线与工具平台建设是否需要预算支持？技术栈选型是否有既定倾向？</p>
+      <p><strong>建议</strong>：先基于现有教学与 PPT 生成系统验证，避免重复投入；确认规模后再评估预算需求。</p>
+      <p><strong>影响</strong>：影响第六十天流水线能否如期跑通。</p>
+
+      <h2 id="section-8">下一步</h2>
+      <p>以下五项动作按时限排列，其中课程规划落地最优先。</p>
+
+      <table class="content-table">
+        <caption>表 8　下一步行动与时限</caption>
+        <thead>
+          <tr>
+            <th>序号</th>
+            <th>事项</th>
+            <th>时限</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>本稿确认或批注，重点是第七章四项待拍板事项</td>
+            <td>待定</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>课程规划落地为模块化排期表</td>
+            <td>确认后三天内</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>召开跨部门沟通会，摸清现有工具与流程现状</td>
+            <td>确认后一周内</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>第一门课程进入内容生产</td>
+            <td>第十五天</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>首次月度股东会汇报</td>
+            <td>第一个月末</td>
+          </tr>
+        </tbody>
+      </table>
+
+    </main>
+
+    <div class="appendix">
+      <p>本稿为初步方案，欢迎直接批注修改。量化目标待盘点完成后补充实际数据。</p>
+    </div>
+
+  </section>
+</body>
+</html>

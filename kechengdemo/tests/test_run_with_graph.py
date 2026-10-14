@@ -1,0 +1,138 @@
+# -*- coding: utf-8 -*-
+"""批量主循环 `_run` × 图路径 端到端 —— 需要 PostgreSQL(5433)。
+
+    .venv/Scripts/python.exe tests/test_run_with_graph.py
+
+为什么需要这个测试
+    ``_run`` 也是本阶段被改动的文件（循环体改调 ``_score_cand`` 分派），
+    但图化/一致性的单测都只覆盖单会话。这里验证**批量外壳**没被改坏：
+      · 开关关：走旧路径，计数正常
+      · 开关开：走图路径，``scoring_run`` 各计数与旧路径**口径一致**
+      · ``session_done / session_skipped / assessment_new`` 三项逐一相等
+
+用确定性 stub 顶掉模型调用（无网络）；``mode="off"`` 不外写微伴；结束清理。
+"""
+import os
+import sys
+import time
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "backend"))
+
+import analyze                # noqa: E402
+import db                     # noqa: E402
+import rules as rules_mod     # noqa: E402
+import scoring_service as ss  # noqa: E402
+
+N = 4
+_MODE_KEY = "score_writeback_mode"
+_ORIG_MODE = None
+PASSED, FAILED = [], []
+
+
+def check(name, cond, detail=""):
+    (PASSED if cond else FAILED).append(name)
+    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
+
+
+def ok_stub(conversation, facts, rules, **kw):
+    """固定 1 条正分，保证两条路径都在“有产出”的分支上跑。"""
+    return {"positive_items": [{"rule_id": "positive_cooperative",
+                                "dimension": "配合度、认可度高", "polarity": "positive",
+                                "score": 1, "reason": "stub", "evidence": [],
+                                "evidence_ids": ["#001"], "evidence_message_ids": ["m"]}],
+            "negative_items": [], "invalid_items": [], "unchecked_rules": [],
+            "profile_summary": "stub", "sales_strategy": "stub", "model_confidence": 0.5,
+            "rule_version": rules.get("rule_version"), "prompt_version": "t",
+            "schema_version": "1", "contract_attempts": 1}
+
+
+def run_batch(use_graph, tag):
+    ss.service._progress = {}
+    ss.service._stop = False
+    db.set_setting("use_graph_session", "true" if use_graph else "false")
+    res = ss.service.start(max_sessions=N, min_messages=8, triggered_by=f"test-{tag}")
+    if not res.get("ok"):
+        return None, res
+    run_id = res.get("run_id") or res.get("id")
+    for _ in range(120):                       # 等后台线程结束（stub 很快）
+        if not ss.service.is_running():
+            break
+        time.sleep(0.5)
+    return db.query_one("SELECT * FROM scoring_run WHERE id=%s", (run_id,)), res
+
+
+def cleanup(run_ids):
+    for run in run_ids:
+        if not run:
+            continue
+        for tbl in ("writeback_outbox", "negative_review", "score_writeback"):
+            db.execute(f"""DELETE FROM {tbl} WHERE assessment_id IN
+                           (SELECT assessment_id FROM customer_intent_assessment
+                             WHERE source_run_id=%s)""", (run,))
+        db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id=%s", (run,))
+        db.execute("DELETE FROM scoring_run WHERE id=%s", (run,))
+
+
+def main():
+    global _ORIG_MODE
+    _ORIG_MODE = db.get_setting(_MODE_KEY)
+    orig_analyze = analyze.analyze
+    analyze.analyze = ok_stub
+    db.set_setting(_MODE_KEY, "off")           # 兜底：绝不在测试期间外写
+    rows_old, rows_new = None, None
+    run_old = run_new = None
+    try:
+        print("\n--- 旧路径（use_graph_session=false）---")
+        rows_old, res_old = run_batch(False, "old")
+        print(f"  start -> {res_old}")
+        check("旧路径批量启动成功", rows_old is not None, str(res_old))
+        if rows_old:
+            run_old = rows_old["id"]
+            print(f"  run={run_old} status={rows_old['status']} done={rows_old['session_done']} "
+                  f"skipped={rows_old['session_skipped']} assessments={rows_old['assessment_new']} "
+                  f"llm_failed={rows_old['llm_failed']}")
+
+        print("\n--- 新图路径（use_graph_session=true）---")
+        rows_new, res_new = run_batch(True, "new")
+        print(f"  start -> {res_new}")
+        check("图路径批量启动成功", rows_new is not None, str(res_new))
+        if rows_new:
+            run_new = rows_new["id"]
+            print(f"  run={run_new} status={rows_new['status']} done={rows_new['session_done']} "
+                  f"skipped={rows_new['session_skipped']} assessments={rows_new['assessment_new']} "
+                  f"llm_failed={rows_new['llm_failed']}")
+
+        if rows_old and rows_new:
+            check("两路径均正常结束（status=success）",
+                  rows_old["status"] == "success" and rows_new["status"] == "success",
+                  f"{rows_old['status']}/{rows_new['status']}")
+            for key in ("session_done", "session_skipped", "assessment_new", "llm_failed"):
+                check(f"计数口径一致：{key}",
+                      rows_old[key] == rows_new[key],
+                      f"old={rows_old[key]} new={rows_new[key]}")
+            check("确实评了会话（非空跑）", rows_old["assessment_new"] > 0,
+                  str(rows_old["assessment_new"]))
+            check("图路径 llm_calls 与旧路径同量级",
+                  rows_old["llm_calls"] == rows_new["llm_calls"],
+                  f"old={rows_old['llm_calls']} new={rows_new['llm_calls']}")
+    finally:
+        analyze.analyze = orig_analyze
+        cleanup([run_old, run_new])
+        db.execute("DELETE FROM app_setting WHERE key='use_graph_session'")
+        if _ORIG_MODE is None:
+            db.execute("DELETE FROM app_setting WHERE key=%s", (_MODE_KEY,))
+        else:
+            db.set_setting(_MODE_KEY, _ORIG_MODE)
+        print("\n（已清理批量测试痕迹）")
+
+    print(f"\n===== {len(PASSED)} passed / {len(FAILED)} failed =====")
+    if FAILED:
+        print("失败：" + ", ".join(FAILED))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

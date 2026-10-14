@@ -1,4 +1,4 @@
-"""12306 抢票助手 · 统一入口。
+"""智泊AI抢票助手 · 统一入口。
 
 用法示例::
 
@@ -13,7 +13,8 @@
     python main.py -v                    # 查看版本与命令概览
     python main.py -h                    # 查看完整帮助
 
-定位：个人学习与自用工具，严禁商业牟利、代抢、黄牛倒票。
+定位：智泊AI学员学习工具，仅限智泊AI学员使用。仅供学习使用、严禁商用；
+请勿用于代抢、黄牛倒票。官方网站：https://www.zhipoai.com/
 """
 
 from __future__ import annotations
@@ -31,14 +32,23 @@ BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from ticket_helper import __version__  # noqa: E402
+from ticket_helper import (  # noqa: E402
+    APP_COPYRIGHT,
+    APP_DISPLAY_NAME,
+    APP_USAGE_NOTICE,
+    APP_WEBSITE,
+    __version__,
+)
+from ticket_helper.edition import display_train_date  # noqa: E402
 
 log = logging.getLogger("main")
 
 BANNER = f"""
 ============================================================
-  12306 抢票助手  v{__version__}
-  个人自用 · 仅供学习交流 · 严禁商业牟利/代抢/黄牛倒票
+  {APP_DISPLAY_NAME}  v{__version__}
+  {APP_COPYRIGHT}
+  {APP_WEBSITE}
+  {APP_USAGE_NOTICE} · 请勿用于代抢 / 黄牛倒票
 ============================================================
 """
 
@@ -318,14 +328,15 @@ def cmd_profile(args: argparse.Namespace) -> int:
         for order in pending.get("data") or []:
             print(f"  {order.get('sequence_no') or order.get('order_no')}  "
                   f"{order.get('station_train_code') or order.get('train_code', '')}  "
-                  f"{order.get('train_date', '')}  {order.get('pay_url', '')}")
+                  f"{display_train_date(order.get('train_date'))}  {order.get('pay_url', '')}")
 
         orders = payload.get("orders")
         if orders is not None:
             print(f"\n【我的订单（{'历史' if args.where == 'H' else '未出行'}）】"
                   f"{'' if orders.get('ok') else '（未取到：' + str(orders.get('error')) + '）'}")
             for order in (orders.get("data") or {}).get("orders", []):
-                print(f"  {order.get('order_no')}  {order.get('train_code')}  {order.get('train_date')}  "
+                print(f"  {order.get('order_no')}  {order.get('train_code')}  "
+                      f"{display_train_date(order.get('train_date'))}  "
                       f"{order.get('from_station')}→{order.get('to_station')}  "
                       f"{order.get('passenger_names')}  {order.get('price')}  {order.get('status')}")
         return 0
@@ -411,7 +422,7 @@ def _current_home() -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="12306-ticket-helper",
-        description="12306 抢票助手（个人自用，仅供学习交流）",
+        description=f"{APP_DISPLAY_NAME}（{APP_COPYRIGHT}）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

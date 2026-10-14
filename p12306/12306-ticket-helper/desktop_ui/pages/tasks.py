@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
 from desktop_ui.api_client import ApiClient, ApiError
 from desktop_ui.priority_field import PriorityList
 from desktop_ui.token_field import DateField, StationField, TrainListField
+from ticket_helper.edition import display_train_dates
 
 log = logging.getLogger(__name__)
 
@@ -796,7 +797,7 @@ class TaskConfigPage(QWidget):
         # 会把右栏顶出横向滚动条。加了空格才有换行点。
         lines = [
             ("路线", f"{froms} → {tos}"),
-            ("日期", " / ".join(task.get("left_dates") or []) or "-"),
+            ("日期", display_train_dates(task.get("left_dates"))),
             ("席别", " > ".join(task.get("seat_types") or []) or "-"),
         ]
         white = task.get("trains_whitelist") or []

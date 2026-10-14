@@ -1,0 +1,23 @@
+# PostgreSQL（本系统专用实例，映射到宿主 5433，避免与其他项目冲突）
+# 启动：docker compose up -d
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: weiban-chat-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: weiban123
+      POSTGRES_DB: weiban_chat
+    ports:
+      - "5433:5432"
+    volumes:
+      - weiban_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d weiban_chat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  weiban_pg_data:

@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from desktop_ui.api_client import ApiClient, ApiError
+from desktop_ui.theme import C
 from desktop_ui.layout import CARD_GAP, ROW_GAP
 from ticket_helper.config.settings import SecretMasked
 
@@ -171,13 +172,13 @@ class ChannelCard(QGroupBox):
     def set_result(self, ok: bool | None, text: str = "") -> None:
         if ok is None:
             self.result_label.setText(text)
-            self.result_label.setStyleSheet("color: #64748b;")
+            self.result_label.setStyleSheet(f"color: {C['muted']};")
         elif ok:
             self.result_label.setText(text or "测试成功")
-            self.result_label.setStyleSheet("color: #15803d;")
+            self.result_label.setStyleSheet(f"color: {C['ok']};")
         else:
             self.result_label.setText(text or "测试失败")
-            self.result_label.setStyleSheet("color: #b91c1c;")
+            self.result_label.setStyleSheet(f"color: {C['bad']};")
 
 
 class NotifyPage(QWidget):

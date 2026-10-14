@@ -1,0 +1,71 @@
+{
+  "rule_version": "v1.0",
+  "analyzed_at": 1791782124,
+  "raw_score": -9,
+  "positive_total": 0,
+  "negative_total": -9,
+  "grade": "D",
+  "priority": "暂停",
+  "advice": "停止一对一深度跟进，进入长期激活池。",
+  "positive_items": [],
+  "negative_items": [
+    {
+      "rule_id": "negative_price_haggling",
+      "dimension": "追着问价格",
+      "polarity": "negative",
+      "score": -1,
+      "evidence": [
+        "客户: 多少钱？直接说价格",
+        "客户: 太贵了，别家才几百块，你们这不值"
+      ],
+      "reason": "全程未了解课程价值与服务，只反复索要价格并横向比价，符合追着问价格定义，故不另计主动问课。"
+    },
+    {
+      "rule_id": "negative_bad_attitude",
+      "dimension": "态度差",
+      "polarity": "negative",
+      "score": -2,
+      "evidence": [
+        "客户: 算了，网上免费教程多的是，我自己学就行",
+        "客户: 不用了，不考虑了，别再发消息了"
+      ],
+      "reason": "语气生硬带对抗性，直接要求销售停止发消息，态度不耐烦。"
+    },
+    {
+      "rule_id": "negative_low_recognition",
+      "dimension": "认可度低",
+      "polarity": "negative",
+      "score": -1,
+      "evidence": [
+        "客户: 太贵了，别家才几百块，你们这不值"
+      ],
+      "reason": "以比价方式明确否定课程价值，认可度低。"
+    },
+    {
+      "rule_id": "negative_self_study",
+      "dimension": "要自学",
+      "polarity": "negative",
+      "score": -2,
+      "evidence": [
+        "客户: 算了，网上免费教程多的是，我自己学就行"
+      ],
+      "reason": "明确表示选择免费教程自学，不打算购买付费课程。"
+    },
+    {
+      "rule_id": "negative_refuse",
+      "dimension": "明确拒绝报课",
+      "polarity": "negative",
+      "score": -3,
+      "evidence": [
+        "客户: 不用了，不考虑了，别再发消息了"
+      ],
+      "reason": "明确表示不再考虑，拒绝继续沟通与报课。"
+    }
+  ],
+  "invalid_items": [],
+  "customer_profile_summary": "客户未透露职业、所在城市、学习背景等任何画像信息，聊天中仅关注价格且停留在比价层面，认为课程不值、比别家贵，随后转向免费教程自学，最终明确表示不考虑、要求停止发消息。整体处于明确拒绝阶段，无可见的AI/大模型学习需求、业务痛点或时间紧迫性。",
+  "sales_strategy": "短期内不再主动追单，避免继续谈价格被当作比价对象；先按拒绝客户归档，仅保留长期低频内容触达（如1个月后以行业案例、免费资料等价值内容轻量触达一次），若客户无回应则停止跟进。销售重心应转向其他有明确需求与到课意向的线索，不在此客户上消耗沟通成本。",
+  "confidence": 0.9,
+  "needs_human_review": false,
+  "conversation_source": "样例-低意向客户"
+}

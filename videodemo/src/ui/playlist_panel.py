@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.playlist import PlaylistModel
+from src.ui.theme import ink
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -56,7 +57,8 @@ class _RowDelegate(QStyledItemDelegate):
         title = str(index.data(PlaylistModel.TitleRole) or "")
         note = str(index.data(PlaylistModel.NoteRole) or "")
         url = str(index.data(PlaylistModel.UrlRole) or "")
-        if url and url == self._view.playing_url():
+        playing = bool(url) and url == self._view.playing_url()
+        if playing:
             title = f"{NOW_PLAYING_MARK} {title}"
 
         rect = option.rect.adjusted(6, 0, -6, 0)
@@ -69,10 +71,16 @@ class _RowDelegate(QStyledItemDelegate):
 
         painter.save()
         palette = option.palette
-        note_color = palette.color(QPalette.ColorRole.PlaceholderText)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
 
         if note:
             note_rect = rect.adjusted(rect.width() - note_width, 0, 0, 0)
+            # 说明文字跟着选中态走：选中行的底色是强调色的淡色，
+            # 深灰的说明压在它上面几乎看不见，得提亮一档。
+            note_color = (
+                palette.color(QPalette.ColorRole.HighlightedText) if selected
+                else palette.color(QPalette.ColorRole.PlaceholderText)
+            )
             painter.setPen(note_color)
             painter.drawText(
                 note_rect,
@@ -82,15 +90,19 @@ class _RowDelegate(QStyledItemDelegate):
 
         title_rect = rect.adjusted(0, 0, -note_width, 0)
         font = QFont(option.font)
-        if url and url == self._view.playing_url():
+        if playing:
             font.setBold(True)
         painter.setFont(font)
-        # 优先用系统的高亮前景色，保证在深/浅色主题下都看得清
+        # 优先用调色板的高亮前景色，保证在深浅两种主题下都看得清。
+        # 正在播放的那一行即使没被选中也用强调色 + 加粗，
+        # 这样"在哪一条"与"选中了哪一条"是两件可以同时看清的事。
         color = palette.color(
             QPalette.ColorRole.HighlightedText
-            if option.state & QStyle.StateFlag.State_Selected
+            if selected
             else QPalette.ColorRole.Text
         )
+        if playing and not selected:
+            color = ink("accent")
         painter.setPen(color)
         painter.drawText(
             title_rect,
@@ -101,7 +113,9 @@ class _RowDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index) -> QSize:  # noqa: N802, ANN001 - Qt 签名
         size = super().sizeHint(option, index)
-        return QSize(size.width(), max(24, size.height() + 4))
+        # 24px 是"一行文字 + 上下内边距"的下限；样式表里 item 还有自己的
+        # min-height，这里保证 delegate 给出的高度不会比它更小。
+        return QSize(size.width(), max(26, size.height() + 6))
 
 
 class PlaylistView(QListView):
@@ -247,6 +261,7 @@ class PlaylistPanel(QWidget):
         self.view_history.setDragEnabled(False)
 
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("playlistTabs")
         self.tabs.addTab(self.view_playlist, "播放列表")
         self.tabs.addTab(self.view_history, "历史记录")
         self.tabs.setDocumentMode(True)
@@ -255,23 +270,43 @@ class PlaylistPanel(QWidget):
         self.label_empty.setWordWrap(True)
         self.label_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.label_empty.setEnabled(False)
+        self.label_empty.setContentsMargins(12, 18, 12, 18)
 
-        self.btn_add = self._button("加入列表", "把输入框里的地址加入播放列表")
+        self.btn_add = self._button(
+            "加入列表", "把输入框里的地址加入播放列表", min_width=72
+        )
         self.btn_remove = self._button("移除", "移除选中的条目")
         self.btn_clear = self._button("清空", "清空当前标签页的列表")
         self.btn_up = self._button("上移", "把选中条目上移一位")
         self.btn_down = self._button("下移", "把选中条目下移一位")
 
+        # 五个按钮排一行，而侧栏最窄可以到 280px——5 × (52 + 边框) + 间距
+        # 已经接近 300px，再窄就会被压到文字截断。所以这里不赌宽度，
+        # 分成"增删"与"排序"两组：第一组贴左、第二组贴右。
+        # 两侧各自定位，中间靠弹簧吸收宽度变化，谁都不会被压扁。
+        left_buttons = QHBoxLayout()
+        left_buttons.setContentsMargins(0, 0, 0, 0)
+        left_buttons.setSpacing(4)
+        left_buttons.addWidget(self.btn_add)
+        left_buttons.addWidget(self.btn_remove)
+        left_buttons.addWidget(self.btn_clear)
+
+        right_buttons = QHBoxLayout()
+        right_buttons.setContentsMargins(0, 0, 0, 0)
+        right_buttons.setSpacing(4)
+        right_buttons.addWidget(self.btn_up)
+        right_buttons.addWidget(self.btn_down)
+
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
-        buttons.setSpacing(4)
-        for widget in (self.btn_add, self.btn_remove, self.btn_clear, self.btn_up, self.btn_down):
-            buttons.addWidget(widget)
+        buttons.setSpacing(8)
+        buttons.addLayout(left_buttons)
         buttons.addStretch(1)
+        buttons.addLayout(right_buttons)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(7)
         layout.addWidget(self.tabs, 1)
         layout.addWidget(self.label_empty)
         layout.addLayout(buttons)
@@ -279,11 +314,29 @@ class PlaylistPanel(QWidget):
         self._connect()
         self._refresh_empty_hint()
 
-    def _button(self, text: str, tip: str) -> QPushButton:
+    def _button(
+        self, text: str, tip: str, *, min_width: int = 50
+    ) -> QPushButton:
         button = QPushButton(text)
         button.setToolTip(tip)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # 侧栏按钮比主控制条的还小一号：它们是"管理列表"的辅助动作，
+        # 不该跟底部播放控制抢视觉重量。
+        # min_width 必须是"文字放得下"的值：压到比文字还窄时按钮文字会被截。
+        button.setMinimumWidth(min_width)
         return button
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        """面板一窄就把「加入列表」收起来。
+
+        这 5 个按钮里只有它是 4 个字（其余都是 2 个字），最窄 280px 的侧栏
+        装不下 5 个按钮的文字宽度——实测会被压到 50px，"加入列表"直接截断。
+        而"加入"在主窗口顶部还有同名按钮，是重复入口，收这里不伤功能。
+        """
+        super().resizeEvent(event)
+        # 5 个按钮全显示需要 ~312px（72 + 4×50 + 间距 + 边距）；
+        # 低于它就必须收一个，否则 Qt 会把按钮压到文字截断。
+        self.btn_add.setVisible(event.size().width() >= 320)
 
     def _connect(self) -> None:
         for view in (self.view_playlist, self.view_history):
@@ -295,6 +348,8 @@ class PlaylistPanel(QWidget):
 
         self.playlist.itemsChanged.connect(self._on_playlist_changed)
         self.history.itemsChanged.connect(self._refresh_empty_hint)
+        # 切换标签页时提示文字与视图显隐要跟着重算（见 _refresh_empty_hint 的注释）
+        self.tabs.currentChanged.connect(lambda _index: self._refresh_empty_hint())
 
         self.btn_add.clicked.connect(self._add_from_request)
         self.btn_remove.clicked.connect(lambda: self._remove_rows(self._current_view().selected_rows()))
@@ -369,14 +424,34 @@ class PlaylistPanel(QWidget):
         self.playlistChanged.emit()
 
     def _refresh_empty_hint(self) -> None:
+        """空列表提示与视图显隐，跟随当前标签页。
+
+        这里有三个状态要一起对齐，少一个都会出"鬼画面"：
+
+        1. 当前标签页的模型是空的 → 显示提示文字、隐藏那个（空）视图；
+        2. 切换标签页时必须重算一遍 —— 之前没接 `currentChanged`，
+           从"空的播放列表"切到"有内容的历史记录"，提示文字还挂在下面，
+           用户会以为历史记录也是空的；
+        3. **另一个标签页的视图绝不能动**。旧实现按当前标签页的状态去
+           setVisible 两个视图：播放列表为空时会把历史记录的视图强制
+           `setVisible(True)`——可它所在标签页根本没被选中，Qt 也就不会
+           给它做布局，尺寸冻结在初始的 640x480，比它所在的页还大，
+           渲染时直接越界压到别的控件上（离屏截图里看到的"列表行盖住
+           底部按钮"就是这个）。
+        """
+        view = self._current_view()
         model = self._current_model()
         empty = model.rowCount() == 0
+
         self.label_empty.setVisible(empty)
-        self.view_playlist.setVisible(not (empty and self.tabs.currentIndex() == 0))
-        self.view_history.setVisible(not (empty and self.tabs.currentIndex() == 1))
-        has_items = model.rowCount() > 0
-        for button in (self.btn_remove, self.btn_clear, self.btn_up, self.btn_down):
-            button.setEnabled(has_items)
+        view.setVisible(not empty)
+
+        # 提示文字说清楚是哪个列表空了，别让用户猜
+        if empty:
+            which = "历史记录" if self.tabs.currentIndex() == 1 else "列表"
+            self.label_empty.setText(
+                f"{which}为空。把文件或链接拖进来，或用「加入列表」按钮添加。"
+            )
 
     # ------------------------------------------------------------ 对外
     def set_playing_url(self, url: str) -> None:

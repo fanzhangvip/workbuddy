@@ -39,7 +39,7 @@ B 站、YouTube 的 DASH 格式就是这种情况（B 站**只有** DASH，一�
 1. **可达性预检**（`src/core/reachability.py`）
    先花两三秒确认这个站点真的连得上。站点被整段拦截时立刻给出精确原因
    （是解析不到？还是解析到了但连不上？还是 DNS 被污染？），而不是让
-   yt-dlp 白跑满 25 秒再报一句"超时"。
+   yt-dlp 白跑满超时（默认 60 秒）再报一句"超时"。
    **只要检测到代理在生效就跳过预检**（设置里手填的 / 环境变量里的 /
    Windows 系统代理，见 `src/utils/net_proxy.py`）——走代理时"直连 origin
    通不通"与能否播放无关。系统代理这一条尤其不能漏：Clash 这类工具的开关
@@ -66,6 +66,7 @@ B 站、YouTube 的 DASH 格式就是这种情况（B 站**只有** DASH，一�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -85,8 +86,10 @@ _log = get_logger(__name__)
 LogFn = Callable[[str], None]
 
 #: 解析默认超时（秒）。yt-dlp 要经历「取页面 → 取签名 → 取播放地址」好几步，
-#: 慢站点 20 秒很正常，给足；真要卡死也有这个上限兜底。
-DEFAULT_TIMEOUT_S = 25
+#: 慢站点 20 秒很正常；站点响应慢或要换几种策略重试时更容易撞上。
+#: 主程序实际用的是设置项 `network/resolve_timeout_s`（默认同为 60），
+#: 这里只是没传参时的兜底——**不要再往小调**，会误报"解析超时"。
+DEFAULT_TIMEOUT_S = 60
 
 #: 允许直接交给播放器的协议前缀。
 #: download=False 时 yt-dlp 已把每条格式的真实地址（含签名）写在 url 里，
@@ -137,6 +140,71 @@ _HAOKAN_HOSTS = ("haokan.baidu.com", "v.baidu.com")
 #: 里面 `curVideoMeta.clarityUrl` 按清晰度（rank）列出各档直链，
 #: 取 rank 最高（1080p 蓝光）那条即可；直链在 vd*.bdstatic.com，无需 Referer。
 _HAOKAN_PAGE = "https://mbd.baidu.com/newspage/data/videoshare?nid=sv_{vid}"
+
+#: 腾讯视频（v.qq.com）。yt-dlp 内置的 vqq 提取器靠页面里的 `window.__pinia`
+#: 取播放信息，而腾讯改版后的页面不再内嵌它（数据改成由脚本异步拉取，
+#: 页面里只剩 `window.__VINFO_DATA__` 这类壳）。提取器于是直接报
+#: "unable to extract pinia data"，还会继续重试到硬超时——用户看到的就是
+#: 「解析超时」。这里改走腾讯自家的 getinfo 接口拿直链（网页播放器同款流程）。
+_TENCENT_HOSTS = ("v.qq.com", "m.v.qq.com", "film.qq.com")
+
+#: 取流接口：按 vid 问，返回文件路径（fn）、播放密钥（fvkey）与 CDN 节点。
+#: `platform=101001` + `charge=0` 是网页端免登录取流用的组合。
+_TENCENT_INFO_API = (
+    "https://vv.video.qq.com/getinfo"
+    "?vids={vid}&platform=101001&charge=0&otype=json&defn={defn}"
+)
+
+#: 依次尝试的清晰度。免登录一般最高到 720P（实测 fhd 与 shd 同为 1280x546）。
+_TENCENT_DEFNS = ("fhd", "shd", "hd")
+
+#: 单个请求的超时；整条解析另有硬超时兜底，这里只是别让一个请求挂太久。
+_TENCENT_TIMEOUT_S = 12
+
+_TENCENT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+#: `/x/cover/<cid>/<vid>.html` 与 `/x/page/<vid>.html` 的最后一段都是 vid
+_TENCENT_VID_RE = re.compile(r"/([A-Za-z0-9]{8,})\.html")
+
+#: 爱奇艺（iqiyi.com）。yt-dlp 的内置提取器要在页面里找 `data-player-tvid`
+#: 属性来定位视频，而爱奇艺改版后播放页成了纯前端渲染（SSR 只有壳），
+#: 这个属性不再存在 → 提取器直接报 "Can't find any video"，重试到超时也没用。
+#: 这里改走爱奇艺自家的**移动端取流接口**（tmts），流程与手机网页播放器一致：
+#:   1. 用移动版页面（SSR 带数据）拿 tvid（视频数字 ID）与 vid（视频指纹）；
+#:   2. 带上签名 sc 请求 `cache.m.iqiyi.com/jp/tmts/<tvid>/<vid>/`；
+#:   3. 返回里的 `m3u` 字段就是 m3u8 地址，免登录可取（低清晰度档）。
+_IQIYI_VID_RE = re.compile(r"/v_([0-9a-z]+)\.html", re.I)
+
+#: 移动版页面：`window.__INITIAL_STATE__` 里直接带 tvid / vid / 标题 / 时长。
+_IQIYI_MOBILE_PAGE = "https://m.iqiyi.com/v_{vid}.html"
+
+#: 取流接口。签名算法与 yt-dlp 的 iqiyi 提取器同一套：
+#: `sc = md5(毫秒时间戳 + 密钥 + tvid)`。
+_IQIYI_TMTS_API = "http://cache.m.iqiyi.com/jp/tmts/{tvid}/{vid}/"
+_IQIYI_TMTS_KEY = "d5fb4bd9d50c4be6948c97edd7254b0e"
+_IQIYI_TMTS_SRC = "76f90cbd92f94a2e925d83e8ccd22cb7"
+
+#: 清晰度偏好。`vd` 是爱奇艺的清晰度编号，**数字大小与分辨率不成正比**，
+#: 这份顺序是按实测分辨率排的：免登录拿到的最好档是 vd=4（1280x720，code=2）；
+#: vd=17 同为 720P 但返回 code=1（会员档），排在后面兜底。
+_IQIYI_VD_ORDER = ("4", "17", "21", "75", "2", "1", "96")
+
+#: 最多额外试几个清晰度档。每档一次请求、约 0.3 秒，试太多会把"快"这个
+#: 优势耗掉；拿到第一档 code=2 就停。
+_IQIYI_MAX_QUALITY_TRIES = 3
+
+_IQIYI_TIMEOUT_S = 12
+
+#: 移动端 UA。桌面 UA 请求 tmts 会被判 "Rule Block"（接口按客户端类型给流）。
+_IQIYI_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+)
+
+_IQIYI_HOSTS = ("iqiyi.com", "m.iqiyi.com", "www.iqiyi.com")
 
 #: yt-dlp 支持的 JavaScript 运行时名（**必须**与 `yt_dlp.globals.supported_js_runtimes`
 #: 的键一致，否则 yt-dlp 会整条忽略）。探测与"内置优先"的策略在
@@ -666,6 +734,16 @@ _ERROR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
      "换播放接口、换 JS 运行时都没用——**换一个代理节点通常就过了**："
      "同一份订阅里不同节点的出口声誉不一样，实测确实有的节点直接被放行。"
      "如果换节点无效，再考虑在设置里配好 cookies 文件带上登录态。"),
+    # 国内长视频站点（优酷 / 爱奇艺等）在会员内容上**报的是中文**
+    # （实测优酷："Youku server reported error -3007: 观看此节目，请先登录！"），
+    # 下面那条英文规则只认 "login/sign in/vip" 之类，中文会整个漏过去，
+    # 用户最后只看到一句没用的"解析失败"。所以先按中文关键词判一次。
+    (("请先登录", "需要登录", "登录后", "开通会员", "会员可看", "会员观看",
+      "付费", "-3007", "-3008"),
+     "该视频是会员（VIP）内容，需要登录会员账号才能取到播放地址。"
+     "当前未登录对应站点——这不是地址或网络问题，换清晰度、调超时都没用。"
+     "要播放的话，请先在浏览器里登录好会员账号，再在设置里开启"
+     "「从浏览器读 Cookie」后重试。"),
     (("private video", "login required", "sign in", "authentication", "cookies",
       "only available for registered", "premium", "vip"),
      "该视频需要登录身份才能观看。先在浏览器里登录对应账号，再把登录态交给程序："
@@ -1417,6 +1495,339 @@ def _extract_haokan(url: str, sink: LogFn) -> dict | None:
     }
 
 
+def _is_tencent(url: str) -> bool:
+    """是否是腾讯视频页面地址。"""
+    try:
+        host = (urlparse((url or "").strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _TENCENT_HOSTS or host.endswith(".v.qq.com")
+
+
+def _tencent_vid(url: str) -> str:
+    """从腾讯视频地址里抠出 vid。
+
+    `v.qq.com/x/cover/<cid>/<vid>.html` 与 `v.qq.com/x/page/<vid>.html`
+    的最后一段都是 vid；路径上找不到再看 `?vid=` 参数。
+    """
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return ""
+    match = _TENCENT_VID_RE.search(parsed.path or "")
+    if match:
+        return match.group(1)
+    values = parse_qs(parsed.query).get("vid") or []
+    return values[0].strip() if values else ""
+
+
+def _parse_qz_json(text: str) -> dict | None:
+    """腾讯接口返回的是 `QZOutputJson={...};`，剥掉外壳再解析成 dict。"""
+    body = (text or "").strip()
+    start, end = body.find("{"), body.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(body[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _extract_tencent(url: str, sink: LogFn) -> dict | None:
+    """腾讯视频专用提取：绕开失效的 yt-dlp vqq 提取器，直接向官方接口要地址。
+
+    流程（与腾讯网页播放器一致）：
+    1. 从地址里抠出 vid；
+    2. 按清晰度从高到低问一次 `getinfo`，拿到 `fn`（文件名）、`fvkey`（播放密钥）
+       和 CDN 节点 `ul.ui[0].url`；
+    3. 拼成 ``{节点}{文件名}?vkey={密钥}``，带上 Referer 就能直接播。
+
+    返回 yt-dlp 风格的 info（交给 `_build_result`），拿不到返回 None。
+    """
+    target = (url or "").strip()
+    vid = _tencent_vid(target)
+    if not vid:
+        sink("  没能从腾讯视频地址里认出 vid，交给通用解析器")
+        return None
+
+    try:
+        import requests
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("requests 不可用，腾讯视频直链提取跳过: %s", exc)
+        return None
+
+    headers = {"User-Agent": _TENCENT_UA, "Referer": "https://v.qq.com/"}
+    for defn in _TENCENT_DEFNS:
+        try:
+            sink(f"  识别为腾讯视频，正在向官方接口取流（{defn}）…")
+            resp = requests.get(
+                _TENCENT_INFO_API.format(vid=vid, defn=defn),
+                headers=headers,
+                timeout=_TENCENT_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+            payload = _parse_qz_json(resp.text)
+        except Exception as exc:  # noqa: BLE001
+            _log.info("腾讯视频 getinfo 请求失败（%s）: %s", defn, exc)
+            continue
+
+        if not payload:
+            _log.info("腾讯视频 getinfo 返回无法解析（%s）", defn)
+            continue
+
+        entry = ((payload.get("vl") or {}).get("vi") or [{}])[0]
+        filename = str(entry.get("fn") or "").strip()
+        vkey = str(entry.get("fvkey") or "").strip()
+        nodes = (entry.get("ul") or {}).get("ui") or [{}]
+        node = str((nodes[0] or {}).get("url") or "").strip()
+        if not (filename and vkey and node):
+            # em/exem 非 0 通常是"要会员 / 地区限制 / 已下架"，换档再试也没用，
+            # 但换档成本极低（一次请求），留着能兜住"某档没有、另一档有"的情况。
+            _log.info(
+                "腾讯视频 getinfo（%s）没有可用地址：em=%s exem=%s",
+                defn,
+                payload.get("em"),
+                payload.get("exem"),
+            )
+            continue
+
+        width = int(entry.get("vw") or 0)
+        height = int(entry.get("vh") or 0)
+        return {
+            "id": vid,
+            "title": str(entry.get("ti") or "").strip() or vid,
+            "extractor": "tencent",
+            # 复用 _EXTRACTOR_NAMES 里的中文名（"qq" -> 腾讯视频）
+            "extractor_key": "qq",
+            "url": f"{node}{filename}?vkey={vkey}",
+            "format_id": defn,
+            "format_note": f"{width}x{height}" if width and height else defn,
+            "ext": "mp4",
+            "protocol": "http",
+            "width": width or None,
+            "height": height or None,
+            "filesize": int(entry.get("fs") or 0) or None,
+            "http_headers": {
+                "Referer": "https://v.qq.com/",
+                "User-Agent": _TENCENT_UA,
+            },
+        }
+
+    _log.info("腾讯视频直链提取失败（三档清晰度都没返回可用地址）: %s", target)
+    return None
+
+
+def _is_iqiyi(url: str) -> bool:
+    """是否是爱奇艺视频页面地址。"""
+    try:
+        host = (urlparse((url or "").strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _IQIYI_HOSTS or host.endswith(".iqiyi.com")
+
+
+def _iqiyi_vid(url: str) -> str:
+    """从爱奇艺地址里抠出 `v_<id>.html` 里的那串 id（tvid 的短码形式）。"""
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return ""
+    match = _IQIYI_VID_RE.search(parsed.path or "")
+    return match.group(1).lower() if match else ""
+
+
+def _json_after(text: str, marker: str) -> dict | None:
+    """取出网页里 `marker = {...}` 那段 JSON。
+
+    用 ``JSONDecoder.raw_decode`` 而不是"找首尾大括号"：爱奇艺的 SSR 数据里
+    含中文剧情简介，简介里带括号很正常，手工配对会被骗到。
+    marker 可能出现多次（脚本里先引用、后面才赋值），所以逐个位置试到成功。
+    """
+    cursor = 0
+    while True:
+        index = (text or "").find(marker, cursor)
+        if index < 0:
+            return None
+        brace = text.find("{", index + len(marker))
+        if brace >= 0:
+            try:
+                data, _ = json.JSONDecoder().raw_decode(text[brace:])
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                return data
+        cursor = index + len(marker)
+
+
+def _iqiyi_page_info(vid: str, session: Any) -> dict:
+    """从移动版页面里取 tvid / vid / 标题 / 时长。"""
+    resp = session.get(_IQIYI_MOBILE_PAGE.format(vid=vid), timeout=_IQIYI_TIMEOUT_S)
+    resp.raise_for_status()
+    html = resp.text
+
+    state = _json_after(html, "__INITIAL_STATE__") or {}
+    play = state.get("play") if isinstance(state.get("play"), dict) else {}
+    info = play.get("videoInfo") if isinstance(play.get("videoInfo"), dict) else {}
+    load = play.get("loadInfo") if isinstance(play.get("loadInfo"), dict) else {}
+
+    tvid = str(info.get("tvid") or info.get("qipuId") or load.get("qipuId") or "").strip()
+    video_id = str(load.get("vid") or info.get("vid") or "").strip()
+    title = str(info.get("videoName") or info.get("shortTitle") or "").strip()
+    duration = info.get("duration") or load.get("duration") or 0
+
+    # SSR 结构万一变了也别整条失败：页面里总还留着 tvid / vid 的字面量。
+    if not tvid:
+        match = re.search(r'"tvid"\s*:\s*"?(\d+)', html)
+        tvid = match.group(1) if match else ""
+    if not video_id:
+        match = re.search(r'"vid"\s*:\s*"([0-9a-f]{32})"', html)
+        video_id = match.group(1) if match else ""
+
+    return {"tvid": tvid, "vid": video_id, "title": title, "duration": duration}
+
+
+def _iqiyi_tmts(session: Any, tvid: str, video_id: str) -> dict | None:
+    """按 yt-dlp 同款参数请求一次 tmts 取流接口。"""
+    stamp = int(time.time() * 1000)
+    token = hashlib.md5(
+        f"{stamp}{_IQIYI_TMTS_KEY}{tvid}".encode("utf-8")
+    ).hexdigest()
+    params = {
+        "tvid": tvid,
+        "vid": video_id,
+        "src": _IQIYI_TMTS_SRC,
+        "sc": token,
+        "t": stamp,
+    }
+    resp = session.get(
+        _IQIYI_TMTS_API.format(tvid=tvid, vid=video_id),
+        params=params,
+        timeout=_IQIYI_TIMEOUT_S,
+    )
+    resp.raise_for_status()
+    return _parse_qz_json(resp.text)
+
+
+def _iqiyi_quality_candidates(data: dict) -> list[tuple[str, str]]:
+    """把接口返回的清晰度列表排成 (vd, 该档的 vid) 候选顺序。"""
+    found: dict[str, str] = {}
+    for item in data.get("vidl") or []:
+        if not isinstance(item, dict):
+            continue
+        quality_vid = str(item.get("vid") or "").strip()
+        vd = str(item.get("vd") or "").strip()
+        if quality_vid and vd:
+            found.setdefault(vd, quality_vid)
+    ordered = [(vd, found[vd]) for vd in _IQIYI_VD_ORDER if vd in found]
+    ordered += [(vd, found[vd]) for vd in sorted(found) if vd not in _IQIYI_VD_ORDER]
+    return ordered
+
+
+def _split_resolution(value: Any) -> tuple[int, int]:
+    """`"1280x720"` -> `(1280, 720)`；认不出来返回 (0, 0)。"""
+    match = re.match(r"\s*(\d+)\s*[xX*]\s*(\d+)\s*$", str(value or ""))
+    if not match:
+        return 0, 0
+    return int(match.group(1)), int(match.group(2))
+
+
+def _extract_iqiyi(url: str, sink: LogFn) -> dict | None:
+    """爱奇艺专用提取：绕开失效的 yt-dlp iqiyi 提取器，直接问官方取流接口。
+
+    返回 yt-dlp 风格的 info（交给 `_build_result`），拿不到返回 None。
+    """
+    target = (url or "").strip()
+    vid = _iqiyi_vid(target)
+    if not vid:
+        sink("  没能从爱奇艺地址里认出视频 id，交给通用解析器")
+        return None
+
+    try:
+        import requests
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("requests 不可用，爱奇艺直链提取跳过: %s", exc)
+        return None
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": _IQIYI_UA, "Referer": "https://m.iqiyi.com/"})
+
+    try:
+        sink("  识别为爱奇艺，正在取视频信息…")
+        meta = _iqiyi_page_info(vid, session)
+    except Exception as exc:  # noqa: BLE001
+        _log.info("爱奇艺页面信息获取失败: %s", exc)
+        return None
+
+    tvid = str(meta.get("tvid") or "").strip()
+    video_id = str(meta.get("vid") or "").strip() or tvid
+    if not tvid:
+        _log.info("爱奇艺页面里没找到 tvid: %s", target)
+        return None
+
+    try:
+        payload = _iqiyi_tmts(session, tvid, video_id)
+    except Exception as exc:  # noqa: BLE001
+        _log.info("爱奇艺 tmts 请求失败: %s", exc)
+        return None
+    if not payload:
+        _log.info("爱奇艺 tmts 返回无法解析: %s", target)
+        return None
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+
+    # 接口默认给的那条 `m3u` 一定可取（实测是低清晰度档），先当兜底；
+    # 再按偏好试更高档，谁先返回 code=2（当前身份可取）就用谁。
+    stream_url = str(data.get("m3u") or "").strip()
+    width, height = _split_resolution(data.get("screenSize"))
+    quality_vd = str(data.get("vd") or "").strip()
+
+    for vd, quality_vid in _iqiyi_quality_candidates(data)[:_IQIYI_MAX_QUALITY_TRIES]:
+        try:
+            extra = _iqiyi_tmts(session, tvid, quality_vid)
+        except Exception as exc:  # noqa: BLE001
+            _log.info("爱奇艺清晰度 %s 取流失败: %s", vd, exc)
+            continue
+        if not extra:
+            continue
+        body = extra.get("data") if isinstance(extra.get("data"), dict) else extra
+        candidate = str(body.get("m3u") or "").strip()
+        if str(body.get("code")) != "2" or not candidate:
+            continue
+        stream_url = candidate
+        width, height = _split_resolution(body.get("screenSize"))
+        quality_vd = vd
+        break
+
+    if not stream_url:
+        _log.info("爱奇艺接口没有给出可播地址: %s", target)
+        return None
+
+    duration = meta.get("duration") or data.get("duration") or 0
+    title = str(meta.get("title") or data.get("title") or "").strip() or f"爱奇艺 {tvid}"
+    try:
+        seconds = float(duration) if duration else 0.0
+    except (TypeError, ValueError):
+        seconds = 0.0
+
+    return {
+        "id": tvid,
+        "title": title,
+        "extractor": "iqiyi",
+        "extractor_key": "iqiyi",
+        "url": stream_url,
+        "format_id": f"vd{quality_vd}" if quality_vd else "default",
+        "format_note": f"{width}x{height}" if width and height else "",
+        "ext": "mp4",
+        "protocol": "m3u8_native",
+        "width": width or None,
+        "height": height or None,
+        "duration": seconds or None,
+        "http_headers": {
+            "Referer": "https://m.iqiyi.com/",
+            "User-Agent": _IQIYI_UA,
+        },
+    }
+
 
 @dataclass
 class _Attempt:
@@ -1576,6 +1987,33 @@ def resolve(
                 _log.info("好看视频直链提取成功: %s -> %s", target, built.note)
                 return built
             _log.info("好看视频直链提取未取得可播放流: %s", built.error)
+
+    # ---- 第 1.6 层：腾讯视频专用直链提取 ----
+    # yt-dlp 内置的 vqq 提取器还在找页面里的 `window.__pinia`，而腾讯改版后
+    # 页面不再内嵌它——提取器必然报错，还会一路重试到硬超时（表现为"解析超时"）。
+    # 这里直接问腾讯官方接口要地址，通常一两秒就能开播，不必等满超时。
+    if _is_tencent(target):
+        info = _extract_tencent(target, sink)
+        if isinstance(info, dict):
+            built = _build_result(target, info)
+            if built.ok:
+                _log.info("腾讯视频直链提取成功: %s -> %s", target, built.note)
+                return built
+            _log.info("腾讯视频直链提取未取得可播放流: %s", built.error)
+
+    # ---- 第 1.7 层：爱奇艺专用直链提取 ----
+    # yt-dlp 的 iqiyi 提取器要在页面里找 `data-player-tvid` 属性来拿 tvid，
+    # 而爱奇艺改版后播放页成了纯前端渲染、属性没了 → 直接报
+    # "Can't find any video"。这里改走爱奇艺移动端取流接口（tmts），
+    # 通常一秒多就能拿到正片 m3u8，不必等满超时。
+    if _is_iqiyi(target):
+        info = _extract_iqiyi(target, sink)
+        if isinstance(info, dict):
+            built = _build_result(target, info)
+            if built.ok:
+                _log.info("爱奇艺直链提取成功: %s -> %s", target, built.note)
+                return built
+            _log.info("爱奇艺直链提取未取得可播放流: %s", built.error)
 
     # ---- 第 2 层：逐策略解析 ----
     try:

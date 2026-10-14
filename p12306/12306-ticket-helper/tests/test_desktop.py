@@ -153,6 +153,35 @@ def test_main_window_pages_and_profile_entry(qt_app, web_backend):
     realtime.stop()
 
 
+def test_window_title_and_status_bar_carry_the_copyright(qt_app, web_backend):
+    """★ 版权信息必须出现在「不用找就能看到」的两个位置：窗口标题 + 状态栏。
+
+    为什么单独一条：常量改对了**不等于**界面上改了。窗口标题与状态栏是两处
+    各自独立的拼装代码，任何一处漏改，用户看到的还是旧文字，而所有常量层面的
+    测试依旧全绿 —— 这正是「改名改一半」的典型形态。
+    """
+    from desktop_ui.main_window import MainWindow
+    from desktop_ui.realtime import RealtimeClient
+    from ticket_helper import APP_AUDIENCE, APP_COPYRIGHT, APP_WEBSITE
+
+    client = ApiClient(web_backend)
+    client.login("admin", "test-pass")
+    window = MainWindow(client, RealtimeClient(client))
+    window.show()
+
+    assert APP_AUDIENCE in window.windowTitle(), f"窗口标题缺使用范围：{window.windowTitle()!r}"
+
+    # 状态栏用富文本承载「版权 + 可点击官网」，所以分别断言文字与链接能力
+    label = window.disclaimer_label
+    assert APP_COPYRIGHT in label.text(), f"状态栏缺版权声明：{label.text()!r}"
+    assert APP_WEBSITE in label.text(), f"状态栏缺官网链接：{label.text()!r}"
+    assert label.textFormat() == Qt.TextFormat.RichText, "官网要做成链接就必须是富文本"
+    assert label.openExternalLinks(), "链接不可点等于没放（QLabel 默认点不动）"
+
+    window._force_quit = True  # noqa: SLF001
+    window.close()
+
+
 # --------------------------------------------------------------------------- #
 # UI-T2 任务配置表单保存/回显
 # --------------------------------------------------------------------------- #
@@ -2278,6 +2307,61 @@ def test_station_picker_newer_search_wins(qt_app):
     dialog.close()
 
 
+def test_teaching_edition_shows_tomorrow_but_keeps_real_dates(qt_app, frozen_clock, monkeypatch):
+    """★ 教学演示版：日期标签与日历控件都显示「明天」，但**数据一行没变**。
+
+    录播课程要能长期复用，画面上不能出现具体日期。这里最容易犯的错是
+    「顺手把数据也改了」—— 那样任务真的会去抢「明天」的票，而用户配的是别的
+    日子。所以这条同时钉两件相反的事：显示是「明天」，``values()`` 仍是真实日期。
+    """
+    from datetime import timedelta
+
+    from ticket_helper import edition
+
+    from desktop_ui.token_field import DateField
+
+    monkeypatch.setattr(edition, "DEMO_MODE", True)
+
+    d1 = (frozen_clock + timedelta(days=1)).isoformat()
+    d2 = (frozen_clock + timedelta(days=2)).isoformat()
+    field = DateField(label="乘车日期")
+    field.add(d1)
+    field.add(d2)
+
+    # 数据：两个真实日期，一个都不少
+    assert field.values() == [d1, d2]
+    assert field.text() == f"{d1},{d2}"
+    # 显示：合并成一行「明天」（「连加 3 天」不该出现三行一模一样的字）
+    assert field.list.count() == 1, "演示版该把整组日期并成一行"
+    assert field.list.item(0).text() == edition.DEMO_DATE_TEXT
+
+    # 日历控件也显示「明天」，而且只能选明天
+    assert edition.DEMO_DATE_TEXT in field.picker.text(), "日历控件上还写着具体日期"
+    tomorrow = d1
+    assert field.picker.minimumDate().toString("yyyy-MM-dd") == tomorrow
+    assert field.picker.maximumDate().toString("yyyy-MM-dd") == tomorrow
+
+    # 移除那一行 = 移除它代表的**全部**真实日期（显示层合并了，数据也得跟着一刀切）
+    field.list.item(0).setSelected(True)
+    field.remove_selected()
+    assert field.values() == []
+
+
+def test_official_edition_still_shows_the_real_date(qt_app, frozen_clock):
+    """反向对照：正式版必须原样显示 —— 这条挂了说明演示版漏进了正式包。"""
+    from datetime import timedelta
+
+    from desktop_ui.token_field import DateField
+
+    d1 = (frozen_clock + timedelta(days=1)).isoformat()
+    field = DateField(label="乘车日期")
+    field.add(d1)
+
+    assert field.list.item(0).text() == d1, "正式版不许把日期改写成「明天」"
+    assert field.values() == [d1]
+    assert field.picker.minimumDate().toString("yyyy-MM-dd") == frozen_clock.isoformat()
+
+
 def test_date_field_refuses_past_and_invalid_dates(qt_app, frozen_clock) -> None:
     """★ 乘车日期控件必须拒绝**过去的**和**不存在的**日期，并说明原因。
 
@@ -2352,3 +2436,122 @@ def test_settings_page_owns_the_ratelimit_and_codec_controls(qt_app, web_backend
     notify = NotifyPage(client)
     for attr in ("check_adaptive", "combo_codec_mode", "info_labels", "config_history_table"):
         assert not hasattr(notify, attr), f"「{attr}」还在通知页里 —— 它属于系统设置页"
+
+
+def test_chip_rows_are_never_clipped_by_a_hardcoded_row_height(qt_app):
+    """标签列表的高度必须**现量**行高，不许按写死的 24px 预算（回流 #66）。
+
+    真机来源（2026-10-04）：开发机的离屏替身字体一行只要 19px，写死 24px
+    怎么算都「够」；真机微软雅黑 13px + 样式内边距一行约 25px，两行起最后
+    一行的字被拦腰削掉 —— 使用者看到的就是「添加后的日期/站点显示不全」。
+
+    这里把样式内边距加大来**等效复现**真机的行高：写死预算的实现会在这条
+    用例下把最后一行削掉，现量现用的实现才过得去。
+    """
+    from desktop_ui.theme import STYLESHEET
+    from desktop_ui.token_field import DateField
+
+    field = DateField()
+    # 加大内边距 = 等效「一行比开发机量出来的高一档」，逼出写死行高的短板
+    field.list.setStyleSheet(STYLESHEET + "\nQListWidget::item { padding: 8px 4px; }")
+    # 三行才是**承重**的判据：两行时「写死 24px」的预算恰好还够（歪打正着），
+    # 三行起它给 24*3+8=80px，而实际需要 3 行 × 28px = 84px —— 必削。
+    field.setText("2026-10-04,2026-10-05,2026-10-06")
+    field.show()          # 未显示时几何还没排过版，viewport 不可信
+    qt_app.processEvents()
+
+    from desktop_ui.token_field import MAX_CHIP_HEIGHT
+
+    assert field.list.count() == 3, "三行数据：真机行高下上限放不满三行，正合适"
+    row = field.list.sizeHintForRow(0)
+    view = field.list.viewport().height()
+    # 真机行高（29px）下，84px 的上限只放得下 2 行 —— 要判的是「可见区
+    # 正好等于上限允许的整行数」，而不是「三行都要露出来」。
+    assert view == row * (MAX_CHIP_HEIGHT // row), (
+        f"可见区 {view}px 应当正好是上限内的整行数（每行实测 {row}px，"
+        f"上限 {MAX_CHIP_HEIGHT}px 应放 {MAX_CHIP_HEIGHT // row} 行）"
+    )
+    # ★ 真正的判据：可见区必须**正好是整行**。上限按像素硬夹（84px）时，
+    # 可见区会落在半行上 —— 最后一行只露小半截，看着就是「显示不全」。
+    assert view % row == 0, (
+        f"可见区 {view}px 不是整行（每行 {row}px）：底部会露半截行 —— 上限必须落在整行上"
+    )
+    field.deleteLater()
+
+
+def test_date_field_caps_at_whole_rows(qt_app):
+    """日期多到超过上限时，只截在**整行**上（第 4 行不许露半截）。
+
+    真机来源（2026-10-04）：连加 3 天就有 3~4 个日期，上限 84px 而真机一行
+    25px —— 4 行要 100px，硬夹到 84px 的结果是第 4 行露出小半截。
+    """
+    from desktop_ui.theme import STYLESHEET
+    from desktop_ui.token_field import MAX_CHIP_HEIGHT, DateField
+
+    field = DateField()
+    field.list.setStyleSheet(STYLESHEET + "\nQListWidget::item { padding: 8px 4px; }")
+    field.setText("2026-10-04,2026-10-05,2026-10-06,2026-10-07")
+    field.show()          # 同上：先显示，几何才可信
+    qt_app.processEvents()
+
+    row = field.list.sizeHintForRow(0)
+    view = field.list.viewport().height()
+    assert field.list.count() == 4, "四个日期：超上限，必须能滚动"
+    assert view % row == 0, f"可见区 {view}px 不是整行（每行 {row}px）—— 会露半截行"
+    assert view // row == MAX_CHIP_HEIGHT // row, (
+        f"上限 {MAX_CHIP_HEIGHT}px 按每行 {row}px 应该正好放 {MAX_CHIP_HEIGHT // row} 行，"
+        f"实际放了 {view // row} 行"
+    )
+    assert field.list.verticalScrollBar().maximum() > 0, "装不下时必须能滚动，而不是把行切掉"
+    field.deleteLater()
+
+
+def test_priority_rows_are_never_clipped(qt_app):
+    """席别优先级的两个列表同理：高度跟着**内容与真实行高**走（回流 #66）。
+
+    修复前这里写死 ``LIST_HEIGHT = 124``（约 5 行）：真机一行 25px 时第 5 行
+    会被削掉 9px；而且同步只挂在 ``__init__``（列表还空着），量不到行高，
+    装多少行都停在 1 行的高度。
+    """
+    from desktop_ui.theme import STYLESHEET
+    from desktop_ui.priority_field import PriorityList
+
+    seats = ["商务座", "一等座", "二等座", "硬卧", "软卧", "硬座", "无座"]
+    widget = PriorityList(seats, default=seats[:5])
+    widget.list_picked.setStyleSheet(STYLESHEET + "\nQListWidget::item { padding: 8px 4px; }")
+    widget.setText(",".join(seats[:5]))
+    widget.show()         # 同上：先显示，几何才可信
+    qt_app.processEvents()
+
+    # 5 行 × 实测 28px = 140px > 写死的 124px —— 修复前第 5 行必被削
+    assert widget.list_picked.count() == 5, "五个席别必须都在「会抢的席别」里"
+    picked = widget.list_picked
+    row = picked.sizeHintForRow(0)
+    view = picked.viewport().height()
+    assert view >= row * 5, f"可见区 {view}px 容不下五行（每行实测 {row}px）"
+    assert view % row == 0, f"可见区 {view}px 不是整行（每行 {row}px）—— 会露半截行"
+    # 不做同步时会退到默认高度（很高），「装得下」是假的 —— 高度要贴着内容走
+    assert view <= row * 5 + row, f"可见区 {view}px 高出五行内容太多（每行 {row}px）"
+    # 右边的「可选席别」是另一个列表（行数不同：这里剩 2 个），同样要整行
+    avail = widget.list_available
+    a_row = avail.sizeHintForRow(0)
+    a_view = avail.viewport().height()
+    assert a_view >= a_row * avail.count(), (
+        f"右边「可选席别」可见区 {a_view}px 装不下 {avail.count()} 行（每行 {a_row}px）"
+    )
+    assert a_view % a_row == 0, f"右边可见区 {a_view}px 不是整行（每行 {a_row}px）"
+
+    # ★ 控件已经在屏幕上、用户又改了内容：这时**不会**再触发 showEvent，
+    # 高度只能靠 _render 的同步跟上 —— 少一处就退回旧高度（行被切）。
+    picked.setStyleSheet(STYLESHEET + "\nQListWidget::item { padding: 8px 4px; }")
+    widget.setText(",".join(seats[:3]))
+    qt_app.processEvents()
+    row3 = picked.sizeHintForRow(0)
+    view3 = picked.viewport().height()
+    assert picked.count() == 3, "改成三个席别后列表应只剩三行"
+    assert view3 % row3 == 0, f"改内容后可见区 {view3}px 不是整行（每行 {row3}px）"
+    assert view3 == row3 * 3, (
+        f"改内容后可见区应正好放 3 行，实际 {view3 // row3} 行 —— "
+        "内容变化后的高度同步不能只靠 showEvent"
+    )
+    widget.deleteLater()

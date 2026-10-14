@@ -21,6 +21,8 @@ from email.mime.text import MIMEText
 from email.utils import formataddr
 from typing import Any, Callable
 
+from ticket_helper import APP_NAME
+
 log = logging.getLogger(__name__)
 
 
@@ -69,7 +71,7 @@ class Channel(ABC):
         return ok
 
     def test(self) -> bool:
-        return self.send("【测试通知】抢票助手", f"渠道 {self.name} 连通性测试，时间 {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        return self.send(f"【测试通知】{APP_NAME}", f"渠道 {self.name} 连通性测试，时间 {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,7 +107,7 @@ class EmailChannel(Channel):
 
         message = MIMEText(body, "plain", "utf-8")
         message["Subject"] = Header(title, "utf-8")
-        message["From"] = formataddr((str(Header("12306抢票助手", "utf-8")), self.sender))
+        message["From"] = formataddr((str(Header(APP_NAME, "utf-8")), self.sender))
         message["To"] = ",".join(self.receivers)
 
         try:
@@ -307,7 +309,7 @@ class VoiceChannel(Channel):
         try:
             params = {
                 "mobile": self.phone,
-                "content": f"抢票助手提醒，{title}",
+                "content": f"{APP_NAME}提醒，{title}",
                 "tts_code": self.tts_code,
             }
             response = client.request(

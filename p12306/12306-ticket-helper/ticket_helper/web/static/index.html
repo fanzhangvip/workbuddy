@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>12306 抢票助手 · 管理后台</title>
+<title>智泊AI抢票助手（仅限智泊AI学员使用）· 管理后台</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,8 +11,8 @@
 <!-- 登录遮罩 -->
 <div id="login-mask" class="mask">
   <form class="login-card" id="login-form" autocomplete="off">
-    <h1>12306 抢票助手</h1>
-    <p class="muted">个人自用 · 仅供学习交流</p>
+    <h1>智泊AI抢票助手</h1>
+    <p class="muted">智泊AI版权所有，仅限智泊AI学员使用 · <a class="site" href="https://www.zhipoai.com/" target="_blank" rel="noopener noreferrer">www.zhipoai.com</a></p>
     <label>后台账号<input id="login-user" name="user" value="admin" autocomplete="username"></label>
     <label>后台密码<input id="login-pass" name="pass" type="password" autocomplete="current-password"></label>
     <button type="submit" class="primary">登录</button>
@@ -25,8 +25,8 @@
 <div id="app" class="hidden">
   <aside class="sidebar">
     <div class="brand">
-      <span class="logo">12306</span>
-      <span class="brand-text">抢票助手</span>
+      <span class="logo">智泊</span>
+      <span class="brand-text">智泊AI抢票助手</span>
     </div>
     <!-- 导航按「用户实际会走的顺序」分组：先看总览，再配任务，账号与记录随后 -->
     <nav>
@@ -57,6 +57,10 @@
     <div class="sidebar-foot">
       <div id="conn-status" class="conn off">未连接</div>
       <button id="logout" class="link">退出登录</button>
+      <p class="tagline" title="本工具仅限智泊AI学员学习使用，不代扣款、不代抢、不提供任何商业服务">
+        <span>智泊AI版权所有，仅限智泊AI学员使用</span>
+        <a class="site" href="https://www.zhipoai.com/" target="_blank" rel="noopener noreferrer">www.zhipoai.com</a>
+      </p>
     </div>
   </aside>
 

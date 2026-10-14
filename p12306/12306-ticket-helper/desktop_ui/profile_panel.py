@@ -42,6 +42,8 @@ from PySide6.QtWidgets import (
 
 from desktop_ui.api_client import ApiClient, ApiError
 
+from ticket_helper.edition import display_train_date
+
 log = logging.getLogger(__name__)
 
 STATUS_TEXT = {
@@ -185,8 +187,9 @@ class ProfilePanel(QWidget):
         self.banner.setWordWrap(True)
         self.banner.setVisible(False)
         self.banner.setStyleSheet(
-            "background:#fef3c7; border:1px solid #fcd34d; border-radius:6px;"
-            "padding:8px 10px; color:#92400e;"
+            "background: rgba(254, 243, 199, 0.92);"
+            "border: 1px solid rgba(252, 211, 77, 0.75); border-radius: 8px;"
+            "padding: 9px 11px; color: #92400e;"
         )
         root.addWidget(self.banner)
 
@@ -491,7 +494,7 @@ class ProfilePanel(QWidget):
                 order.get("order_no", ""),
                 order.get("order_date", ""),
                 order.get("train_code", ""),
-                order.get("train_date", ""),
+                display_train_date(order.get("train_date")),
                 f"{order.get('from_station', '')}→{order.get('to_station', '')}",
                 order.get("seat_type", ""),
                 order.get("passenger_names", ""),
@@ -542,7 +545,7 @@ class ProfilePanel(QWidget):
             values = [
                 order_no,
                 order.get("station_train_code") or order.get("train_code", ""),
-                order.get("train_date", ""),
+                display_train_date(order.get("train_date")),
                 names,
                 order.get("ticket_total_price") or order.get("total_price", ""),
                 order.get("order_status_name") or order.get("status", ""),

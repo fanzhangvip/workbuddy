@@ -33,8 +33,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from desktop_ui.theme import C
 
 from desktop_ui.api_client import ApiClient, ApiError
+
+from ticket_helper.edition import display_train_dates
 
 log = logging.getLogger(__name__)
 
@@ -218,15 +221,15 @@ class TrainPickerDialog(QDialog):
                 str(train.get("arrive_time", "")),
                 str(train.get("duration", "")),
                 str(train.get("remain_text", "")),
-                " / ".join(train.get("dates") or []),
+                display_train_dates(train.get("dates")),
             ]
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if col == 6 and not available:
-                    item.setForeground(QBrush(QColor("#64748b")))
+                    item.setForeground(QBrush(QColor(C["muted"])))
                 elif col == 6:
-                    item.setForeground(QBrush(QColor("#15803d")))
+                    item.setForeground(QBrush(QColor(C["ok"])))
                 self.table.setItem(row_index, col, item)
 
         if not self._rows:

@@ -1,0 +1,57 @@
+schema_version: 1
+request_id: 9113444b-257d-4ade-aeca-d1f770d10586
+created_at: 2026-10-07T15:28:28
+updated_at: 2026-10-07T15:28:28
+
+entry_type: full_pipeline
+stage_chain: [1, 2, 3]
+
+output_docx_path: "C:\\zero\\workbuddy\\2026-10-07-14-24-53\\output\\9113444b-257d-4ade-aeca-d1f770d10586\\stage3\\研发体系统筹方案_课程研发主导版.docx"
+output_docx_user_specified: false
+
+current_stage: completed
+
+stages:
+  stage_0:
+    status: completed
+    completed_at: 2026-10-07T15:28:28
+    decision: full_pipeline
+  stage_1:
+    status: completed
+    started_at: 2026-10-07T15:28:28
+    completed_at: 2026-10-07T15:36:00
+    output_path: "stage1/final_draft.md"
+    genre: work-report
+    expert_used: work-report-expert
+    route_tag: expert_work_report
+    critic_decision: PASS
+    critic_score: 86.7
+  stage_2:
+    status: completed
+    started_at: 2026-10-07T15:36:00
+    completed_at: 2026-10-07T15:44:00
+    route: html
+    html_sub: template
+    output_path: "stage2/formatted-研发体系统筹方案_课程研发主导版.html"
+    output_format: html
+    skills_invoked: [design-token, doc-typeset, html-review]
+    design_tokens_path: "stage2/design_tokens.json"
+    fallback: false
+    fallback_reason: null
+  stage_3:
+    status: completed
+    started_at: 2026-10-07T15:45:00
+    completed_at: 2026-10-07T15:46:00
+    executor: doc-converter
+    input_format: html
+    output_path: "C:\\zero\\workbuddy\\2026-10-07-14-24-53\\output\\9113444b-257d-4ade-aeca-d1f770d10586\\stage3\\研发体系统筹方案_课程研发主导版.docx"
+    skill_used: ["html-to-docx"]
+    present_files_opened: true
+    fallback: false
+    fallback_reason: null
+
+consistency_check:
+  output_files_exist: pass
+  stage_chain_complete: pass
+  last_checked_at: 2026-10-07T15:46:00
+  errors: []

@@ -38,7 +38,15 @@ from desktop_ui.pages import (
     TaskConfigPage,
 )
 from desktop_ui.realtime import RealtimeClient
+from desktop_ui.theme import C
 from desktop_ui.tray import TrayIcon
+from ticket_helper import (
+    APP_AUDIENCE,
+    APP_COPYRIGHT,
+    APP_DISPLAY_NAME,
+    APP_USAGE_NOTICE,
+    APP_WEBSITE,
+)
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +94,7 @@ class MainWindow(QMainWindow):
         #: 正在展示的验证码弹窗（按任务 id 去重，避免同一个验证码弹好几次）
         self._captcha_dialogs: dict[str, CaptchaDialog] = {}
 
-        self.setWindowTitle("12306 抢票助手 · 个人自用")
+        self.setWindowTitle(f"{APP_DISPLAY_NAME} · {APP_AUDIENCE}")
         # 默认开得宽一点：任务配置页是「左侧表单 + 右侧任务列表」两栏，
         # 1180 宽时表单只有 686，正好卡在「车次类型」标签要被压窄的边上。
         self.resize(1320, 880)
@@ -97,7 +105,7 @@ class MainWindow(QMainWindow):
         self._build()
         self._wire()
         self.switch_page(0)
-        self.tray.set_tooltip("12306 抢票助手 · 挂机中")
+        self.tray.set_tooltip(f"{APP_DISPLAY_NAME} · 挂机中")
 
     # ------------------------------------------------------------------ #
     def _build(self) -> None:
@@ -118,7 +126,7 @@ class MainWindow(QMainWindow):
             if group_name:
                 header = QListWidgetItem(group_name)
                 header.setFlags(Qt.ItemFlag.NoItemFlags)   # 组标题不可选中，方向键会跳过它
-                header.setForeground(QBrush(QColor("#7c8b9d")))
+                header.setForeground(QBrush(QColor(C["nav_group"])))
                 self._apply_group_style(header)
                 self.nav.addItem(header)
             for key in keys:
@@ -162,6 +170,20 @@ class MainWindow(QMainWindow):
             "会自动降级为轮询（功能不缺失，只是延迟约 2 秒）。"
         )
         bar.addPermanentWidget(self.connection_label)
+        # 版权声明常驻状态栏：每个页面右下角都看得见，不必去翻「关于」。
+        # 文案取自 ticket_helper 的常量，与 Web 端、CLI banner 同源。
+        # 网址做成可点击链接 —— 学员要反馈问题，第一步就是找到官网。
+        self.disclaimer_label = QLabel()
+        self.disclaimer_label.setTextFormat(Qt.TextFormat.RichText)
+        self.disclaimer_label.setOpenExternalLinks(True)
+        self.disclaimer_label.setText(
+            f'{APP_COPYRIGHT} · <a href="{APP_WEBSITE}" '
+            f'style="color:{C["accent"]}; text-decoration:none;">www.zhipoai.com</a>'
+        )
+        self.disclaimer_label.setToolTip(
+            f"{APP_DISPLAY_NAME}｜{APP_COPYRIGHT}｜{APP_WEBSITE}｜{APP_USAGE_NOTICE}"
+        )
+        bar.addPermanentWidget(self.disclaimer_label)
         self.setStatusBar(bar)
 
         self.overview_timer = QTimer(self)
@@ -349,8 +371,8 @@ class MainWindow(QMainWindow):
             text = "重连中…"
         self.connection_label.setText(f"实时通道：{text}")
         self.connection_label.setStyleSheet(
-            "color: #15803d;" if transport in ("websocket", "polling")
-            else "color: #b45309;"
+            f"color: {C['ok']};" if transport in ("websocket", "polling")
+            else f"color: {C['warn']};"
         )
 
     # ------------------------------------------------------------------ #
@@ -362,7 +384,7 @@ class MainWindow(QMainWindow):
     def request_quit(self) -> None:
         """真正的退出流程。"""
         answer = QMessageBox.question(            self,
-            "退出抢票助手",
+            f"退出{APP_DISPLAY_NAME}",
             "确定要退出吗？\n\n选择「Yes」将同时关闭后台服务（停止所有抢票任务）；\n"
             "选择「No」仅关闭界面，后台继续在托盘/后台挂机。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
@@ -407,6 +429,6 @@ class MainWindow(QMainWindow):
         event.ignore()
         self.hide()
         self.tray.show_notification(
-            "抢票助手仍在后台运行",
+            f"{APP_DISPLAY_NAME}仍在后台运行",
             "已最小化到系统托盘，抢票任务继续执行。\n双击托盘图标可恢复窗口，右键菜单可退出。",
         )

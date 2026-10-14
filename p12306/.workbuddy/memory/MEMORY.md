@@ -24,6 +24,8 @@
 13. ★ **门/工具自己也要有测试**（V0 门 noqa 豁免里躺过一个**永远为假**的分支还带负责任的注释）→ `tests/test_verify_tool.py`。
 14. ★ **状态值只有一处定义**：DDL 不许 `status DEFAULT 'x'`（列一律 `NOT NULL`）；SQL 不许有状态字面量（#54）。
 15. ★ **变异清单会腐烂**：`contract_mutation_check.py` 跑前做**锚点预检**（#55）。
+16. ★ **品牌/版权唯一来源** = `ticket_helper/__init__.py`：`APP_NAME`（智泊AI抢票助手）、`APP_AUDIENCE`（仅限智泊AI学员使用，进窗口标题/网页 title）、`APP_COPYRIGHT`（智泊AI版权所有，仅限智泊AI学员使用）、`APP_WEBSITE`（https://www.zhipoai.com/，2026-10-08 加）、`APP_USAGE_NOTICE`（仅供学习使用，严禁商用）。web 静态 HTML import 不到 → 靠 `test_contracts.py` 契约 7 + `test_desktop.py::test_window_title_and_status_bar_carry_the_copyright` 钉住；桌面状态栏官网是**富文本可点击链接**（`setOpenExternalLinks`）。EXE 文件名与包名刻意不改。
+17. ★ **教学演示版唯一开关** = `ticket_helper/edition.py::DEMO_MODE`（默认 False；`build_exe.py --demo` 用 `with` 临时改 True 并**保证还原**；完整名 `APP_DISPLAY_NAME` 带后缀，`APP_NAME` 本身不动）。**只改显示不动数据**：乘车日期一族走 `display_train_date(s)` 显示「明天」（多日期合并一行、日历锁明天+specialValueText）；「抢票/订票时间」不换。网页端由 login/me 下发 `demo_mode`、`demoDate()` 消费，两端同源靠契约 8。产物 `dist/TicketHelper-Demo/`（exe 带 `-Demo` 后缀）。★ **「代码进包」≠「开关打开」**：bool 常量不在字符串池，冻结物取证证明不了值 —— 铁证是跑打包版 web 看 login 响应 `"demo_mode":true`。
 
 ## 一·五、打包（#42–#47）★「源码能跑」与「产物能跑」不共享证据
 
@@ -31,6 +33,9 @@
 `datas` 把 `vendor/pjialin` 映射到包内同路径（落错 = **静默回退**到 self）；上游依赖**手写 `hiddenimports`**（`requests_html`/`pyquery`/`redis`/`pyppeteer`/`png`/`ws`/`pyee`）；两种形态**共用同一份 spec**；★ **可选能力不许打断核心数据**（`TicketApi.__init__` 急切构造，规格取不到必须退回内置 + WARNING）；豁免清单**不许腐烂**。
 ★ **`ddddocr` 不打进包是刻意决策** ⇒ **打包版下单验证码只能人工录入**。
 验收：`scripts/check_packaging.py` + 产物 `doctor` 第 12 项；**反向对照**：`_internal/vendor` 改名必须报红。
+★ **目录版 / 单文件版是两件不同的产物，同名不同路径**：`dist/TicketHelper/`（目录，必须**整个目录**分发，否则对方报 `Failed to load Python DLL ... python313.dll` —— exe 只是启动器）vs `dist/TicketHelper.exe`（`--onefile`，**只发一个文件**，代价是首次自解压十几秒 + 杀软误报略高）。
+⇒ `build_exe.py` 的让路只能针对**本次真正的产物路径**（曾按 `build_name` 一律让路 → 打单文件包时把目录版整目录改名扔掉）；`--onefile --demo` 产出 `dist/TicketHelper-Demo.exe`，与 `dist/TicketHelper-Demo/` 并存。
+⇒ 验收单文件版要**把 exe 单独拷进空目录**跑（本次用 `web --port` 验 login 的 `demo_mode` + 离屏 `QT_QPA_PLATFORM=offscreen` 起 GUI 看进程存活）；冻结物取证对单文件 exe 同样有效（`--dist` 指向只含该 exe 的目录）。
 
 ## 二、与上游的关系（勿凭印象）
 
@@ -68,6 +73,8 @@
 ## 六、UI 与插代码纪律
 
 ★ **功能存在但不被发现 = 不存在**：分组两端一致、桌面端分组标题**不可选中**（走 `UserRole`）；**状态写在看得见的地方**；**空状态给「下一步」**；**校验指名道姓**（标红那一格 + 只滚第一处）；**复合控件占满整行**；**定时器只刷「只读」区域**；**脱敏字段绝不回填输入框**。
+★ **「开发机全绿」≠「真机能显示」**：本机**没有任何 CJK 字体**（`QFontDatabase.families()` 里 CJK 家族为空），离屏一切都用替身字体 —— 真机雅黑一行 25px、替身字体 19px。⇒ 凡「行数 × 行高」类算式，**行高必须现量**（`sizeHintForRow`），**上限必须落在整行上**（`rows = cap // 行高` 再乘回去；像素硬夹会夹出「半截行」，使用者读作「显示不全」而不是「可滚动」），**外框占用按真实几何反推**（`height - viewport.height()`；`frameWidth()` 会含内边距，实测差 4px → 下一行残影）。标签列表统一 `QListWidget#chipList`（列表自身纵向内边距归零），`sync_list_height()` 是唯一实现（`desktop_ui/token_field.py`）。
+★ **Qt 用例测几何前必须 `show()`**（未显示时 `viewport()` 是未布局默认值，量到过 12px），且样式要套**真主题** `theme.STYLESHEET`，否则盒模型与真机不同、变异照样漏过。短行锚点（`import` 行、`setStyleSheet("...")`）在文件里出现多次，按「首处替换」的变异会打偏 ⇒ **同一语义先收敛成一处实现**。
 ★ **「卡住」比「失败」危险**（失败会变红；卡住永不结束，最像「机器慢」）⇒ 往 `__init__`/状态机/注册表插代码**必须检查「原来的下一行有没有被挤走」**（曾挤走 `self._order_combo_hint` → `AttributeError` → 被 `log.debug` 吞 → 卡 20 分钟）。
 
 ## 七、环境与沙箱限制
@@ -87,7 +94,7 @@ python main.py init / doctor / web / desktop / qr / profile / grab / mock
 python scripts/verify.py                              # 测试框架总入口
 python scripts/contract_mutation_check.py -k 下单
 python scripts/diagnose_order.py --restore --task N   # 下单真机探针（默认只到 initDc）
-python scripts/check_packaging.py / scripts/build_exe.py --clean
+python scripts/check_packaging.py / scripts/build_exe.py --clean / --demo
 python scripts/check_frozen_markers.py       # ★ 从 exe 里解出 PYZ，确认修复真的进了包
 ```
 `dist/TicketHelper/` 下 GUI 与 CLI 同目录，**必须整目录一起拷**；Web 走 `start-web.bat`（`admin` / `env.py` 的 `web.auth_pass`，本机 8008）。

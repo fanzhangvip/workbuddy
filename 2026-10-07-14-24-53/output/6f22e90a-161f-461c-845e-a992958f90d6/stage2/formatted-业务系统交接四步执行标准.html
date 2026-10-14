@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="docx-page-size" content="A4">
+  <title>业务系统交接四步：执行标准与达标条件</title>
+  <style>
+  @page { @bottom-center { content: counter(page); } }
+  @page cover { @bottom-center { content: none; } }
+  section[role="cover"] { page: cover; }
+
+  :root {
+    --fs-h1: var(--typography-fontSize-h1);
+    --fs-h2: var(--typography-fontSize-h2);
+    --fs-h3: var(--typography-fontSize-h3);
+    --fs-body: var(--typography-fontSize-body);
+    --fs-small: var(--typography-fontSize-small);
+    --ff-heading: var(--typography-fontFamily-heading);
+    --ff-body: var(--typography-fontFamily-body);
+    --lh-body: var(--typography-lineHeight-body);
+    --fw-bold: var(--typography-fontWeight-heading);
+    --color-primary: var(--color-primary);
+    --color-accent: var(--color-accent);
+    --color-text: var(--color-text);
+    --color-muted: var(--color-textSecondary);
+    --color-heading: var(--color-heading);
+    --color-border: var(--color-divider);
+    --color-bg: var(--color-background);
+    --color-highlight: var(--color-surface);
+    --spacing-paragraph: var(--spacing-paragraph);
+    --spacing-section: var(--spacing-sectionGap);
+    --spacing-block: var(--spacing-cardPadding);
+    --margin-page: var(--layout-marginLeft);
+    --color-summary-bg: var(--color-surface);
+    --color-summary-border: var(--color-primary);
+    --summary-border-width: 4px;
+    --color-emphasis: var(--color-text);
+    --page-content-width: var(--layout-maxContentWidth);
+    --space-xxs: 0.3em;
+    --space-xs: 0.4em;
+    --space-sm: 0.5em;
+    --space-md: 0.6em;
+    --space-lg: 0.8em;
+    --space-indent: 1.5em;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--ff-body);
+    font-size: var(--fs-body);
+    line-height: var(--lh-body);
+    color: var(--color-text);
+    background: var(--color-bg);
+    max-width: var(--page-content-width);
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .report-cover {
+    display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
+    min-height: 60vh; padding: var(--margin-page);
+    background: var(--color-highlight);
+  }
+  .cover-category {
+    font-size: var(--typography-fontSize-coverCategory);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-primary); letter-spacing: 0.08em; margin-bottom: var(--space-lg);
+    text-align: left;
+  }
+  .cover-title {
+    font-size: var(--typography-fontSize-coverTitle);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-primary); margin-bottom: var(--space-sm); text-align: left;
+  }
+  .cover-subtitle {
+    font-size: var(--typography-fontSize-subtitle);
+    color: var(--color-muted); margin-bottom: var(--spacing-section); text-align: left;
+  }
+  .cover-meta { font-size: var(--fs-small); color: var(--color-muted); text-align: left; }
+  .cover-meta p { margin-bottom: var(--space-xxs); color: var(--color-muted); font-size: var(--fs-small); }
+
+  .doc-toc {
+    padding: var(--spacing-block) var(--margin-page);
+    background: var(--color-bg); border-bottom: 1px solid var(--color-border);
+  }
+  .toc-title { font-weight: var(--fw-bold); margin-bottom: var(--space-sm); font-size: var(--fs-h3); color: var(--color-heading); }
+  .toc-list, .toc-list ol, .toc-list ul {
+    list-style: none; list-style-type: none; padding-left: var(--space-indent);
+  }
+  .toc-list li { margin-bottom: var(--space-xxs); text-indent: 0; font-size: var(--fs-body); color: var(--color-text); }
+  .toc-list a { color: var(--color-primary); text-decoration: none; }
+
+  .executive-summary {
+    margin: var(--spacing-section) var(--margin-page);
+    padding: var(--spacing-section);
+    border-left: var(--summary-border-width) solid var(--color-summary-border);
+    background: var(--color-summary-bg);
+  }
+  .summary-header { margin-bottom: var(--spacing-block); }
+  .summary-header h2 { font-size: var(--fs-h2); font-family: var(--ff-heading); color: var(--color-heading); font-weight: var(--fw-bold); }
+  .summary-body { color: var(--color-text); font-size: var(--fs-body); }
+  .summary-body p { margin-bottom: var(--spacing-paragraph); color: var(--color-text); font-size: var(--fs-body); }
+
+  .report-body { padding: var(--spacing-section) var(--margin-page); }
+  .report-body h2 {
+    font-size: var(--fs-h2); font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-heading);
+    margin-top: var(--spacing-section); margin-bottom: var(--spacing-paragraph);
+    text-align: left;
+  }
+  .report-body h3 {
+    font-size: var(--fs-h3); font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-heading);
+    margin-top: var(--spacing-block); margin-bottom: var(--spacing-paragraph);
+    text-align: left;
+  }
+  .report-body h4 {
+    font-size: var(--fs-body); font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-text);
+    margin-top: var(--spacing-block); margin-bottom: var(--spacing-paragraph);
+    text-align: left;
+  }
+  .report-body p { margin-bottom: var(--spacing-paragraph); color: var(--color-text); font-size: var(--fs-body); text-align: justify; }
+  .report-body ul, .report-body ol { margin: 0 0 var(--spacing-paragraph) var(--space-indent); }
+  .report-body li { margin-bottom: var(--space-xxs); color: var(--color-text); font-size: var(--fs-body); }
+  .report-body strong { font-weight: var(--fw-bold); color: var(--color-heading); }
+  .report-body blockquote {
+    margin: var(--spacing-paragraph) 0;
+    padding: var(--spacing-block);
+    border-left: var(--summary-border-width) solid var(--color-summary-border);
+    background: var(--color-summary-bg);
+    color: var(--color-text); font-size: var(--fs-body);
+  }
+  .report-body blockquote p { margin-bottom: 0; color: var(--color-text); font-size: var(--fs-body); }
+
+  table.content-table { width: 100%; border-collapse: collapse; margin-bottom: var(--spacing-block); }
+  table.content-table thead th {
+    background: var(--color-highlight); color: var(--color-heading);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    font-size: var(--fs-small); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+  }
+  table.content-table tbody td {
+    font-size: var(--fs-body); color: var(--color-text); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+    vertical-align: top;
+  }
+  table.content-table tbody tr:nth-child(even) td { background: var(--color-highlight); }
+  table.content-table caption {
+    caption-side: top; text-align: left;
+    font-size: var(--fs-small); color: var(--color-muted);
+    padding-bottom: var(--space-xs);
+  }
+
+  table.checklist-table { width: 100%; border-collapse: collapse; margin-bottom: var(--spacing-block); }
+  table.checklist-table thead th {
+    background: var(--color-primary); color: var(--color-bg);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    font-size: var(--fs-small); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+  }
+  table.checklist-table tbody td {
+    font-size: var(--fs-body); color: var(--color-text); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+    vertical-align: top;
+  }
+  table.checklist-table tbody td.check-id {
+    font-family: var(--typography-fontFamily-data); font-weight: var(--fw-bold);
+    color: var(--color-primary); white-space: nowrap;
+  }
+
+  table.kv-table { width: 100%; border-collapse: collapse; margin-bottom: var(--spacing-block); }
+  table.kv-table thead th {
+    background: var(--color-highlight); color: var(--color-heading);
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    font-size: var(--fs-small); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border);
+  }
+  table.kv-table tbody td {
+    font-size: var(--fs-body); color: var(--color-text); text-align: left;
+    padding: var(--space-sm) var(--space-lg); border: 1px solid var(--color-border); vertical-align: top;
+  }
+  table.kv-table tbody td.kv-key {
+    font-family: var(--ff-heading); font-weight: var(--fw-bold);
+    color: var(--color-heading); white-space: nowrap;
+  }
+
+  .note-emphasis { color: var(--color-text); font-weight: var(--fw-bold); }
+  .appendix { padding: var(--spacing-section) var(--margin-page); border-top: 1px solid var(--color-border); }
+  .appendix p { margin-bottom: var(--spacing-paragraph); font-size: var(--fs-body); color: var(--color-muted); }
+  </style>
+</head>
+<body>
+
+  <section role="cover" class="report-cover">
+    <p class="cover-category">内部汇报 · 执行标准</p>
+    <h1 class="cover-title">业务系统交接四步</h1>
+    <p class="cover-subtitle">执行标准与达标条件：把「跑通」变成可逐条核对的清单</p>
+    <div class="cover-meta">
+      <p>提交人：研发体系负责人（拟）</p>
+      <p>提交对象：凯哥</p>
+      <p>日期：2026年 10 月 7 日</p>
+      <p>文档性质：执行标准草案，供逐条核对使用</p>
+    </div>
+  </section>
+
+  <section role="body" class="report-body" data-page-restart="1">
+
+    <nav class="doc-toc" aria-label="文档目录">
+      <p class="toc-title">目录</p>
+      <ol class="toc-list">
+        <li><a href="#section-1">使用说明</a></li>
+        <li><a href="#section-2">总体节奏与阶段门禁</a></li>
+        <li><a href="#section-3">第一步：资料交接与系统全面摸底</a></li>
+        <li><a href="#section-4">第二步：现有需求摸排与优先级判断</a></li>
+        <li><a href="#section-5">第三步：工作量重排与进度对齐</a></li>
+        <li><a href="#section-6">第四步：突发需求试交接</a></li>
+        <li><a href="#section-7">整体达标条件（移交条件）</a></li>
+        <li><a href="#section-8">时间冲突提示</a></li>
+        <li><a href="#section-9">下一步</a></li>
+      </ol>
+    </nav>
+
+    <div class="executive-summary">
+      <div class="summary-header">
+        <h2>执行摘要</h2>
+      </div>
+      <div class="summary-body">
+        <p>本稿把「业务系统交接四步」拆成<strong>可执行动作</strong>与<strong>可判定条件</strong>两部分。核心原则是：每一步必须有输出，输出必须被认可，认可才能进下一步——没有输出的步骤等于没做。</p>
+        <p>全稿共设<strong>四条通用验收规则（G1–G4）</strong>、<strong>三步硬约束（C1–C3）</strong>，以及各步的编号化达标条件：第一步 S1-1~S1-6、第二步 S2-1~S2-6、第三步 S3-1~S3-7、第四步 S4-1~S4-5，另有整体移交条件 G-1~G-8。每条均配验证方式，可逐条打勾判定。</p>
+        <p>本稿的重点强化两处：一是<strong>技术难点分L1/L2/L3 三层</strong>，直接回应「有些大家觉得 OK 的实际上可能还是欠缺一点」；二是<strong>安全状况设一票否决</strong>，因该系统曾因MySQL 弱口令与端口暴露公网被入侵，加固后是否彻底修复目前不确定。</p>
+        <p>第七章提出与 10 月交付冲刺的时间冲突，并给出三个方案及各自的周期影响，供拍板。</p>
+      </div>
+    </div>
+
+    <main>
+
+      <h2 id="section-1">使用说明</h2>
+      <p>本章先明确全稿的验收规则与项目硬约束，后续每一步的达标条件均建立在此基础上。</p>
+
+      <h3>（一）本稿的定位</h3>
+      <p>本稿把「业务系统交接四步」拆成<strong>可执行动作</strong>与<strong>可判定条件</strong>两部分。</p>
+      <p>核心原则：<strong>每一步必须有输出，输出必须被认可，认可才能进下一步。</strong>没有输出的步骤等于没做。</p>
+
+      <h3>（二）通用验收规则</h3>
+      <p>以下四条规则适用于全部四步，任何一条不满足则该步不予通过。</p>
+
+      <table class="content-table">
+        <caption>表 1　通用验收规则（四步通用）</caption>
+        <thead>
+          <tr>
+            <th>规则号</th>
+            <th>规则内容</th>
+            <th>判定方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">G1</td>
+            <td><strong>有输出</strong>：每步结束时须有书面产出物，口头汇报不算</td>
+            <td>产出物文档存在且可查</td>
+          </tr>
+          <tr>
+            <td class="check-id">G2</td>
+            <td><strong>有评审</strong>：产出物须经老板（或指定人）确认后方可进入下一步</td>
+            <td>老板明确表态「可以进入下一步」</td>
+          </tr>
+          <tr>
+            <td class="check-id">G3</td>
+            <td><strong>有边界</strong>：每步开始前书面明确本步不做什么</td>
+            <td>范围清单书面确认</td>
+          </tr>
+          <tr>
+            <td class="check-id">G4</td>
+            <td><strong>可回退</strong>：任一步发现重大风险，立即上报并暂停，不硬推</td>
+            <td>上报记录 + 暂停决定</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（三）关键前提：三条硬约束</h3>
+      <p>以下三点是本项目区别于普通技术任务的特殊性，必须在执行标准中体现。</p>
+
+      <table class="content-table">
+        <caption>表 2　三条硬约束</caption>
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>约束</th>
+            <th>对执行标准的影响</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">C1</td>
+            <td><strong>系统是公司运转基本盘</strong>，一丝风险都不能出</td>
+            <td>所有步骤以「不影响生产」为前置条件</td>
+          </tr>
+          <tr>
+            <td class="check-id">C2</td>
+            <td><strong>代码质量历史欠账</strong>：系统由应届生接手、无架构师带、长期堆叠而成</td>
+            <td>允许「摸清现状」优先于「立即重构」</td>
+          </tr>
+          <tr>
+            <td class="check-id">C3</td>
+            <td><strong>数据部门是缓冲地带</strong>：业务部门只找数据部门要数据</td>
+            <td>交接过渡期必须与数据部门同步推进，不可单线推进</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-2">总体节奏与阶段门禁</h2>
+      <p>四步不是并列推进，而是有严格先后与阻断关系的链条。</p>
+
+      <h3>（一）阶段门禁</h3>
+      <p>四步的阶段门禁、核心产出与预估周期如下，附整体周期与阶段间硬门禁的说明。</p>
+
+      <table class="content-table">
+        <caption>表 3　四步阶段门禁与周期</caption>
+        <thead>
+          <tr>
+            <th>步骤</th>
+            <th>核心产出</th>
+            <th>门禁条件</th>
+            <th>预估周期</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>第一步</td>
+            <td>系统分析报告</td>
+            <td>报告获认可</td>
+            <td>3–4 周</td>
+          </tr>
+          <tr>
+            <td>第二步</td>
+            <td>需求台账 + 优先级判断</td>
+            <td>优先级获认可</td>
+            <td>2–3 周</td>
+          </tr>
+          <tr>
+            <td>第三步</td>
+            <td>工作量评估表 + 统一时间计划表</td>
+            <td>计划表获认可</td>
+            <td>2–3 周</td>
+          </tr>
+          <tr>
+            <td>第四步</td>
+            <td>试交接记录</td>
+            <td>连续 4 周无生产事故</td>
+            <td>持续</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>总周期：2–3 个月。</strong>与老板预估一致。</p>
+      <p><strong>第一步与第二步存在交叉</strong>，可部分并行。第一步摸底到 70% 时即可启动第二步，不必等报告完全定稿。</p>
+
+      <h3>（二）阶段间的硬门禁</h3>
+      <p><strong>未通过的门禁不得跨越。</strong>三条硬门禁如下。</p>
+      <ul>
+        <li>第一步报告未获认可 → 不得进入第三步（工作量评估依赖系统理解）</li>
+        <li>第二步优先级未获认可 → 不得进入第三步（工作量评估的前提是优先级确定）</li>
+        <li>第四步出现重大事故 → 全流程回退至第三步，重新评估</li>
+      </ul>
+
+      <h2 id="section-3">第一步：资料交接与系统全面摸底</h2>
+      <p>第一步的目标是把系统从「别人做的东西」变成「我能独立判断的东西」，本步不涉及任何代码修改。</p>
+
+      <h3>（一）目标与交付物</h3>
+      <p>目标是把系统从「别人做的东西」变成「我能独立判断的东西」。</p>
+
+      <table class="content-table">
+        <caption>表 4　第一步交付物清单</caption>
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>交付物</th>
+            <th>格式</th>
+            <th>责任人</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">D1.1</td>
+            <td>系统分析报告</td>
+            <td>文档</td>
+            <td>本人</td>
+          </tr>
+          <tr>
+            <td class="check-id">D1.2</td>
+            <td>本地可运行环境</td>
+            <td>环境</td>
+            <td>本人</td>
+          </tr>
+          <tr>
+            <td class="check-id">D1.3</td>
+            <td>脱敏测试数据包</td>
+            <td>数据包</td>
+            <td>数据部门配合</td>
+          </tr>
+          <tr>
+            <td class="check-id">D1.4</td>
+            <td>技术难点清单</td>
+            <td>文档</td>
+            <td>本人</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）执行动作 1：接收资料并本地跑通</h3>
+      <p>接收资料、部署环境、准备数据是本步最先要完成的动作，达标条件如下。</p>
+
+      <table class="content-table">
+        <caption>表 5　接收与跑通的达标要求</caption>
+        <thead>
+          <tr>
+            <th>项</th>
+            <th>要求</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>接收内容</td>
+            <td>需求文档、源代码、数据库结构、部署配置、第三方对接说明</td>
+          </tr>
+          <tr>
+            <td>环境部署</td>
+            <td>本地跑通；服务器要求可能不低，需提前评估</td>
+          </tr>
+          <tr>
+            <td>云端方案</td>
+            <td>可布一套云环境用于测试（本人已有云资源）</td>
+          </tr>
+          <tr>
+            <td>关键约束</td>
+            <td><strong>真实数据不得上云</strong>；测试环境与生产环境必须分离</td>
+          </tr>
+          <tr>
+            <td>数据要求</td>
+            <td>由数据部门提供脱敏数据或分批数据，用于跑通流程；不需全量全表，能跑起来即可</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>达标条件</strong>：</p>
+      <ul>
+        <li>本地环境成功运行，系统可正常访问</li>
+        <li>核心业务流程完整走通一遍（至少覆盖一条端到端主流程）</li>
+        <li>测试环境与生产环境物理或逻辑隔离，验证无数据串用</li>
+      </ul>
+
+      <h3>（三）执行动作 2：全面摸底并输出报告</h3>
+      <p>系统分析报告须包含以下七个板块，缺一不可。</p>
+
+      <table class="content-table">
+        <caption>表 6　系统分析报告七板块</caption>
+        <thead>
+          <tr>
+            <th>板块</th>
+            <th>内容</th>
+            <th>最低要求</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1. 架构总览</td>
+            <td>技术栈、模块划分、数据流、部署形态</td>
+            <td>能画出完整架构图</td>
+          </tr>
+          <tr>
+            <td>2. 系统完备性</td>
+            <td>哪些功能已实现、哪些是半成品、哪些是设计但未落地</td>
+            <td>逐模块列出，无遗漏</td>
+          </tr>
+          <tr>
+            <td>3. 缺陷清单</td>
+            <td>已知问题与新发现问题，含严重度分级</td>
+            <td>每项含复现路径</td>
+          </tr>
+          <tr>
+            <td>4. 技术难点清单</td>
+            <td>搞不定的技术问题、准确率不足的业务问题</td>
+            <td>见三层判定标准</td>
+          </tr>
+          <tr>
+            <td>5. 安全状况</td>
+            <td>端口暴露、账号权限、历史入侵痕迹</td>
+            <td>见专项要求</td>
+          </tr>
+          <tr>
+            <td>6. 迭代方向</td>
+            <td>技术层面的完善建议与优先级</td>
+            <td>区分「必须改」与「可延后」</td>
+          </tr>
+          <tr>
+            <td>7. 遗留问题</td>
+            <td>无法自行解决、需外部支持的问题</td>
+            <td>标注所需支持方</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（四）技术难点的三层判定标准</h3>
+      <p>这是本步最容易流于形式的环节。老板明确要求：<strong>有些大家觉得 OK 的，实际上可能还是欠缺一点；你们能发现的就交给他，发现不了的他能发现。</strong></p>
+      <p>因此技术难点清单必须区分三个层级，不可只报明显问题。</p>
+
+      <table class="content-table">
+        <caption>表 7　技术难点三层判定标准</caption>
+        <thead>
+          <tr>
+            <th>层级</th>
+            <th>定义</th>
+            <th>判定方法</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">L1 显性缺陷</td>
+            <td>功能不正常、报错、体验明显不对</td>
+            <td>正常测试即可发现</td>
+          </tr>
+          <tr>
+            <td class="check-id">L2 隐性质量问题</td>
+            <td>功能能用但准确率或性能不达标，业务方未察觉</td>
+            <td><strong>需主动构造测试用例验证</strong></td>
+          </tr>
+          <tr>
+            <td class="check-id">L3 架构性隐患</td>
+            <td>当前可用，但业务增长后必然出问题</td>
+            <td>需从架构与容量角度判断</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>硬性要求</strong>：</p>
+      <ul>
+        <li>L2 隐性质量问题<strong>必须主动排查</strong>，不得等业务方反馈。重点方向为 AI 识别类功能的准确率。</li>
+        <li>L3 架构性隐患<strong>必须列出容量水位判断</strong>，即「并发量到什么程度会出问题」。</li>
+      </ul>
+
+      <p><strong>L2 的量化要求（无阈值即无法判定）</strong>：每个 AI 识别类功能，须书面记录以下三项。</p>
+
+      <table class="content-table">
+        <caption>表 8　L2 量化记录要求</caption>
+        <thead>
+          <tr>
+            <th>记录项</th>
+            <th>要求</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>当前实测准确率</td>
+            <td>在脱敏测试集上实测得出，写明测试集规模</td>
+          </tr>
+          <tr>
+            <td>业务方期望值</td>
+            <td>由业务方明确给出</td>
+          </tr>
+          <tr>
+            <td>差距</td>
+            <td>两者之差，并判断是否构成「大家觉得 OK、实际欠缺」</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>无实测数据的项，一律直接标为 L2 待测</strong>，不得因「看起来能用」而放行。已知的图片识别有效通话判定问题即属此类——已更换多个 AI 工具未见改善，属典型 L2。</p>
+
+      <h3>（五）安全状况专项</h3>
+      <p>该系统曾因 <strong>MySQL root 密码未设置 + 端口暴露公网</strong>被入侵，数据被删除。虽事后请网安团队加固过，但<strong>是否已彻底修复目前不确定</strong>。因此第一步必须包含以下五项检查。</p>
+
+      <table class="content-table">
+        <caption>表 9　安全状况五项检查</caption>
+        <thead>
+          <tr>
+            <th>检查项</th>
+            <th>达标条件</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>数据库弱口令</td>
+            <td>root 及所有业务账号均无弱口令，密码策略可验证</td>
+          </tr>
+          <tr>
+            <td>端口暴露</td>
+            <td>数据库、后台管理端口不对公网暴露，验证方式为外部扫描结果</td>
+          </tr>
+          <tr>
+            <td>后台暴露面</td>
+            <td>已知后台地址全部修改默认口令</td>
+          </tr>
+          <tr>
+            <td>备份有效性</td>
+            <td>备份策略明确，且<strong>至少验证过一次可恢复</strong></td>
+          </tr>
+          <tr>
+            <td>加固复核</td>
+            <td>邀请网安团队复核历史加固项，出具结论</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>一票否决项</strong>：若安全状况无法确认，<strong>第一步不予通过</strong>。理由：交接后若因安全问题导致业务中断，将直接冲击公司基本盘。</p>
+
+      <h3>（六）第一步达标条件</h3>
+      <p>以下六条<strong>全部满足</strong>方可通过第一步。</p>
+
+      <table class="checklist-table">
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>达标条件</th>
+            <th>验证方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">S1-1</td>
+            <td>系统在本地/测试环境稳定运行，端到端主流程可走通</td>
+            <td>实机演示</td>
+          </tr>
+          <tr>
+            <td class="check-id">S1-2</td>
+            <td>系统分析报告七个板块齐全，无空缺</td>
+            <td>报告评审</td>
+          </tr>
+          <tr>
+            <td class="check-id">S1-3</td>
+            <td>技术难点清单含 L1/L2/L3 三层，L2 已主动排查</td>
+            <td>报告评审 + 用例清单</td>
+          </tr>
+          <tr>
+            <td class="check-id">S1-4</td>
+            <td>安全状况五项检查全部通过，含备份可恢复验证</td>
+            <td>报告评审 + 网安复核</td>
+          </tr>
+          <tr>
+            <td class="check-id">S1-5</td>
+            <td>遗留问题已列明并标注所需支持方</td>
+            <td>报告评审</td>
+          </tr>
+          <tr>
+            <td class="check-id">S1-6</td>
+            <td>老板明确认可报告，并同意进入下一步</td>
+            <td>书面或会议确认</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-4">第二步：现有需求摸排与优先级判断</h2>
+      <p>第一步解决「系统是什么」，第二步解决「接下来做什么」，两者可部分并行但不可跳过。</p>
+
+      <h3>（一）目标与交付物</h3>
+      <p>目标是把十几个需求从口头台账变成<strong>可判断、可排序的清单</strong>，并回答一个关键问题：他们现在排的优先级，对不对。</p>
+
+      <table class="content-table">
+        <caption>表 10　第二步交付物清单</caption>
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>交付物</th>
+            <th>格式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">D2.1</td>
+            <td>需求台账</td>
+            <td>表格</td>
+          </tr>
+          <tr>
+            <td class="check-id">D2.2</td>
+            <td>优先级评估意见</td>
+            <td>文档</td>
+          </tr>
+          <tr>
+            <td class="check-id">D2.3</td>
+            <td>10 月优先级调整建议</td>
+            <td>文档，供 10 月会议使用</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）执行动作 1：需求台账必备字段</h3>
+      <p>每个需求必须记录以下字段，<strong>缺项即为台账不合格</strong>。</p>
+
+      <table class="content-table">
+        <caption>表 11　需求台账九项必备字段</caption>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>需求名称</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>提出部门</td>
+            <td>财务 / 运营 / 销售 / 售后 / 其他</td>
+          </tr>
+          <tr>
+            <td>提出时间</td>
+            <td>用于判断紧急程度是否已过期</td>
+          </tr>
+          <tr>
+            <td>业务背景</td>
+            <td>为什么提这个需求</td>
+          </tr>
+          <tr>
+            <td>归属层级</td>
+            <td>已对接 / 未对接</td>
+          </tr>
+          <tr>
+            <td>业务方期望优先级</td>
+            <td>对方自己排的位置</td>
+          </tr>
+          <tr>
+            <td>技术评估复杂度</td>
+            <td>本人独立判断</td>
+          </tr>
+          <tr>
+            <td>建议优先级</td>
+            <td>本人判断</td>
+          </tr>
+          <tr>
+            <td>是否与现有需求冲突</td>
+            <td>关键项</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（三）执行动作 2：优先级判断</h3>
+      <p>判断分两步走：先认可，再调整。</p>
+      <p>老板与数据部门给出的判断依据是：优先级由业务情况决定，<strong>财务优先</strong>（涉及提成、奖金、各项指标，一动全盘数据都要改），然后运营与销售业务线，售后排最后。</p>
+
+      <p><strong>第一步：默认沿用现有优先级排序，不做无依据的推翻。</strong></p>
+      <ul>
+        <li>仅在有明确技术依据时提出调整建议，且必须书面写明理由</li>
+        <li>若认为某项优先级不当，先记录为「建议调整」，交 10 月会议由业务方与老板共同决定</li>
+      </ul>
+
+      <p><strong>第二步：技术视角必须给结论。</strong>不能只写「排期不合理」，需给出具体判断。</p>
+
+      <table class="content-table">
+        <caption>表 12　技术视角结论的达标写法</caption>
+        <thead>
+          <tr>
+            <th>判断类型</th>
+            <th>达标写法</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>优先级是否合理</td>
+            <td>合理 / 建议调整至 X 位，理由为……</td>
+          </tr>
+          <tr>
+            <td>排期是否合理</td>
+            <td>合理 / 偏长 / 偏短，建议调整为 X 天</td>
+          </tr>
+          <tr>
+            <td>技术阻塞点</td>
+            <td>无 / 有，阻塞原因为……</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（四）第二步达标条件</h3>
+      <p>以下六条全部满足方可通过第二步。</p>
+
+      <table class="checklist-table">
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>达标条件</th>
+            <th>验证方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">S2-1</td>
+            <td>十几个需求<strong>全部</strong>进入台账，无遗漏</td>
+            <td>台账与业务方核对一致</td>
+          </tr>
+          <tr>
+            <td class="check-id">S2-2</td>
+            <td>每条需求九个字段齐全</td>
+            <td>台账检查</td>
+          </tr>
+          <tr>
+            <td class="check-id">S2-3</td>
+            <td>每条需求都有「技术评估复杂度」结论，无「待定」</td>
+            <td>台账检查</td>
+          </tr>
+          <tr>
+            <td class="check-id">S2-4</td>
+            <td>每条需求都有建议优先级，或明确说明「沿用原优先级」</td>
+            <td>台账检查</td>
+          </tr>
+          <tr>
+            <td class="check-id">S2-5</td>
+            <td>建议调整的项均写明技术理由</td>
+            <td>文档评审</td>
+          </tr>
+          <tr>
+            <td class="check-id">S2-6</td>
+            <td>老板认可优先级结论，并同意进入下一步</td>
+            <td>会议确认</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-5">第三步：工作量重排与进度对齐</h2>
+      <p>本步的核心是把进度计划的主导权拿回来，用技术视角校准虚高的排期。</p>
+
+      <h3>（一）目标与交付物</h3>
+      <p>目标是把进度计划的主导权拿过来。老板指出：他们会给自己放很多水，明明只需要做一天，他评估了 5 天，你不知道；但是你现在不知道。</p>
+
+      <table class="content-table">
+        <caption>表 13　第三步交付物清单</caption>
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>交付物</th>
+            <th>格式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">D3.1</td>
+            <td>需求工作量评估表</td>
+            <td>表格</td>
+          </tr>
+          <tr>
+            <td class="check-id">D3.2</td>
+            <td>统一时间计划表</td>
+            <td>表格</td>
+          </tr>
+          <tr>
+            <td class="check-id">D3.3</td>
+            <td>重构优先级建议</td>
+            <td>文档</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）执行动作 1：逐项技术评估</h3>
+      <p>对第二步台账中的每一条需求，独立评估其真实技术工作量。四项要求如下。</p>
+
+      <table class="content-table">
+        <caption>表 14　工作量评估的四项要求</caption>
+        <thead>
+          <tr>
+            <th>要求</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>拆到任务粒度</td>
+            <td>一个需求拆为若干子任务，各子任务单独估时</td>
+          </tr>
+          <tr>
+            <td>区分工作量与排期</td>
+            <td><strong>工作量</strong>＝纯开发时间；<strong>排期</strong>＝含等待、沟通、测试的日历时间</td>
+          </tr>
+          <tr>
+            <td>标注不确定性</td>
+            <td>高不确定性项单独列出并预留缓冲</td>
+          </tr>
+          <tr>
+            <td>依赖关系明确</td>
+            <td>标出哪些需求依赖其他需求完成</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>关键区分</strong>：老板指出的问题正是把工作量与排期混为一谈。若技术活 2 天但因业务方确认流程耗时 5 天，<strong>排期可以标 5 天，但工作量必须标 2 天</strong>。混着算就看不出虚高在哪。</p>
+
+      <h3>（三）执行动作 2：形成饱和的时间计划表</h3>
+      <p>时间计划表须满足四项要求。</p>
+
+      <table class="content-table">
+        <caption>表 15　时间计划表四项要求</caption>
+        <thead>
+          <tr>
+            <th>要求</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>按优先级排布</td>
+            <td>依据第二步确认的优先级</td>
+          </tr>
+          <tr>
+            <td>排满可用产能</td>
+            <td>计入日常事务、沟通、会议占用的时间，不按满负荷排</td>
+          </tr>
+          <tr>
+            <td>留出机动</td>
+            <td>整体保留 20% 机动余量</td>
+          </tr>
+          <tr>
+            <td>明确交付节点</td>
+            <td>每个需求有明确的验收日期</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>产能基线参考</strong>：老板指出「开发不加班就说不过去」，说明当前产能未被充分使用。但<strong>不作为排期依据</strong>——排期按实际可投入时间算，不按理论上限算。</p>
+
+      <h3>（四）执行动作 3：重构优先级判断</h3>
+      <p>系统重构的工作量很大，优先级应排在需求之后。判定依据是：并发量不大，代码写得烂一点暂时没问题；<strong>先保证服务跑得起来</strong>。只有并发量上去之后，代码不合理才会出问题。</p>
+
+      <table class="content-table">
+        <caption>表 16　重构优先级判定标准</caption>
+        <thead>
+          <tr>
+            <th>条件</th>
+            <th>重构优先级</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>当前并发量远低于容量上限</td>
+            <td>靠后，不占用本阶段资源</td>
+          </tr>
+          <tr>
+            <td>并发量接近容量上限或已有增长趋势</td>
+            <td>提前，与需求并行推进</td>
+          </tr>
+          <tr>
+            <td>出现明确性能瓶颈</td>
+            <td>立即启动</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>建议</strong>：本阶段重构不排入主计划，仅在计划表中预留「架构优化」条目并标注触发条件，待后续按实际业务增长情况决定何时启动。</p>
+
+      <h3>（五）第三步达标条件</h3>
+      <p>以下七条全部满足方可通过第三步。</p>
+
+      <table class="checklist-table">
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>达标条件</th>
+            <th>验证方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">S3-1</td>
+            <td>每条需求均有独立的技术工作量评估，无「待评估」</td>
+            <td>评估表检查</td>
+          </tr>
+          <tr>
+            <td class="check-id">S3-2</td>
+            <td>工作量与排期分列，不混算</td>
+            <td>评估表结构检查</td>
+          </tr>
+          <tr>
+            <td class="check-id">S3-3</td>
+            <td>高不确定性项已标注并预留缓冲</td>
+            <td>评估表检查</td>
+          </tr>
+          <tr>
+            <td class="check-id">S3-4</td>
+            <td>时间计划表覆盖全部需求，无遗漏</td>
+            <td>计划表与台账核对</td>
+          </tr>
+          <tr>
+            <td class="check-id">S3-5</td>
+            <td>计划表含 20% 机动余量</td>
+            <td>计划表检查</td>
+          </tr>
+          <tr>
+            <td class="check-id">S3-6</td>
+            <td>重构已明确不进入本阶段主计划，并写明触发条件</td>
+            <td>文档检查</td>
+          </tr>
+          <tr>
+            <td class="check-id">S3-7</td>
+            <td>老板认可计划表</td>
+            <td>会议确认</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-6">第四步：突发需求试交接</h2>
+      <p>前三步是「我懂了」，第四步是「我能干」，本步在实际压力下验证前三步成果是否扎实。</p>
+
+      <h3>（一）目标</h3>
+      <p>前三步是「我懂了」，第四步是「我能干」。这一步的核心不是交接动作本身，而是<strong>在实际压力下验证前三步的成果是否扎实</strong>。</p>
+
+      <h3>（二）执行动作</h3>
+      <p>试交接包含三个动作：让对方先接、建立周例会机制、建立日常沟通机制。</p>
+
+      <table class="content-table">
+        <caption>表 17　试交接三项执行动作</caption>
+        <thead>
+          <tr>
+            <th>动作</th>
+            <th>要求</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>让对方先接</td>
+            <td>突发需求由对方先对接、先行处理；本部门需求逐步开始与对方对接；我的角色是二线把关，不直接抢做</td>
+          </tr>
+          <tr>
+            <td>周例会机制</td>
+            <td><strong>以周为单位召开</strong>，围绕系统所有工作事项的分析总结与计划安排，由我主持，输出会议纪要 + 下周计划</td>
+          </tr>
+          <tr>
+            <td>日常沟通机制</td>
+            <td>与数据部门两人先打通；需求对接未来逐步转由我承接，但数据部门仍专注数据本身；日常沟通保持透明</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>验证重点</strong>：当需求真正落到对方手上时，暴露的问题是否都在我的可控范围内。</p>
+
+      <h3>（三）第四步达标条件</h3>
+      <p>以下五条全部满足方可通过第四步。</p>
+
+      <table class="checklist-table">
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>达标条件</th>
+            <th>验证方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">S4-1</td>
+            <td>至少完成 3 次突发需求试交接</td>
+            <td>交接记录</td>
+          </tr>
+          <tr>
+            <td class="check-id">S4-2</td>
+            <td>试交接期间无生产事故</td>
+            <td>事故记录</td>
+          </tr>
+          <tr>
+            <td class="check-id">S4-3</td>
+            <td>周例会机制已建立并连续运行 4 周以上</td>
+            <td>会议纪要</td>
+          </tr>
+          <tr>
+            <td class="check-id">S4-4</td>
+            <td>对方可独立完成需求对接，我仅做把关</td>
+            <td>交接记录</td>
+          </tr>
+          <tr>
+            <td class="check-id">S4-5</td>
+            <td>我对系统的判断被验证正确，无「问三不知」情况</td>
+            <td>试交接反馈</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>一票否决</strong>：试交接期间出现生产事故，立即回退至第三步，重新评估后再继续。</p>
+
+      <h3>（四）第四步收口标准</h3>
+      <p>第四步不设固定周期，以连续稳定运行为准。收口需同时满足以下三条。</p>
+
+      <table class="checklist-table">
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>收口条件</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">E-1</td>
+            <td>连续 4 周无生产事故</td>
+          </tr>
+          <tr>
+            <td class="check-id">E-2</td>
+            <td>连续 4 次周例会正常召开并有纪要</td>
+          </tr>
+          <tr>
+            <td class="check-id">E-3</td>
+            <td>完成至少 3 次突发需求试交接，对方可独立完成对接</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>三项同时满足，即可向老板申请整体移交，进入 G-1 至 G-8 的整体达标条件核对。</p>
+
+      <h2 id="section-7">整体达标条件（移交条件）</h2>
+      <p>八项条件全部满足才可申请整体移交，宁可延期，不带风险接手。</p>
+
+      <h3>（一）整体达标条件</h3>
+      <p>以下条件<strong>全部满足</strong>，才可向老板申请整体移交。</p>
+
+      <table class="checklist-table">
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>条件</th>
+            <th>对应步骤</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="check-id">G-1</td>
+            <td>系统分析报告获认可，技术难点清单含三层</td>
+            <td>第一步</td>
+          </tr>
+          <tr>
+            <td class="check-id">G-2</td>
+            <td>需求台账完整，优先级获认可</td>
+            <td>第二步</td>
+          </tr>
+          <tr>
+            <td class="check-id">G-3</td>
+            <td>工作量评估与时间计划表获认可</td>
+            <td>第三步</td>
+          </tr>
+          <tr>
+            <td class="check-id">G-4</td>
+            <td>试交接无重大事故，周例会机制运行正常</td>
+            <td>第四步</td>
+          </tr>
+          <tr>
+            <td class="check-id">G-5</td>
+            <td>与数据部门对接顺畅，沟通机制明确</td>
+            <td>全程</td>
+          </tr>
+          <tr>
+            <td class="check-id">G-6</td>
+            <td>安全状况确认无遗留风险</td>
+            <td>第一步</td>
+          </tr>
+          <tr>
+            <td class="check-id">G-7</td>
+            <td>组织与汇报关系已明确（向谁汇报、需求通道在哪）</td>
+            <td>需老板拍板</td>
+          </tr>
+          <tr>
+            <td class="check-id">G-8</td>
+            <td>部门位置与周会安排已确定</td>
+            <td>需老板拍板</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）老板的底线</h3>
+      <blockquote>
+        <p>但凡有风险那就不交。我要保证整个系统它的低风险的交接、丝滑的交接。</p>
+      </blockquote>
+      <p>因此 <strong>G-1 至 G-8 任一未满足，即不申请移交</strong>。宁可延期，不带风险接手。</p>
+
+      <h3>（三）移交后的持续要求</h3>
+      <p>整体移交不等于结束。以下为移交后必须持续做的事。</p>
+
+      <table class="content-table">
+        <caption>表 18　移交后持续要求</caption>
+        <thead>
+          <tr>
+            <th>项</th>
+            <th>要求</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>周例会</td>
+            <td>以周为单位持续召开，不中断</td>
+          </tr>
+          <tr>
+            <td>风险管理</td>
+            <td>系统与数据是公司基本盘，风险需持续暴露而非累积</td>
+          </tr>
+          <tr>
+            <td>需求承接</td>
+            <td>业务部门需求最终由我承接（数据部门作为缓冲）</td>
+          </tr>
+          <tr>
+            <td>技术难点</td>
+            <td>持续推进，不因已移交而搁置</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="section-8">时间冲突提示（需老板协调）</h2>
+      <p>本项目与 10 月交付冲刺在时间上重叠，需老板协调处理方案。</p>
+
+      <h3>（一）冲突点</h3>
+      <p>本人当前同时承担 10 月交付冲刺（6 项硬约束、100 分、截止 10/15–10/31）。本项目第一、二步恰好与冲刺期重叠。</p>
+
+      <table class="content-table">
+        <caption>表 19　与 10 月冲刺的时间冲突</caption>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>本项目需要</th>
+            <th>10月冲刺需要</th>
+            <th>冲突程度</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>10 月上旬</td>
+            <td>第一步资料接收与本地跑通</td>
+            <td>FAQ 引擎攻坚（35 分）</td>
+            <td>高</td>
+          </tr>
+          <tr>
+            <td>10 月中旬</td>
+            <td>第一步摸底报告</td>
+            <td>医疗验收 + FAQ 交付</td>
+            <td>高</td>
+          </tr>
+          <tr>
+            <td>10 月下旬</td>
+            <td>第二步需求摸排</td>
+            <td>剩余模块交付</td>
+            <td>中</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>（二）三个方案</h3>
+      <p>以下三个方案供选择，各方案的周期影响已量化。</p>
+
+      <table class="content-table">
+        <caption>表 20　三个方案及其周期影响</caption>
+        <thead>
+          <tr>
+            <th>方案</th>
+            <th>做法</th>
+            <th>代价与周期影响</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A</td>
+            <td>冲刺期全力冲交付，交接工作全部顺延至 11 月</td>
+            <td>项目周期由 2–3 个月延至 <strong>3–4 个月</strong>（11 月起算，跨年）</td>
+          </tr>
+          <tr>
+            <td>B</td>
+            <td>交接压缩为「接收资料 + 本地跑通」，摸底报告延至 11 月</td>
+            <td>周期约 <strong>3 个月</strong>（11 月起算），前置准备不丢</td>
+          </tr>
+          <tr>
+            <td>C</td>
+            <td>每日划出固定时段（如上午）处理交接</td>
+            <td>周期维持 <strong>2–3 个月</strong>可保，但冲刺期精力被分薄，两边风险都升高</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>倾向建议方案 B</strong>：接收资料与本地跑通是低强度工作，可与冲刺并行且几乎不冲突；摸底报告需要连续深度时间，延至 11 月更稳妥。</p>
+      <p><strong>需老板明确的是</strong>：若选方案 B 或 C，本项目起点后移，整个 2–3 个月周期相应顺延，请确认是否可接受。</p>
+
+      <h2 id="section-9">下一步</h2>
+
+      <table class="content-table">
+        <caption>表 21　下一步行动</caption>
+        <thead>
+          <tr>
+            <th>序号</th>
+            <th>事项</th>
+            <th>时限</th>
+            <th>责任方</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>接收代码与需求文档（钉钉发送）</td>
+            <td>明日（10/8）上午</td>
+            <td>数据部门</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>提交脱敏测试数据包</td>
+            <td>与资料同步</td>
+            <td>数据部门</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>业务紧急技术难点先行说明</td>
+            <td>明日（10/8）上午</td>
+            <td>数据部门</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>本地/云环境搭建并跑通系统</td>
+            <td>10/8 起</td>
+            <td>本人</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>优先处理图片识别准确率问题</td>
+            <td>10/8 起</td>
+            <td>本人</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td>确认第一至第四步的验收标准</td>
+            <td>本稿确认后</td>
+            <td>老板</td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td>确认时间冲突的处理方案</td>
+            <td>本稿确认后</td>
+            <td>老板</td>
+          </tr>
+        </tbody>
+      </table>
+
+    </main>
+
+    <div class="appendix">
+      <p>本稿为执行标准草案，逐条可核对。请确认后，按标准推进第一步。</p>
+    </div>
+
+  </section>
+</body>
+</html>
