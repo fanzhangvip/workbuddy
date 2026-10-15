@@ -106,6 +106,18 @@ async def lifespan(app: FastAPI):
             print(f"[app] is_current 自愈：{r}")
     except Exception as e:                      # noqa: BLE001  自愈失败不该拦住启动
         print(f"[app] is_current 自愈失败（不影响启动）：{e}")
+    # 外循环恢复（修硬伤 3）：扫出心跳超时的僵尸任务并**交出检查点**。
+    # 刻意放在启动路径上：进程崩溃来不及改状态时，只有启动时才有机会发现
+    # —— `is_running()` 的"只回收不恢复"正是改造前的缺口。
+    try:
+        import task_runtime
+        rec = task_runtime.recover_stale()
+        if rec.get("recovered"):
+            ids = [r["task_id"] for r in rec["resumable"]]
+            print(f"[app] 僵尸任务回收 {rec['recovered']} 个；可续跑：{ids}"
+                  f"（POST /api/scoring/tasks/{{id}}/resume 或 task_runtime.resume()）")
+    except Exception as e:                      # noqa: BLE001  恢复失败不该拦住启动
+        print(f"[app] 僵尸任务回收失败（不影响启动）：{e}")
     scheduler.start()
     print(security.startup_report())
     # Schema 漂移自检（评审 P1-3）：DDL 曾散在三处，「老库缺列」只有跑到那行才暴露。

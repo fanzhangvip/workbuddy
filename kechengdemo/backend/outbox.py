@@ -20,12 +20,16 @@
     调用一次微伴接口；这比「永久丢失」可接受得多，且 ``score_writeback`` 不会
     产生重复行。卡在 ``sending`` 超过 ``STUCK_SECONDS`` 的行会在下次 drain 被回收。
 """
+import random
 import time
 
 import db
 
 BACKOFF_BASE = 30           # 秒；首次失败后的等待
 BACKOFF_CAP = 3600          # 秒；退避上限
+#: 退避抖动幅度（±30%）。多个待回写任务同时失败时，若退避时长完全相同，
+#: 它们会在同一时刻集体重试 → 把微伴接口再打一次。加抖动把重试摊开。
+BACKOFF_JITTER = 0.30
 DEFAULT_MAX_ATTEMPTS = 8    # 超过即转 dead（终态，待人工）
 STUCK_SECONDS = 600         # sending 超过此时长视为「投递中断」，回收重试
 OFF_DEFER_SECONDS = 600     # 回写被关闭时，任务延后这么久再看（不丢，不刷屏）
@@ -36,8 +40,13 @@ def _json(value):
 
 
 def _delay(attempts: int) -> int:
-    """第 attempts 次失败后的等待秒数（指数退避 + 上限）。"""
-    return int(min(BACKOFF_BASE * (2 ** max(0, attempts - 1)), BACKOFF_CAP))
+    """第 attempts 次失败后的等待秒数（指数退避 + 上限 + **±30% 抖动**）。
+
+    抖动不会破坏「退避生效」这一不变量：最小值为 ``BACKOFF_BASE × 0.7``，
+    仍严格大于 0（`test_outbox_drain` 断言 `next_attempt_at > updated_at`）。
+    """
+    raw = min(BACKOFF_BASE * (2 ** max(0, attempts - 1)), BACKOFF_CAP)
+    return max(1, int(raw * random.uniform(1.0 - BACKOFF_JITTER, 1.0 + BACKOFF_JITTER)))
 
 
 # ============================================================ 入队（调用方事务内）
@@ -210,6 +219,27 @@ def _defer(conn, row, seconds: int, note: str) -> None:
         (note, int(seconds), row["outbox_id"]))
 
 
+def _policy_hold(row) -> bool:
+    """该评估是否被 Policy 判定为「**不能自动投递**」（需确认 / 需人工）。
+
+    返回 True 表示：保持 pending 等待人工，**不要投递**。
+
+    读的是 `customer_intent_assessment.policy_action` —— 与同步路径同一个判据来源，
+    避免"同步一套、异步另一套"的两套真相。
+    查不到（历史数据 / 列未写）时返回 False：**宁可照旧投递，也不要因为查不到就把
+    待回写任务永久卡住**（这正是 G6 要避免的"永久丢失"的另一种形态）。
+    """
+    try:
+        import policy
+        pa = (db.query_one(
+            "SELECT policy_action FROM customer_intent_assessment WHERE assessment_id=%s",
+            (row["assessment_id"],)) or {}).get("policy_action")
+        return bool(pa) and pa != policy.AUTO
+    except Exception as e:                      # noqa: BLE001
+        print(f"[outbox] 读取策略判定失败（按可投递处理）：{e}")
+        return False
+
+
 def drain(limit: int = 50) -> dict:
     """排空到期任务。**实时**读取回写模式作为安全闸门。
 
@@ -243,6 +273,19 @@ def drain(limit: int = 50) -> dict:
                 _record(conn, row, "dry_run", True, int(row["attempts"]),
                         errmsg="演练模式：仅记录，未真实写入")
             stats["skipped"] += 1
+            continue
+
+        # --- Policy 闸门（硬伤 4）：**必须和同步路径用同一把闸** ---
+        # 目的：`_writeback` 里拦住"需确认/需人工"的评估，但 drain 是**另一条**投递路径；
+        # 只拦同步不拦异步 = 策略是个摆设（自欺程度比没有更糟）。
+        # 处置同 `off`：**延后而不是作废**（保持 pending，等人工确认后仍可投递），
+        # 这样 G6「回写不会永久丢失」的不变量依然成立。
+        if _policy_hold(row):
+            with db.tx() as conn:
+                _defer(conn, row, OFF_DEFER_SECONDS,
+                       "策略判定为需人工确认，暂缓投递（未丢弃）")
+            stats["deferred"] += 1
+            stats["policy_hold"] = stats.get("policy_hold", 0) + 1
             continue
 
         # --- live：真实投递（事务外） ---

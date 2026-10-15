@@ -30,6 +30,7 @@
 直接用它即可，不必各自复制重试逻辑。
 """
 import json
+import random
 import time
 import urllib.error
 import urllib.parse
@@ -40,6 +41,39 @@ DEFAULT_TIMEOUT = 30
 
 #: 可重试的 HTTP 状态码：408 超时 / 429 限流 / 5xx 服务端
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
+
+#: 退避抖动幅度（±30%）。文章 B：多个实例同时失败 → 若退避时间完全相同，
+#: 它们会在同一时刻集体重试，给下游造成**二次冲击**（限流场景尤其明显）。
+#: 加抖动把重试打散，代价只是「最坏情况多等 30%」。
+JITTER_RATIO = 0.30
+
+#: 单次退避上限（秒）：别让一次重试把批处理卡住分钟级
+BACKOFF_CAP_SECONDS = 30.0
+
+#: 遵循服务端 `Retry-After` 的等待上限（秒），与 llm.py 保持一致的口径
+RETRY_AFTER_CAP_SECONDS = 30.0
+
+
+def backoff_seconds(attempt: int, base: float = 1.2) -> float:
+    """第 ``attempt`` 次（0 起）重试前应等多久：``base × 2^attempt`` + **±30% 抖动**，带上限。
+
+    纯函数、可注入随机源由调用方决定（这里直接用 `random`，测试断言区间即可）。
+    """
+    raw = min(float(base) * (2 ** max(0, int(attempt))), BACKOFF_CAP_SECONDS)
+    return max(0.0, raw * random.uniform(1.0 - JITTER_RATIO, 1.0 + JITTER_RATIO))
+
+
+def parse_retry_after(value) -> float | None:
+    """解析 ``Retry-After``（仅 delta-seconds 形式）→ 秒数，带上限；解析不了返回 None。
+
+    HTTP-date 形式不解析：**拿不准就不要假装拿准**，返回 None 让上层退回自己的退避。
+    """
+    if value is None:
+        return None
+    try:
+        return min(max(float(str(value).strip()), 0.0), RETRY_AFTER_CAP_SECONDS)
+    except (TypeError, ValueError):
+        return None
 
 #: 进程内 metrics（键 → 计数）。纯内存，不落库；由上层按需取走写进 scoring_run。
 _METRICS = {}
@@ -62,11 +96,13 @@ class HttpFailure(Exception):
     """统一失败类型。``retryable`` 告诉调用方「值得再试一次吗」。"""
 
     def __init__(self, message: str, *, retryable: bool = False, status: int = None,
-                 body: str = ""):
+                 body: str = "", retry_after: float = None):
         super().__init__(message)
         self.retryable = retryable
         self.status = status
         self.body = body
+        #: 服务端通过 `Retry-After` 告知的等待秒数（None = 没给 / 解析不了）
+        self.retry_after = retry_after
 
 
 def request_json(method: str, url: str, *, params: dict = None, body: dict = None,
@@ -112,7 +148,10 @@ def request_json(method: str, url: str, *, params: dict = None, body: dict = Non
         except urllib.error.HTTPError as e:
             retryable = e.code in RETRYABLE_STATUS
             last = HttpFailure(f"HTTP {e.code} {e.reason}", retryable=retryable,
-                               status=e.code)
+                               status=e.code,
+                               retry_after=parse_retry_after(
+                                   (e.headers or {}).get("Retry-After")
+                                   if e.headers else None))
             if not retryable:
                 _inc(f"fail.{tag}")
                 raise last from e
@@ -122,9 +161,13 @@ def request_json(method: str, url: str, *, params: dict = None, body: dict = Non
             if not e.retryable:
                 raise
             last = e
-        # 退避（指数）：1.2s → 2.4s …
+        # 退避：① 服务端给了 Retry-After 就听它的（已带上限）
+        #       ② 否则指数退避 + ±30% 抖动（把并发重试打散，避免二次冲击）
         if i < attempts - 1:
-            time.sleep(backoff * (2 ** i))
+            wait = getattr(last, "retry_after", None)
+            if wait is None:
+                wait = backoff_seconds(i, backoff)
+            time.sleep(wait)
     _inc(f"fail.{tag}")
     raise last or HttpFailure("未知失败")
 

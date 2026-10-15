@@ -42,6 +42,7 @@ import weiban                 # noqa: E402
 RUN_ID = 990000001
 _MODE_KEY = "score_writeback_mode"
 _ORIG_MODE = None
+_ORIG_DECIDE = None
 PASSED, FAILED = [], []
 
 
@@ -159,6 +160,16 @@ def main():
         cleanup(cand["staff_id"], cand["session_id"])
         db.set_setting(_MODE_KEY, "live")          # 触发入队
         analyze.analyze = stub_analyze             # 不真调模型
+        # Policy 层打桩（硬伤 4 引入）：本测试验的是 **outbox 机制**（G6 不丢），
+        # 与"置信度够不够自动写"无关。不打桩的话，Policy 判定为 confirm/human
+        # 会先拦住同步投递 → outbox 停在 pending，测试就测不到它本意要测的路径。
+        # 这与本文件既有的"打桩 analyze / 打桩微伴接口"是同一手法。
+        import policy
+        global _ORIG_DECIDE
+        _ORIG_DECIDE = policy.decide
+        policy.decide = lambda **kw: {"action": policy.AUTO,
+                                      "action_reasons": ["__test_stub__"],
+                                      "thresholds": {}}
         weiban.add_customer_score = lambda *a, **kw: (_ for _ in ()).throw(
             RuntimeError("HTTP 503：微伴暂不可用"))  # 打桩 5xx
 
@@ -210,6 +221,9 @@ def main():
               str([x["status"] for x in wb2]))
     finally:
         cleanup(cand["staff_id"], cand["session_id"])
+        if _ORIG_DECIDE is not None:            # 还原 Policy 判定的打桩
+            import policy
+            policy.decide = _ORIG_DECIDE
         if _ORIG_MODE is None:
             db.execute("DELETE FROM app_setting WHERE key=%s", (_MODE_KEY,))
         else:

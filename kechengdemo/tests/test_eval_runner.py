@@ -343,7 +343,26 @@ def test_prefill():
                        "note": "复核无误"})
         row2 = db.query_one("SELECT prefilled, annotator FROM eval_case WHERE case_id=%s", (cid,))
         check("★ 人工保存后 prefilled=false（这才算金标准）",
-              row2["prefilled"] is False and row2["annotator"] == "张三", str(row2))
+              row2["prefilled"] is False, str(row2))
+        # ⚠️ 评审 P0-2 之后行为**有意变更**：`annotator` 由**服务端从凭据推导**，
+        # 不再采信请求体里的值（否则可以伪造「这条是谁标注的」）。
+        # 因此这里断言的是「等于服务端主体」而不是「等于入参 张三」——
+        # 客户端自报值只允许进审计 detail 的 `reported_actor`（见下一段断言）。
+        import security as _sec
+        check("★ annotator 由服务端推导（不采信请求体）",
+              row2["annotator"] == _sec.actor(), f"{row2['annotator']} vs {_sec.actor()}")
+        check("★ 客户端自报值**不**进入 annotator 字段（旧契约已废弃，勿改回）",
+              row2["annotator"] != "张三", str(row2))
+        _au = db.query_one("SELECT detail FROM audit_log WHERE action='eval_annotate' "
+                           "AND target=%s ORDER BY id DESC LIMIT 1", (str(cid),))
+        check("★ 自报值降级进审计 reported_actor（留痕但标记不可信）",
+              bool(_au) and (_au["detail"] or {}).get("reported_actor") == "张三",
+              str(_au and _au["detail"]))
+        _au = db.query_one("SELECT detail FROM audit_log WHERE action='eval_annotate' "
+                           "AND target=%s ORDER BY id DESC LIMIT 1", (str(cid),))
+        check("★ 自报值降级进审计 reported_actor（留痕但标记不可信）",
+              bool(_au) and (_au["detail"] or {}).get("reported_actor") == "张三",
+              str(_au and _au["detail"]))
         check("人工确认后被跑分取到",
               any(c["case_id"] == cid for c in er._cases(_KIND, 0)))
     finally:

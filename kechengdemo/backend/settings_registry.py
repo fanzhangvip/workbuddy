@@ -88,6 +88,13 @@ SETTINGS: tuple = (
     Setting("session_max_failures", "SESSION_MAX_FAILURES", INT, 3, "llm",
             "单会话连续失败多少次后转人工（修 G5）"),
 
+    # ---------------- 长任务互斥（进程被杀后不锁死系统） ----------------
+    Setting("job_heartbeat_stale_minutes", "JOB_HEARTBEAT_STALE_MINUTES", INT, 15, "llm",
+            "长任务心跳判死阈值（分钟）：心跳停这么久 = 进程已死 → 判僵尸并放行。"
+            "**必须大于单会话最坏耗时**，否则会把活任务误判为死"),
+    Setting("scoring_stale_minutes", "SCORING_STALE_MINUTES", INT, 240, "llm",
+            "二级兜底（分钟）：running 超过这么久一律判僵尸（兼容无心跳的老行）"),
+
     # ---------------- 回写（写外部系统） ----------------
     Setting("writeback_delta_mode", "WRITEBACK_DELTA_MODE", BOOL, True, "writeback",
             "微伴评分为累计语义 → 只写差值。**开 live 前不要关**", risk="high"),

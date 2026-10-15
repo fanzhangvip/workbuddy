@@ -11,6 +11,9 @@ import scheduler
 import scoring_service as ss
 import security
 import settings_registry
+import audit
+import policy
+import task_runtime
 from scoring_service import service
 
 import analyze                       # noqa: E402  提示词/契约版本常量
@@ -510,3 +513,149 @@ def _audit_setting(key: str, old, new) -> None:
                                 "new": None if new is None else str(new)})))
     except Exception as e:                      # noqa: BLE001
         print(f"[settings] 写 audit_log 失败（不影响配置）：{e}")
+
+
+# ============================================================================
+# 生产化加固：任务运行时 / 审批 / 工具审计 / 策略分流（硬伤 3·4·5）
+#   —— 这些能力**必须有接口**，否则就是"写好了但没接线"，
+#      而那正是代码评审里点名的反模式（看代码的人以为防住了，实际没生效）。
+# ============================================================================
+
+@router.get("/tasks")
+def list_tasks(status: str = "", kind: str = "", limit: int = 30):
+    """任务列表（统一状态机视图：进度 / 检查点 / 预算消耗）。"""
+    cond, params = ["1=1"], {}
+    if status:
+        cond.append("status = %(status)s")
+        params["status"] = status
+    if kind:
+        cond.append("kind = %(kind)s")
+        params["kind"] = kind
+    params["limit"] = max(1, min(int(limit or 30), 200))
+    items = db.query(
+        f"""SELECT task_id, kind, status, actor_id, trigger_src, priority,
+                   budget_calls, cost_calls, cost_tokens, deadline_at,
+                   last_step_seq, progress, partial_reason, error_message,
+                   resumed_from, heartbeat_at, created_at, started_at, finished_at
+              FROM task WHERE {' AND '.join(cond)}
+             ORDER BY task_id DESC LIMIT %(limit)s""", params)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/tasks/stats")
+def task_stats(days: int = 30):
+    """任务运行时观测：状态分布 / 待审批 / 步骤成败 / 允许的状态迁移表。
+
+    ⚠️ 必须声明在 `/tasks/{task_id}` **之前**：FastAPI 按声明顺序匹配，
+    否则 "stats" 会被当成 `task_id` 去转 int → 422。
+    """
+    return task_runtime.stats(days=days)
+
+
+@router.get("/tasks/{task_id}")
+def task_detail(task_id: int, steps: int = 50):
+    """任务详情 + 步骤（检查点）明细 —— 回答「走到哪一步、下一步做什么」。"""
+    t = task_runtime.get(task_id)
+    if not t:
+        return {"ok": False, "reason": f"任务 {task_id} 不存在"}
+    rows = db.query(
+        """SELECT seq, name, status, output_ref, next_step, attempts,
+                  error_class, error_message, started_at, finished_at
+             FROM task_step WHERE task_id=%s ORDER BY seq DESC LIMIT %s""",
+        (task_id, max(1, min(int(steps or 50), 500))))
+    pend = db.query(
+        """SELECT request_id, tool_name, params_redacted, status, created_at
+             FROM approval_request WHERE task_id=%s ORDER BY request_id DESC""",
+        (task_id,))
+    return {"task": t, "steps": rows, "approvals": pend}
+
+
+@router.post("/tasks/{task_id}/resume")
+def resume_task(task_id: int):
+    """从检查点**新建**任务续跑（源任务历史不变）。
+
+    返回里的 `done_steps` 是已成功的步骤名 —— 调用方据此跳过已完成的会话，
+    这正是「续跑而不是从头再来」的落地。
+    """
+    return idempotency.run_once(None, "task.resume",
+                                lambda: task_runtime.resume(task_id))
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: int, payload: dict = Body(default={})):
+    """取消任务（终态，不可迁出）。"""
+    try:
+        task_runtime.transition(task_id, "cancelled",
+                                reason=payload.get("reason") or "人工取消")
+        return {"ok": True, "task_id": task_id, "status": "cancelled"}
+    except task_runtime.TransitionError as e:
+        return {"ok": False, "reason": str(e)}
+
+
+@router.get("/approvals")
+def list_approvals(status: str = "pending", limit: int = 50):
+    """待审批列表（高风险动作被物理阻塞在这里，等人工签字）。"""
+    rows = db.query(
+        """SELECT request_id, task_id, step_id, tool_name, params_redacted,
+                  requested_by, status, decided_by, note, created_at, expires_at
+             FROM approval_request
+            WHERE (%(status)s = '' OR status = %(status)s)
+            ORDER BY (status = 'pending') DESC, request_id DESC
+            LIMIT %(limit)s""",
+        {"status": status, "limit": max(1, min(int(limit or 50), 200))})
+    return {"items": rows}
+
+
+@router.post("/approvals/{request_id}")
+def decide_approval(request_id: int, payload: dict = Body(default={})):
+    """审批：`{"approved": true, "note": "..."}`。通过 → 任务回 running；驳回 → cancelled。"""
+    approve = bool(payload.get("approved"))
+    return idempotency.run_once(
+        payload.get("request_key"), f"approval.{request_id}",
+        lambda: task_runtime.decide_approval(
+            request_id, approve=approve, note=(payload.get("note") or "").strip()))
+
+
+@router.get("/audit/tool")
+def tool_audit_list(tool_name: str = "", actor_id: str = "",
+                    decision: str = "", result_status: str = "",
+                    days: int = 7, limit: int = 100):
+    """工具调用审计查询（五问：谁 / 什么 / 何时 / 为何 / 结果）。参数已脱敏。"""
+    rows = db.query(
+        """SELECT call_id, created_at, actor_id, tool_name, params_redacted,
+                  decision, decision_reason, approval_source, result_status,
+                  errcode, errmsg, elapsed_ms, task_id, step_id
+             FROM tool_audit
+            WHERE created_at >= now() - (%(days)s || ' days')::interval
+              AND (%(tool)s = '' OR tool_name = %(tool)s)
+              AND (%(actor)s = '' OR actor_id = %(actor)s)
+              AND (%(dec)s = '' OR decision = %(dec)s)
+              AND (%(res)s = '' OR result_status = %(res)s)
+            ORDER BY call_id DESC LIMIT %(limit)s""",
+        {"days": str(int(days or 7)), "tool": tool_name, "actor": actor_id,
+         "dec": decision, "res": result_status,
+         "limit": max(1, min(int(limit or 100), 500))})
+    return {"items": rows, "counts": audit.stats().get("counts")}
+
+
+@router.post("/audit/export")
+def tool_audit_export(payload: dict = Body(default={})):
+    """导出某天的工具审计为 JSONL（合规留存：追加写、按天轮转、可离线校验）。
+
+    导出**不删除** —— 删除属于保留期策略，两者解耦（避免"导出失败却已删库"）。
+    """
+    res = audit.export_day(payload.get("day"))
+    res["verify"] = audit.verify_export(payload.get("day"))
+    return res
+
+
+@router.get("/audit/stats")
+def audit_stats():
+    """审计观测：总量 / 被拒数 / 失败数 / 今日量 / 各档保留期。"""
+    return {**audit.stats(), "retention_tiers": audit.tiers()}
+
+
+@router.get("/policy/stats")
+def policy_stats(days: int = 30):
+    """策略分流观测：三档占比 + 原因分布（回答「复核队列为什么这么大」）。"""
+    return policy.stats(days=days)

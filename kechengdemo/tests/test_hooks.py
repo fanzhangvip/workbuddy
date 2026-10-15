@@ -337,11 +337,20 @@ def test_persist_gate():
 
 def test_settings():
     print("\n--- 8. 新设置项已登记（配额，边界3）---")
-    import api_scoring
-    src = open(os.path.join(_ROOT, "backend", "api_scoring.py"), encoding="utf-8").read()
-    check("writeback_quota_per_run 已登记", "writeback_quota_per_run" in src)
-    check("writeback_quota_per_customer_per_day 已登记",
-          "writeback_quota_per_customer_per_day" in src)
+    # ⚠️ 原实现是 grep `api_scoring.py` 的**源码文本**找键名 —— 这是脆弱断言：
+    # 配置项一旦搬到别处（本轮搬到 `settings_registry.py` 完成「读写两侧同源」），
+    # 断言就失效，但它证明的是「源码里有这个字符串」而不是「配置真的可用」。
+    # 改为**行为断言**：从注册表查（可写）+ 实际取值（可读）→ 搬到哪里都不会误报。
+    import settings_registry as reg
+    writable = {a for a, _ in reg.WRITABLE}
+    check("writeback_quota_per_run 已登记（可写）",
+          "writeback_quota_per_run" in writable)
+    check("writeback_quota_per_customer_per_day 已登记（可写）",
+          "writeback_quota_per_customer_per_day" in writable)
+    check("两项都在注册表里有类型与默认值声明",
+          all(s.type == reg.INT for s in reg.SETTINGS
+              if s.key.startswith("writeback_quota_")),
+          str([(s.key, s.type) for s in reg.SETTINGS if s.key.startswith("writeback_quota_")]))
     check("默认 0 = 不限（不改变既有行为）",
           ss.setting_int("writeback_quota_per_run", "WRITEBACK_QUOTA_PER_RUN", 0) == 0)
 

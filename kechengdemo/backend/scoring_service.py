@@ -41,6 +41,16 @@ import llm                          # noqa: E402  异常分层：可重试 vs �
 # 等级 → 微伴标签（决策 D2 第 1 条，独立链路，与分数回写完全分开）
 import grade_tag                    # noqa: E402
 import outbox                       # noqa: E402  回写 outbox（修 G6：回写与评分解耦）
+import http_client                  # noqa: E402  统一退避（抖动 + Retry-After）
+import audit                        # noqa: E402  工具调用审计（五问 + 脱敏）
+import policy                       # noqa: E402  Policy 三档策略（修硬伤 4）
+import task_runtime                 # noqa: E402  任务运行时（外循环，修硬伤 3）
+
+#: Policy 拒绝回写时的中文文案（`hooks.REASON_CN` 里没有这两个原因）
+_POLICY_WB_CN = {
+    "policy_confirm": "策略：置信度处于中间档，需人工二次确认后才写入",
+    "policy_human": "策略：置信度偏低或有阻断性复核原因，需人工复核后再写入",
+}
 import rules as rules_mod           # noqa: E402
 import weiban                       # noqa: E402
 
@@ -686,7 +696,13 @@ def build_conversation(staff_id: str, session_id: str, limit: int = 60) -> str:
 
 #: 僵尸 run 判定阈值（分钟）：`scoring_run` 停在 running 超过这么久 → 视为进程异常退出。
 #: 必须大于最长批量耗时（170 个长会话 × ~58 秒 ≈ 2.7 小时），故取 4 小时。
+#: ⚠️ 这是**二级兜底**：一级判据是 `heartbeat_at`（见 :data:`HEARTBEAT_STALE_MINUTES`）。
 STALE_MINUTES = 240
+#: 心跳判死阈值（分钟）：长任务每次进度更新（`_bump`）刷新 `heartbeat_at`；
+#: 心跳停超过这么久 = 进程已被 kill/崩溃 → 立刻判僵尸并放行（不必等 4 小时）。
+#: ⚠️ 必须**大于单会话的最坏耗时**（3 次重试 × 120s 超时 ≈ 6 分钟，再加网络与落库开销），
+#: 否则会把活着的任务误判为死 → 两个批量并行 → 反而破坏了互斥。取 15 分钟留足余量。
+HEARTBEAT_STALE_MINUTES = 15
 
 
 def _ledger_total(rel_key: str) -> int:
@@ -796,6 +812,8 @@ class ScoringService:
         self._thread = None
         self._stop = False
         self._run_id = None
+        #: 统一任务 id（外循环 / 检查点载体，修硬伤 3）。与 `_run_id` 一一对应。
+        self._task_id = None
         self._progress = {}
 
     # ---------------- 对外接口 ----------------
@@ -809,16 +827,22 @@ class ScoringService:
 
         所以再查一次 DB：有 ``status='running'`` 的记录就算在跑。
 
-        **僵尸处理**：进程崩溃来不及改状态时，记录会永久停在 ``running``，
-        从而**永久阻塞**后续所有启动。故加超时判定 —— 超过 ``scoring_stale_minutes``
-        （默认 240 分钟，需大于最长批量耗时）仍为 running 的，视为僵尸：
-        标记为 failed 并放行。DB 不可用时**宁可放行也不误拦**。
+        **僵尸处理（两级）**：
+          ① **心跳**：`_bump` 每次会话进度更新会刷新 `heartbeat_at`。心跳停超过
+             `job_heartbeat_stale_minutes`（默认 15 分钟）→ 进程已死 → 标 failed 并放行。
+             为什么必须加这一级：进程被 kill 时来不及改状态，记录会**永久停在 running**；
+             只靠 started_at 的 240 分钟超时，等于把系统锁死 4 小时（实测在 `sync_job` 上踩到）。
+          ② **绝对超时**：仍超过 `scoring_stale_minutes`（默认 240 分钟）的一律视为僵尸
+             （兼容没有心跳的老行）。需大于最长批量耗时。
+        DB 不可用时**宁可放行也不误拦**。
         """
         if self._thread is not None and self._thread.is_alive():
             return True
         try:
             row = db.query_one(
-                """SELECT id, EXTRACT(EPOCH FROM (now() - started_at)) AS el
+                """SELECT id,
+                          EXTRACT(EPOCH FROM (now() - started_at))   AS el,
+                          EXTRACT(EPOCH FROM (now() - heartbeat_at)) AS hb
                      FROM scoring_run WHERE status='running' ORDER BY id DESC LIMIT 1""")
         except Exception:
             return False
@@ -826,6 +850,16 @@ class ScoringService:
             return False
         stale = setting_int("scoring_stale_minutes", "SCORING_STALE_MINUTES",
                             STALE_MINUTES) * 60
+        hb_stale = setting_int("job_heartbeat_stale_minutes", "JOB_HEARTBEAT_STALE_MINUTES",
+                               HEARTBEAT_STALE_MINUTES) * 60
+        hb = row.get("hb")
+        if hb is not None and float(hb) > hb_stale:
+            db.execute(
+                """UPDATE scoring_run SET status='failed', finished_at=now(),
+                          error=COALESCE(error, %s) WHERE id=%s AND status='running'""",
+                (f"进程异常退出：心跳已停 {int(float(hb) // 60)} 分钟"
+                 f"（阈值 {hb_stale // 60} 分钟），自动标记为失败", row["id"]))
+            return False
         if row.get("el") is not None and float(row["el"]) > stale:
             db.execute(
                 """UPDATE scoring_run SET status='failed', finished_at=now(),
@@ -938,6 +972,24 @@ class ScoringService:
             ("full" if force else "incremental", triggered_by, rv, detail,
              deadline_min, deadline_min, max_llm_calls))["id"]
 
+        # ── 外循环（修硬伤 3）：建统一任务，评分运行挂在它下面 ──────────────
+        # 为什么现在建而不是"以后再说"：没有任务就没有检查点，
+        # 进程崩溃后只能靠增量水位重来，**未完成的中间状态直接归零**。
+        # 任务创建失败**不阻断**评分（外循环是加固，不是前置依赖）。
+        self._task_id = None
+        try:
+            t = task_runtime.create(
+                kind="scoring", trigger=triggered_by,
+                scope={"staff_ids": staff_ids, "max_sessions": max_sessions,
+                       "min_messages": min_messages, "force": force, "grades": grades,
+                       "rule_version": rv},
+                budget_calls=max_llm_calls or None, deadline_minutes=deadline_min)
+            self._task_id = t.get("task_id")
+            db.execute("UPDATE scoring_run SET task_id=%s WHERE id=%s",
+                       (self._task_id, run_id))
+        except Exception as e:                      # noqa: BLE001
+            print(f"[scoring] 建任务失败（不影响评分，仅失去检查点）：{e}")
+
         self._stop = False
         self._partial = None                    # 护栏触发原因（deadline / max_llm_calls）
         self._run_id = run_id
@@ -984,6 +1036,53 @@ class ScoringService:
 
     # ---------------- 内部：进度 ----------------
 
+    # ---------------- 内部：外循环 / 检查点（修硬伤 3）----------------
+
+    def _step_begin(self, cand):
+        """为一个会话开一个检查点步。返回 step_id（无任务时返回 None）。"""
+        if not self._task_id:
+            return None
+        try:
+            name = f"session:{cand['staff_id']}:{cand['session_id']}"
+            return task_runtime.step_begin(
+                self._task_id, name,
+                input_ref={"target_id": cand.get("target_id"),
+                           "msg_count": cand.get("msg_count"),
+                           "last_msg_time": cand.get("last_msg_time")})
+        except Exception as e:                      # noqa: BLE001  检查点是加固，不阻断
+            print(f"[scoring] 写检查点失败（继续评分）：{e}")
+            return None
+
+    def _step_end(self, step_id, ok, cand, outcome, error=None):
+        """收尾检查点：落结果引用与**下一步该做什么**（失败不阻断）。"""
+        if not self._task_id or not step_id:
+            return
+        try:
+            # next_step 写"下一条待处理会话"的语义：这里给出可读的续跑指引，
+            # 真正的续跑靠 `completed_step_names()` 过滤（名字即幂等键）。
+            nxt = "continue:next_session" if ok else f"retry:{cand.get('session_id')}"
+            task_runtime.step_end(
+                step_id, ok,
+                output_ref={"outcome": outcome, "session_id": cand.get("session_id")},
+                next_step=nxt, error=error)
+            task_runtime.bump_progress(
+                self._task_id,
+                **({"step_ok": 1} if ok else {"step_failed": 1}))
+        except Exception as e:                      # noqa: BLE001
+            print(f"[scoring] 收尾检查点失败（继续评分）：{e}")
+
+    def _task_finish(self, status, partial_reason=None):
+        """把评分运行的状态映射到任务状态并收尾（终态不可迁出，INV-5）。"""
+        if not self._task_id:
+            return
+        # 映射：stopped→cancelled（人工中止）· partial→partial · success→succeeded
+        target = {"stopped": "cancelled", "partial": "partial",
+                  "success": "succeeded", "failed": "failed"}.get(status, "partial")
+        try:
+            task_runtime.transition(self._task_id, target, reason=partial_reason)
+        except Exception as e:                      # noqa: BLE001
+            print(f"[scoring] 任务收尾失败（不影响结果）：{e}")
+
     def _bump(self, run_id, *, detail=None, **deltas):
         with self._lock:
             for k, v in deltas.items():
@@ -995,7 +1094,8 @@ class ScoringService:
         db.execute(
             """UPDATE scoring_run SET session_done=%s, session_skipped=%s,
                    assessment_new=%s, writeback_ok=%s, writeback_fail=%s,
-                   review_new=%s, llm_calls=%s, llm_failed=%s, session_failed=%s, detail=%s
+                   review_new=%s, llm_calls=%s, llm_failed=%s, session_failed=%s, detail=%s,
+                   heartbeat_at=now()
                  WHERE id=%s""",
             (snap.get("session_done", 0), snap.get("session_skipped", 0),
              snap.get("assessment_new", 0), snap.get("writeback_ok", 0),
@@ -1185,7 +1285,13 @@ class ScoringService:
                     on_attempt=_on_attempt)
             except llm.RetryableLLMError as e:
                 last_err = e
-                time.sleep(1.2 * (2 ** i))
+                # 优先听服务端的 `Retry-After`（llm.py 已解析并封顶 30s）；
+                # 没给才退回指数退避，并叠加 ±30% 抖动 —— 否则整批会话会在
+                # 同一时刻集体重试，把限流中的服务端再打一次（文章 B 的二次冲击）。
+                wait = getattr(e, "retry_after", None)
+                if wait is None:
+                    wait = http_client.backoff_seconds(i, 1.2)
+                time.sleep(wait)
             except (llm.FatalLLMError, contracts.ContractViolationError):
                 raise                                  # 重试一万次也没用，直接转人工
         raise RuntimeError(f"大模型分析连续 {attempts} 次失败（临时故障）：{last_err}")
@@ -1227,7 +1333,8 @@ class ScoringService:
 
     # ---------------- 内部：回写微伴 ----------------
 
-    def _writeback(self, run_id, rel_key, aid, staff_id, target_id, score, mode, review_needed):
+    def _writeback(self, run_id, rel_key, aid, staff_id, target_id, score, mode,
+                   review_needed, policy_action=None):
         """正分回写微伴（幂等：一次评估只写一次）。
 
         阶段B 起，live 模式**只同步试一次**：失败不再原地退避 3 次（最坏拖 5.6s/会话），
@@ -1244,28 +1351,51 @@ class ScoringService:
         quota_cust_limit = setting_int("writeback_quota_per_customer_per_day",
                                        "WRITEBACK_QUOTA_PER_CUSTOMER_PER_DAY", 0)
         delta_mode = setting_bool("writeback_delta_mode", "WRITEBACK_DELTA_MODE", True)
-        decision = hooks.before_writeback(
-            positive_total=score, mode=mode,
-            already_written=_already_written(aid) if mode == "live" else False,
-            quota_run=self._progress.get("writeback_ok", 0) + self._progress.get("writeback_fail", 0),
-            quota_run_limit=quota_run_limit,
-            quota_customer=_customer_writes_today(target_id) if quota_cust_limit else 0,
-            quota_customer_limit=quota_cust_limit,
-            # 水位查询也条件化：非 live / 非差值模式都不需要它
-            written_total=(_ledger_total(rel_key) if (mode == "live" and delta_mode) else None),
-            delta_mode=delta_mode)
+        # ④ Policy 策略门（架构 §7.4 / ADR-004，修硬伤 4）。
+        # ⚠️ **只在 live 生效**：dry_run 不写外部系统、没有副作用，拦它没有意义，
+        #    反而会改变默认配置下的行为（默认就是 dry_run）并把已有运维习惯打乱。
+        #    即"策略门只拦真有副作用的动作"。
+        policy_denied = (mode == "live" and policy_action
+                         and policy_action != policy.AUTO)
+        if policy_denied:
+            decision = hooks.HookResult(
+                False, f"policy_{policy_action}",
+                {"policy_action": policy_action, "mode": mode, "score": score})
+        else:
+            decision = hooks.before_writeback(
+                positive_total=score, mode=mode,
+                already_written=_already_written(aid) if mode == "live" else False,
+                quota_run=self._progress.get("writeback_ok", 0) + self._progress.get("writeback_fail", 0),
+                quota_run_limit=quota_run_limit,
+                quota_customer=_customer_writes_today(target_id) if quota_cust_limit else 0,
+                quota_customer_limit=quota_cust_limit,
+                # 水位查询也条件化：非 live / 非差值模式都不需要它
+                written_total=(_ledger_total(rel_key) if (mode == "live" and delta_mode) else None),
+                delta_mode=delta_mode)
         self._note_hook(decision)
         # D2-1：真正投递的是**差值**（放行时 detail 里有 delta）
         send_score = int((decision.detail or {}).get("delta") or score)
         self._bump(run_id, writeback_delta=(1 if send_score != int(score) else 0))
         if decision.denied:
             status = hooks.REASON_TO_WB_STATUS.get(decision.reason, "skipped")
-            errmsg = hooks.REASON_CN.get(decision.reason, decision.reason)
+            # policy_confirm / policy_human 不在 hooks 的原因表里 → 这里给中文文案
+            errmsg = _POLICY_WB_CN.get(
+                decision.reason, hooks.REASON_CN.get(decision.reason, decision.reason))
         else:  # live：单次投递，重试交给 outbox
             try:
-                resp = weiban.add_customer_score(staff_id, external_user_id=target_id,
-                                                 score=send_score, use_header_token=True)
-                errcode = resp.get("errcode")
+                # 工具调用审计（五问）：参数脱敏后落 tool_audit + JSONL（修硬伤 5）
+                with audit.tool_call(
+                        "weiban.add_customer_score",
+                        {"staff_id": staff_id, "external_user_id": target_id,
+                         "score": send_score},
+                        task_id=run_id, decision="allow",
+                        reason=f"policy={policy_action or 'n/a'}") as rec:
+                    resp = weiban.add_customer_score(
+                        staff_id, external_user_id=target_id,
+                        score=send_score, use_header_token=True)
+                    errcode = resp.get("errcode")
+                    rec(resp, ok=(errcode == 0), errcode=errcode,
+                        errmsg=resp.get("errmsg"))
                 errmsg = resp.get("errmsg")
                 status = "ok" if errcode == 0 else "failed"
             except Exception as e:
@@ -1416,7 +1546,8 @@ class ScoringService:
 
     def _persist_assessment(self, run_id, cand, res, score, grade, needs_review,
                             unchecked, pos_items, neg_items, mode,
-                            session_confidence=None, review_reasons=None) -> int:
+                            session_confidence=None, review_reasons=None,
+                            policy_action=None) -> int:
         """落 assessment，并在**同一事务**内把「待回写」写进 outbox（修 G6）。
 
         为什么必须同事务：``db.pool()`` 是 autocommit，``db.execute`` 每条各自一条连接、
@@ -1458,9 +1589,10 @@ class ScoringService:
                       unchecked_rules, prompt_version, schema_version, model_confidence,
                       source_run_id, contract_attempts,
                       session_confidence, review_reasons,
-                      model_name, rule_checks, old_raw_score, profile_struct)
+                      model_name, rule_checks, old_raw_score, profile_struct,
+                      task_id, policy_action)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    RETURNING assessment_id""",
                 (rel, cand["staff_id"], cand.get("staff_name"), cand["target_id"],
                  cand.get("target_name"), cand["session_id"],
@@ -1481,7 +1613,9 @@ class ScoringService:
                  res.get("model_name"),
                  db.as_json(res.get("rule_checks") or []),
                  old_raw,
-                 db.as_json(res.get("profile_struct") or []))
+                 db.as_json(res.get("profile_struct") or []),
+                 # 硬伤 3/4 的落库侧：结论可追溯到「哪次任务」与「当时策略怎么判的」
+                 (run_id or None), policy_action)
             ).fetchone()["assessment_id"]
 
             # E2（架构 §7.2）：新评估落库后，把**同一客户的旧记录**标记为被取代。
@@ -1638,6 +1772,17 @@ class ScoringService:
                                   last_grade=last_grade,
                                   thresholds=_confidence_thresholds())
         needs_review = conf["needs_human_review"]
+
+        # ④ Policy 策略判定（架构 §7.4 / ADR-004，修硬伤 4）。
+        #    `confidence` 回答"判得准不准"，Policy 回答"机器能不能自己动手" ——
+        #    两者不是一回事：一个结论可以"值得人看一眼"而**绝不自动写外部系统**。
+        #    判定留痕（含阈值快照）→ 三个月后能解释"这条当时为什么自动执行了"。
+        pol = policy.decide(session_confidence=conf["session_confidence"],
+                            review_reasons=conf["review_reasons"],
+                            grade=grade.get("grade"))
+        conf["policy_action"] = pol["action"]
+        conf["policy_reasons"] = pol["action_reasons"]
+
         n_pos = len(pos_items)
         conf_items = conf.get("items") or []
         pos_items, neg_items = conf_items[:n_pos], conf_items[n_pos:]   # 带上 item_confidence
@@ -1645,14 +1790,22 @@ class ScoringService:
         aid = self._persist_assessment(run_id, cand, res, score, grade, needs_review,
                                        unchecked, pos_items, neg_items, mode,
                                        session_confidence=conf["session_confidence"],
-                                       review_reasons=conf["review_reasons"])
+                                       review_reasons=conf["review_reasons"],
+                                       policy_action=pol["action"])
+        policy.record(relationship_key=rel, action=pol["action"],
+                      session_confidence=conf["session_confidence"],
+                      review_reasons=conf["review_reasons"],
+                      action_reasons=pol["action_reasons"],
+                      thresholds_snapshot=pol["thresholds"],
+                      assessment_id=aid, task_id=run_id or None)
 
         # 关键历史标签（架构 §4.4.1）：写「下一轮的检索键」，失败不阻断评分
         self._tag_evidence_messages(staff_id, session_id, pos_items, neg_items)
 
         # 分流①：正分回写微伴
         wb = self._writeback(run_id, rel, aid, staff_id, cand["target_id"],
-                             score["positive_total"], mode, bool(neg_items))
+                             score["positive_total"], mode, bool(neg_items),
+                             policy_action=pol["action"])
 
         # 分流②：负分进人工复核队列
         need_review = self._enqueue_review(aid, cand, neg_items, score["raw_score"],
@@ -1688,6 +1841,12 @@ class ScoringService:
         t0 = time.time()
         try:
             db.init_db()
+            # 外循环：任务进入 running（失败不阻断评分）
+            if self._task_id:
+                try:
+                    task_runtime.transition(self._task_id, "running")
+                except Exception as e:              # noqa: BLE001
+                    print(f"[scoring] 任务转 running 失败（继续评分）：{e}")
             rules = rules_mod.load_rules()
             mode = self.writeback_mode()
             fetch_tags = setting_bool("scoring_fetch_tags", "SCORING_FETCH_TAGS", False)
@@ -1736,7 +1895,11 @@ class ScoringService:
                                            "session_total": len(cands)})
                 try:
                     _t_sess = time.time()
+                    # 检查点：每个会话一步（修硬伤 3）。
+                    # 步骤名即幂等键 —— 续跑时用它跳过已完成的会话，而不是从头再来。
+                    _sid = self._step_begin(cand)
                     r = self._score_cand(run_id, cand, rules, min_messages, mode, fetch_tags)
+                    self._step_end(_sid, True, cand, r)
                     # H5：单会话耗时（含失败的会话 —— 失败往往正是慢的那几个）
                     self._note_session_secs(time.time() - _t_sess)
                     if r == "skipped":
@@ -1747,6 +1910,7 @@ class ScoringService:
                     # 修 G5：失败**不再算「已完成」**。改造前这里同时加 llm_failed 和
                     # session_done，完成率永远好看，从数字上看不出这轮挂了几个。
                     print(f"[scoring] 会话 {cand['session_id']} 评分失败：{e}")
+                    self._step_end(locals().get("_sid"), False, cand, None, error=e)
                     self._bump(run_id, llm_failed=1, session_failed=1)
                     self._record_failure(run_id, cand, e)
                 if sleep_ms:
@@ -1776,6 +1940,8 @@ class ScoringService:
                        partial_reason=%s, detail=%s WHERE id=%s""",
                 (status, elapsed, partial_reason,
                  db.as_json({**self._progress, **_dist, "stage": "已完成"}), run_id))
+            # 外循环收尾：任务进入终态（映射见 _task_finish）
+            self._task_finish(status, partial_reason)
             _audit("system", "scoring_done", f"run:{run_id}",
                    {"status": status, "partial_reason": partial_reason,
                     "elapsed_sec": elapsed, "session_done": self._progress.get("session_done", 0),
@@ -1791,6 +1957,7 @@ class ScoringService:
             print(f"[scoring] run={run_id} 失败：{e}\n{tb}")
             db.execute("UPDATE scoring_run SET status='failed', error=%s, finished_at=now() WHERE id=%s",
                        (str(e)[:2000], run_id))
+            self._task_finish("failed", partial_reason=str(e)[:200])
             self._bump(run_id, detail={"stage": "失败", "error": str(e)})
             _audit("system", "scoring_failed", f"run:{run_id}",
                    {"error": str(e)[:500], "error_class": type(e).__name__})

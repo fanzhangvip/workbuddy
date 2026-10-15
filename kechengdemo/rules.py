@@ -13,8 +13,109 @@ RULES_PATH = Path(__file__).resolve().parent / "rules.json"
 
 
 def load_rules(path: Path = RULES_PATH) -> dict:
-    """加载规则表。"""
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    """加载规则表，并做**加载期合法性校验**（INV-12 / INV-13）。
+
+    为什么必须在加载期拦（而不是等到运行时）：
+    `rules.json` 是**静态数据**，但静态数据同样会有 Bug —— 一个分值放到错误档位、
+    一条规则漏了 options，编译器不报错、单测也测不到，只会在某次真实评分里
+    **静默算错分**（甚至把加分算成扣分）。所以这里"宁可响亮地失败"：
+    违反约束立即抛 `RulesInvalidError` 并指出是哪条规则、哪条约束。
+    """
+    rules = json.loads(Path(path).read_text(encoding="utf-8"))
+    errs = validate_rules(rules)
+    if errs:
+        raise RulesInvalidError(
+            f"规则表 {Path(path).name} 不合法，共 {len(errs)} 处：\n  - "
+            + "\n  - ".join(errs))
+    return rules
+
+
+class RulesInvalidError(ValueError):
+    """规则表违反加载期合法性约束（INV-12 / INV-13）。"""
+
+
+def validate_rules(rules: dict) -> list:
+    """返回违规清单（空列表 = 合法）。**纯函数**，便于对样例规则做测试。
+
+    对应 ARCHITECTURE.md §6.7：
+      INV-12  `grade_thresholds` 的 min 严格递减且覆盖分数下界；`score_bounds.min < max`
+      INV-13  同一规则的 option 分值互不相同；`polarity` 由分组决定（**不得写在规则体里**）；
+              `engine='rule'` 的规则不出现在 `llm_rule_ids()`
+    """
+    errs = []
+
+    # ---- INV-12a：分值域 ----
+    bounds = rules.get("score_bounds") or {}
+    if bounds.get("min") is None or bounds.get("max") is None:
+        errs.append("score_bounds 缺少 min/max：总分截断无依据")
+    elif int(bounds["min"]) >= int(bounds["max"]):
+        errs.append(f"score_bounds.min({bounds['min']}) 必须严格小于 max({bounds['max']})")
+
+    # ---- INV-12b：等级阈值 ----
+    ths = rules.get("grade_thresholds") or []
+    if not ths:
+        errs.append("grade_thresholds 为空：任何分数都映射不到等级")
+    else:
+        mins = [t.get("min") for t in ths]
+        if any(m is None for m in mins):
+            errs.append("grade_thresholds 存在缺少 min 的档位")
+        else:
+            nums = [int(m) for m in mins]
+            for prev, cur in zip(nums, nums[1:]):
+                if prev <= cur:
+                    errs.append(f"grade_thresholds 的 min 必须**严格递减**，实际 {nums}")
+                    break
+            floor = int(bounds.get("min")) if bounds.get("min") is not None else None
+            if floor is not None and nums[-1] > floor:
+                errs.append(f"grade_thresholds 最低档 min={nums[-1]} 未覆盖分数下界 "
+                            f"{floor}：{floor}~{nums[-1] - 1} 这段分数映射不到等级")
+        if any(not t.get("grade") for t in ths):
+            errs.append("grade_thresholds 存在缺少 grade 的档位")
+        grades = [t.get("grade") for t in ths if t.get("grade")]
+        if len(grades) != len(set(grades)):
+            errs.append(f"grade_thresholds 的等级重复：{grades}")
+
+    # ---- INV-13：逐条规则 ----
+    for key, polarity in (("positive_rules", "positive"), ("negative_rules", "negative")):
+        seen = set()
+        for i, r in enumerate(rules.get(key) or []):
+            rid = r.get("rule_id") or f"{key}[{i}]"
+            if not r.get("rule_id"):
+                errs.append(f"{key}[{i}] 缺少 rule_id")
+            if rid in seen:
+                errs.append(f"{rid} 在同组内重复定义")
+            seen.add(rid)
+            if not r.get("dimension"):
+                errs.append(f"{rid} 缺少 dimension")
+            # polarity 必须由**分组**决定，不得写进规则体（否则同一规则可能两处不一致）
+            if "polarity" in r:
+                errs.append(f"{rid} 不应包含 polarity 字段：极性由所在分组决定")
+            if r.get("engine") not in (None, "rule"):
+                errs.append(f"{rid} 的 engine={r.get('engine')!r} 非法（只允许 'rule' 或省略）")
+            if r.get("engine") == "rule" and polarity != "negative":
+                # `_engine_negative_items()` 只实现了负向硬指标；正向引擎规则会被静默忽略
+                errs.append(f"{rid} 是正向规则但 engine=rule：当前只支持负向引擎规则，"
+                            f"会被静默忽略")
+            opts = r.get("options") or []
+            if not opts:
+                errs.append(f"{rid} 没有 options：这条规则永远不会命中")
+                continue
+            scores = [o.get("score") for o in opts]
+            if any(s is None for s in scores):
+                errs.append(f"{rid} 存在缺少 score 的档位")
+            else:
+                nums = [int(s) for s in scores]
+                if len(nums) != len(set(nums)):
+                    errs.append(f"{rid} 的档位分值重复：{nums}（同一规则内必须唯一）")
+                # 分值符号必须与极性一致 —— 这是**最致命**的一类静态数据错误：
+                # 符号写反会让"扣分"变成"加分"，而单测很难覆盖到每条规则。
+                if polarity == "positive" and any(n <= 0 for n in nums):
+                    errs.append(f"{rid} 是加分规则但存在非正分值：{nums}")
+                if polarity == "negative" and any(n >= 0 for n in nums):
+                    errs.append(f"{rid} 是扣分规则但存在非负分值：{nums}")
+            if any(not (o.get("criteria") or "").strip() for o in opts):
+                errs.append(f"{rid} 存在缺少 criteria 的档位：模型无法判断该档")
+    return errs
 
 
 def _index(rules: dict) -> dict:

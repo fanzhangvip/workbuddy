@@ -230,7 +230,8 @@ def main():
 
         # ── 8. 提示词说明（§4.5.6）───────────────────────────────────────
         print("\n--- 8. 提示词说明 ---")
-        check("PROMPT_VERSION 已递增到 v3", analyze.PROMPT_VERSION == "v3", analyze.PROMPT_VERSION)
+        check("PROMPT_VERSION 已递增到 v4（信任边界）", analyze.PROMPT_VERSION == "v4",
+              analyze.PROMPT_VERSION)
         check("SYSTEM_PROMPT 说明「只有 #编号 行是证据」",
               "只有带 #编号 的消息行才是本次判断的证据" in analyze.SYSTEM_PROMPT)
         check("SYSTEM_PROMPT 说明「不要重复计入上次加减分」",

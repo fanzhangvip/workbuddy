@@ -33,6 +33,7 @@
 **旧任务后到会把标签写回旧等级**。故 drain 时：
 **同一 `relationship_key` 只处理 `outbox_id` 最大的那条**，更早的标 `superseded`。
 """
+import random
 import time
 
 import db
@@ -231,7 +232,13 @@ def enqueue(conn, assessment_id, relationship_key, staff_id, external_user_id,
 # ============================================================ 排空（drain worker）
 
 def _delay(attempts: int) -> int:
-    return int(min(BACKOFF_BASE * (2 ** max(0, attempts - 1)), BACKOFF_CAP))
+    """指数退避 + 上限 + **±30% 抖动**（与 `outbox._delay` 同一口径）。
+
+    等级标签与分数回写走的是**同一条微伴通道**，两边都抖动才有意义 ——
+    只抖一边，另一边的重试尖峰照样会打到微伴。
+    """
+    raw = min(BACKOFF_BASE * (2 ** max(0, attempts - 1)), BACKOFF_CAP)
+    return max(1, int(raw * random.uniform(0.70, 1.30)))
 
 
 def _claim(conn, limit: int) -> tuple:

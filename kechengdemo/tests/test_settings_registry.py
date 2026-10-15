@@ -148,8 +148,19 @@ def test_writable_equivalence():
     new = set(reg.WRITABLE)
     check("★ 改造前的每一项都仍在白名单里（无功能回退）", old <= new,
           "缺失：" + str(sorted(old - new)))
-    check("白名单项数与改造前一致（未静默多出/少掉）", len(new) == len(old),
-          f"old={len(old)} new={len(new)} 差集={sorted(new ^ old)}")
+    # ⚠️ 不能断言「与改造前**完全**相等」—— 后续会有**有意新增**的配置项。
+    # 正确语义是：新增项必须来自**显式清单**（防止「无意多出」的静默漂移）。
+    # 新增配置时把键加到这里 + 写清理由，是一次有意识的动作。
+    _INTENTIONAL_ADDITIONS = {
+        # 长任务心跳（修「进程被杀 → 卡死的锁把系统阻塞 4 小时」）
+        ("job_heartbeat_stale_minutes", "job_heartbeat_stale_minutes"),
+        ("scoring_stale_minutes", "scoring_stale_minutes"),
+    }
+    added = new - old
+    check("白名单只比改造前多出**显式声明**的新增项",
+          added <= _INTENTIONAL_ADDITIONS, f"未声明的新增：{sorted(added - _INTENTIONAL_ADDITIONS)}")
+    check("声明的拟新增项确实已在白名单里（清单不能过期）",
+          _INTENTIONAL_ADDITIONS <= new, str(sorted(_INTENTIONAL_ADDITIONS - new)))
     check("形态是 (API 键名, app_setting 键名)",
           all(isinstance(a, str) and isinstance(b, str) for a, b in reg.WRITABLE))
     check("API 名无重复（否则同一 payload 键会写两个设置）",

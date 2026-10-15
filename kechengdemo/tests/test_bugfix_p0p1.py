@@ -235,6 +235,81 @@ def test_sync_cross_process():
           st.get("status") == "failed" and "自动标记" in str(st.get("error")), str(st))
 
 
+def test_heartbeat_zombie():
+    """心跳判死：进程被 kill 后，锁必须在**分钟级**释放，而不是等 4 小时。
+
+    真实场景（实测踩到）：后端带着一个 running 的 `sync_job` 被 kill →
+    `is_running()` 一直为真 → 后续所有评分/同步被拦，直到 `scoring_stale_minutes`
+    （240 分钟）超时才放行。**4 小时里系统完全不可用**，而没有任何提示。
+    """
+    print("\n--- P1-4b 心跳判死（不让卡死的锁把系统锁 4 小时）---")
+    import scoring_service as ss
+    row = db.query_one("INSERT INTO sync_job (kind, status) VALUES ('test','running') "
+                       "RETURNING id")
+    jid = row["id"]
+    _SYNC_JOB_IDS.append(jid)
+    try:
+        # 刚开始、有心跳 → 视为活着（不能把活任务误判为死，否则会并行两个批量）
+        db.execute("UPDATE sync_job SET heartbeat_at = now() WHERE id=%s", (jid,))
+        check("★ 心跳新鲜 → 视为在跑（不误判活任务）",
+              sync_service.service.is_running() is True)
+
+        # 心跳停在 90 分钟前 → 进程已死
+        db.execute("UPDATE sync_job SET heartbeat_at = now() - interval '90 minutes' "
+                   "WHERE id=%s", (jid,))
+        check("★ 心跳已停 → 立刻放行（不必等 240 分钟）",
+              sync_service.service.is_running() is False)
+        st = db.query_one("SELECT status, error FROM sync_job WHERE id=%s", (jid,)) or {}
+        check("僵尸被标 failed 且原因写明「心跳已停」",
+              st.get("status") == "failed" and "心跳" in str(st.get("error")), str(st))
+
+        # 阈值必须大于单会话最坏耗时（否则会误杀活任务 → 破坏互斥）
+        hb = ss.setting_int("job_heartbeat_stale_minutes", "JOB_HEARTBEAT_STALE_MINUTES",
+                            ss.HEARTBEAT_STALE_MINUTES)
+        check("★ 心跳阈值 > 单会话最坏耗时（3 次重试 × 120s ≈ 6 分钟，留足余量）",
+              hb >= 10, f"{hb} 分钟")
+        check("心跳阈值远小于二级兜底（否则等于没缩短）",
+              hb < ss.setting_int("scoring_stale_minutes", "SCORING_STALE_MINUTES",
+                                  ss.STALE_MINUTES), f"{hb} vs {ss.STALE_MINUTES}")
+
+        # 老行（heartbeat_at 为 NULL）不能被永久误判为活 → 退回 started_at 判定
+        db.execute("UPDATE sync_job SET heartbeat_at = NULL, status='running', "
+                   "started_at = now() WHERE id=%s", (jid,))
+        check("无心跳的老行 → 退回 started_at 判定（视为在跑，不误杀）",
+              sync_service.service.is_running() is True)
+        db.execute("UPDATE sync_job SET started_at = now() - interval '999 minutes' "
+                   "WHERE id=%s", (jid,))
+        check("无心跳且绝对超时 → 仍能判死（二级兜底生效）",
+              sync_service.service.is_running() is False)
+    finally:
+        db.execute("DELETE FROM sync_job WHERE id=%s", (jid,))
+        if jid in _SYNC_JOB_IDS:
+            _SYNC_JOB_IDS.remove(jid)
+
+
+def test_progress_refreshes_heartbeat():
+    """进度更新必须刷新心跳（否则心跳机制形同虚设）。"""
+    print("\n--- P1-4c 进度更新刷新心跳 ---")
+    import sync_service as _sync
+    row = db.query_one("INSERT INTO sync_job (kind, status, heartbeat_at) "
+                       "VALUES ('test','running', now() - interval '30 minutes') RETURNING id")
+    jid = row["id"]
+    _SYNC_JOB_IDS.append(jid)
+    try:
+        before = db.query_one("SELECT EXTRACT(EPOCH FROM (now()-heartbeat_at)) AS a "
+                              "FROM sync_job WHERE id=%s", (jid,))["a"]
+        check("前置：心跳已陈旧", before and float(before) > 1500, str(before))
+        _sync.service._patch_job(jid, session_done=1)
+        after = db.query_one("SELECT EXTRACT(EPOCH FROM (now()-heartbeat_at)) AS a "
+                             "FROM sync_job WHERE id=%s", (jid,))["a"]
+        check("★ 一次进度更新后心跳被刷新（判死机制才有意义）",
+              after is not None and float(after) < 5, str(after))
+    finally:
+        db.execute("DELETE FROM sync_job WHERE id=%s", (jid,))
+        if jid in _SYNC_JOB_IDS:
+            _SYNC_JOB_IDS.remove(jid)
+
+
 # ============================================================ P2-8
 
 def test_rule_tier_from_table():
@@ -352,6 +427,8 @@ def main():
         test_browser_lifecycle()
         test_grade_tag_probe()
         test_sync_cross_process()
+        test_heartbeat_zombie()
+        test_progress_refreshes_heartbeat()
         test_rule_tier_from_table()
         test_sync_rules_no_wipe()
         test_trace_cache()

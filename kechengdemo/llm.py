@@ -35,7 +35,15 @@ class LLMError(Exception):
 
 
 class RetryableLLMError(LLMError):
-    """临时性故障：超时 / 限流 / 5xx / 连接重置。值得退避重试。"""
+    """临时性故障：超时 / 限流 / 5xx / 连接重置。值得退避重试。
+
+    ``retry_after``：服务端通过 ``Retry-After`` 头告知的等待秒数（可能为 None）。
+    **服务端已经告诉我们要等多久时，就不该再按自己的指数退避猜** —— 见 `_classify_http_error`。
+    """
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class FatalLLMError(LLMError):
@@ -47,7 +55,42 @@ class EmptyCompletionError(RetryableLLMError):
 
 
 class TruncatedCompletionError(RetryableLLMError):
-    """``finish_reason == "length"``：输出被 max_tokens 截断，JSON 必然残缺。"""
+    """``finish_reason == "length"``：输出被 max_tokens 截断，JSON 必然残缺。
+
+    ``partial`` / ``max_tokens`` 是给调用方自救用的（文章 H 的两级处理）：
+      ① 还没到模型上限 → **升 max_tokens 重试一次**
+      ② 已经到上限（``escalate_max_tokens()`` 返回 None）→ **改用续写**，
+         把 ``partial`` 作为 assistant 已产出的前缀接上继续生成
+    """
+
+    def __init__(self, message: str, partial: str = "", max_tokens: int | None = None):
+        super().__init__(message)
+        self.partial = partial
+        self.max_tokens = max_tokens
+
+
+#: 模型侧的输出上限（deepseek-chat）。**到顶后无法再靠升 max_tokens 自救** ——
+#: 这正是 `escalate_max_tokens()` 返回 None 的判据，也是「截断只能靠续写」的原因。
+MODEL_MAX_OUTPUT_TOKENS = 8192
+
+#: 续写提示：让模型**接着**把没写完的 JSON 补完，而不是从头重写一遍
+#: （从头重写会丢掉已生成的字段，且可能每次都恰好截在同一处 → 死循环）
+CONTINUATION_PROMPT = (
+    "你上一条输出因为达到 max_tokens 上限而被**截断**了（JSON 不完整）。\n"
+    "请**紧接着**截断处继续输出剩余内容，把 JSON 补完整。\n"
+    "要求：\n"
+    "- 只输出**剩余部分**，不要重复已经输出过的内容，不要加任何解释\n"
+    "- 不要重新开头，不要加 markdown 代码块\n"
+    "- 保持 JSON 合法（补齐缺失的括号与引号）"
+)
+
+
+def escalate_max_tokens(current: int | None) -> int | None:
+    """截断后应升到多少？已到模型上限 → 返回 ``None``（**升无可升，改走续写**）。"""
+    cur = int(current or DEFAULT_MAX_TOKENS)
+    if cur >= MODEL_MAX_OUTPUT_TOKENS:
+        return None
+    return MODEL_MAX_OUTPUT_TOKENS
 
 
 _FATAL_CODES = {400, 401, 403, 404, 422}
@@ -62,7 +105,31 @@ def _classify_http_error(err: urllib.error.HTTPError) -> LLMError:
     msg = f"HTTP {err.code}：{body or err.reason}"
     if err.code in _FATAL_CODES:
         return FatalLLMError(msg)
-    return RetryableLLMError(msg)
+    return RetryableLLMError(msg, retry_after=_retry_after_seconds(err))
+
+
+#: `Retry-After` 的等待上限（秒）。文章 B：限流场景等待上限 ~30s，
+#: 再往上等不如让上层转人工 —— 一个请求卡几分钟对批处理是灾难。
+RETRY_AFTER_CAP = 30.0
+
+
+def _retry_after_seconds(err: urllib.error.HTTPError) -> float | None:
+    """解析 ``Retry-After`` 头 → 秒数（仅支持 delta-seconds 形式，且带上限）。
+
+    只认数字形式：HTTP-date 形式（"Wed, 21 Oct 2015 07:28:00 GMT"）需要解析日期，
+    且服务端极少数情况下才用；解析不了就返回 None，**让上层退回自己的指数退避**，
+    而不是假装读懂了。
+    """
+    try:
+        raw = (err.headers.get("Retry-After") or "").strip()
+    except Exception:                                     # pragma: no cover
+        return None
+    if not raw:
+        return None
+    try:
+        return min(max(float(raw), 0.0), RETRY_AFTER_CAP)
+    except (TypeError, ValueError):
+        return None
 
 
 def chat(messages: list, temperature: float = 0.0, json_mode: bool = False,
@@ -116,7 +183,8 @@ def chat(messages: list, temperature: float = 0.0, json_mode: bool = False,
 
     if finish == "length":
         raise TruncatedCompletionError(
-            f"输出被 max_tokens({body['max_tokens']}) 截断，JSON 必然残缺；请提高 llm_max_tokens")
+            f"输出被 max_tokens({body['max_tokens']}) 截断，JSON 必然残缺",
+            partial=content, max_tokens=int(body["max_tokens"]))
     if not content.strip():
         raise EmptyCompletionError("模型返回空内容（JSON mode 常见失败形态）")
 

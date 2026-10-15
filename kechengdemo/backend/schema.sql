@@ -327,6 +327,16 @@ CREATE INDEX IF NOT EXISTS ix_session_failure_status ON session_failure (status,
 CREATE INDEX IF NOT EXISTS ix_session_failure_session ON session_failure (staff_id, session_id);
 CREATE INDEX IF NOT EXISTS ix_session_failure_manual ON session_failure (manual_required) WHERE manual_required;
 
+-- ---------------- 长任务心跳（修「进程被杀 → 卡死的锁阻塞数小时」）----------------
+-- 为什么需要：`is_running()` 靠 DB 里的 status='running' 做**跨进程**互斥，
+-- 但进程被 kill（或崩溃）时来不及改状态 → 记录永久停在 running →
+-- 后续所有评分/同步都被拦住，直到「按 started_at 算的 240 分钟超时」才放行。
+-- 实测：一次调试中 `sync_job` 留下一个 running 行，直接把评分阻塞到超时。
+-- 现在每次进度更新（`_bump`）顺带刷新 `heartbeat_at`：心跳停了 = 进程没了 →
+-- 分钟级判定僵尸并放行；`started_at` 的超时判定保留为二级兜底（兼容没有心跳的老行）。
+ALTER TABLE sync_job    ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
+ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
+
 -- ============================================================================
 -- 阶段 B：回写解耦（修 G6）+ 本地链路追踪
 --   · 全部 IF NOT EXISTS，init_db() 整文件幂等执行，无需迁移框架
@@ -597,3 +607,141 @@ CREATE TABLE IF NOT EXISTS grade_tag_outbox (
     UNIQUE (assessment_id)
 );
 CREATE INDEX IF NOT EXISTS idx_grade_tag_due ON grade_tag_outbox (next_attempt_at) WHERE status IN ('pending','failed');
+
+-- ============================================================================
+-- 生产化加固（ARCHITECTURE.md v1.1）
+--   · 工具调用审计（五问）      → tool_audit
+--   · 策略判定留痕              → policy_decision
+--   · 任务运行时（外循环）      → task / task_step / approval_request
+--   · 全部 IF NOT EXISTS，init_db() 整文件幂等执行，无需迁移框架（ADR-012）
+-- ============================================================================
+
+-- ---------------- 工具调用审计（架构 §6.2，硬伤 5）----------------
+-- 与 audit_log 的分工：
+--   · audit_log      = **业务动作**审计（提交复核、发布规则、改配置）
+--   · tool_audit     = **工具调用**审计（调了微伴/企微/大模型，参数是什么、谁批的、结果如何）
+-- 为什么必须落参数：文章 B 的五问里「为什么」只能靠参数回答；
+-- 但参数里常带 token / 密钥 → 写库前**必须脱敏**（见 audit.redact()）。
+CREATE TABLE IF NOT EXISTS tool_audit (
+    call_id          BIGSERIAL PRIMARY KEY,
+    task_id          BIGINT,                       -- 关联任务（可空：历史/单次调用）
+    step_id          BIGINT,
+    actor_id         TEXT NOT NULL,                -- 谁（服务端推导，非请求体自报）
+    tool_name        TEXT NOT NULL,                -- 什么（如 weiban.add_customer_score）
+    params_redacted  JSONB NOT NULL DEFAULT '{}'::jsonb,   -- 参数（已脱敏）
+    decision         TEXT NOT NULL DEFAULT 'allow'
+                     CHECK (decision IN ('allow','confirm','deny')),
+    decision_reason  TEXT,                         -- 为何（allow/deny 的依据）
+    approval_source  TEXT,                         -- policy_auto | user_approved
+    idempotency_key  TEXT UNIQUE,                  -- 工具级幂等（三层里的第一层）
+    result_status    TEXT,                         -- ok|failed|denied|skipped
+    errcode          INT,
+    errmsg           TEXT,
+    response_digest  TEXT,                         -- 响应只存指纹，不存正文（PII/体积）
+    elapsed_ms       INT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()    -- 何时
+);
+CREATE INDEX IF NOT EXISTS idx_tool_audit_time  ON tool_audit (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_audit_tool  ON tool_audit (tool_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_audit_actor ON tool_audit (actor_id, created_at DESC);
+-- 被拒绝 / 需人工的调用是排障与合规最该看的信号（文章 B：被拒绝的请求尤其要记）
+CREATE INDEX IF NOT EXISTS idx_tool_audit_deny  ON tool_audit (decision) WHERE decision <> 'allow';
+
+-- ---------------- 策略判定留痕（架构 §6.5，硬伤 4）----------------
+-- 为什么要把阈值一起存：置信度阈值会随业务调整，**只存结论不存判据**的话，
+-- 三个月后没人能解释"这条为什么当时自动执行了"。存快照 → 结论可复现。
+CREATE TABLE IF NOT EXISTS policy_decision (
+    decision_id        BIGSERIAL PRIMARY KEY,
+    task_id            BIGINT,
+    relationship_key   TEXT NOT NULL,
+    assessment_id      BIGINT,
+    session_confidence REAL,
+    review_reasons     JSONB,
+    action             TEXT NOT NULL CHECK (action IN ('auto','confirm','human')),
+    action_reasons     JSONB,
+    thresholds         JSONB,                      -- 当时的阈值快照
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_policy_action ON policy_decision (action, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_policy_rel    ON policy_decision (relationship_key, decision_id DESC);
+
+-- ---------------- 任务运行时（架构 §6.3/§6.4，硬伤 3）----------------
+-- 收敛四处分散状态机为一个 `task`；`task_step` 是**检查点**：
+-- 不只记"跑到第几步"，还记 next_step（下一步该做什么）与 output_ref（已产出的结果在哪）。
+CREATE TABLE IF NOT EXISTS task (
+    task_id         BIGSERIAL PRIMARY KEY,
+    kind            TEXT NOT NULL,                 -- scoring|sync|eval|grade_tag|retention
+    status          TEXT NOT NULL DEFAULT 'queued'
+                    CHECK (status IN ('queued','running','waiting_approval','paused',
+                                      'succeeded','partial','failed','cancelled')),
+    actor_id        TEXT NOT NULL,                 -- 发起人（服务端推导）
+    trigger_src     TEXT NOT NULL DEFAULT 'manual',-- manual|schedule|public_class|system
+    scope           JSONB,
+    priority        INT NOT NULL DEFAULT 5,
+    budget_calls    INT,
+    budget_tokens   BIGINT,
+    cost_calls      INT NOT NULL DEFAULT 0,
+    cost_tokens     BIGINT NOT NULL DEFAULT 0,
+    deadline_at     TIMESTAMPTZ,
+    idempotency_key TEXT UNIQUE,
+    last_step_seq   INT NOT NULL DEFAULT 0,        -- **恢复点**
+    progress        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    partial_reason  TEXT,
+    error_class     TEXT,
+    error_message   TEXT,
+    heartbeat_at    TIMESTAMPTZ,                   -- 僵尸判定（INV-16）
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at      TIMESTAMPTZ,
+    finished_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_task_status ON task (status, priority, task_id);
+CREATE INDEX IF NOT EXISTS idx_task_beat   ON task (heartbeat_at) WHERE status = 'running';
+
+CREATE TABLE IF NOT EXISTS task_step (
+    step_id       BIGSERIAL PRIMARY KEY,
+    task_id       BIGINT NOT NULL REFERENCES task(task_id) ON DELETE CASCADE,
+    seq           INT NOT NULL,
+    name          TEXT NOT NULL,                   -- 如 session:score / writeback:drain
+    status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending','running','succeeded','failed','skipped')),
+    input_ref     JSONB,                           -- {session_id, watermark, ...} 不放正文
+    output_ref    JSONB,                           -- {assessment_id, outbox_id, ...}
+    next_step     TEXT,                            -- **检查点的核心**：下一步做什么
+    attempts      INT NOT NULL DEFAULT 0,
+    error_class   TEXT,
+    error_message TEXT,
+    started_at    TIMESTAMPTZ,
+    finished_at   TIMESTAMPTZ,
+    UNIQUE (task_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_step_task ON task_step (task_id, seq);
+
+-- 高风险操作的审批门：把"先计划后执行"从软约束变成硬约束
+-- （文章 H：teammate 提交计划后被**物理阻塞**，而不是靠提示词自觉）
+CREATE TABLE IF NOT EXISTS approval_request (
+    request_id      BIGSERIAL PRIMARY KEY,
+    task_id         BIGINT NOT NULL REFERENCES task(task_id),
+    step_id         BIGINT,
+    tool_name       TEXT NOT NULL,
+    params_redacted JSONB NOT NULL DEFAULT '{}'::jsonb,
+    requested_by    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','approved','rejected','expired')),
+    decided_by      TEXT,
+    decided_at      TIMESTAMPTZ,
+    note            TEXT,
+    expires_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_approval_pending ON approval_request (status, created_at DESC);
+
+-- 关联：业务运行记录 → 统一任务（历史数据为 NULL，不破坏兼容）
+ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS task_id BIGINT;
+ALTER TABLE sync_job    ADD COLUMN IF NOT EXISTS task_id BIGINT;
+-- 结论可按策略判定追溯（硬伤 4 的落库侧）
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS task_id BIGINT;
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS policy_action TEXT;
+-- 幂等记录的 TTL 可在 SQL 层判断（原先只能靠应用层时间差）
+ALTER TABLE request_guard ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+-- 续跑：新任务指向它从哪个任务恢复（检查点来源）。历史数据为 NULL。
+ALTER TABLE task ADD COLUMN IF NOT EXISTS resumed_from BIGINT;

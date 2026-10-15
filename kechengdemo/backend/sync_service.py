@@ -95,8 +95,13 @@ class SyncService:
         （半截会话，结论不可复现）。故再查一次 DB：``sync_job`` 里有 ``status='running'``
         即算在跑。
 
-        僵尸处理：进程崩溃来不及改状态会永久阻塞后续启动 → 超过 ``scoring_stale_minutes``
-        （与评分共用同一阈值，默认 240 分钟）仍 running 的标记为 failed 并放行。
+        僵尸处理（两级）：
+          ① **心跳**：`_bump` 每次进度更新会刷新 `heartbeat_at`（默认每会话一次）。
+             心跳停超过 `job_heartbeat_stale_minutes`（默认 15 分钟）→ 进程已死 → 标 failed 放行。
+             为什么必须加这一级：进程被 kill 时来不及改状态，记录会**永久停在 running**；
+             只靠 started_at 的 240 分钟超时，等于**把系统锁死 4 小时**（实测踩到）。
+          ② **绝对超时**：仍超过 `scoring_stale_minutes`（默认 240 分钟）的，一律视为僵尸
+             （兼容没有心跳的老行，以及心跳本身卡住的极端情况）。
         DB 不可用时**宁可放行也不误拦**。
         """
         with self._lock:
@@ -104,7 +109,9 @@ class SyncService:
                 return True
         try:
             row = db.query_one(
-                """SELECT id, EXTRACT(EPOCH FROM (now() - started_at)) AS el
+                """SELECT id,
+                          EXTRACT(EPOCH FROM (now() - started_at))   AS el,
+                          EXTRACT(EPOCH FROM (now() - heartbeat_at)) AS hb
                      FROM sync_job WHERE status='running' ORDER BY id DESC LIMIT 1""")
         except Exception:
             return False
@@ -114,8 +121,22 @@ class SyncService:
             import scoring_service as _ss
             stale = _ss.setting_int("scoring_stale_minutes", "SCORING_STALE_MINUTES",
                                     _ss.STALE_MINUTES) * 60
+            hb_stale = _ss.setting_int("job_heartbeat_stale_minutes",
+                                       "JOB_HEARTBEAT_STALE_MINUTES",
+                                       _ss.HEARTBEAT_STALE_MINUTES) * 60
         except Exception:
-            stale = 240 * 60
+            stale, hb_stale = 240 * 60, 15 * 60
+
+        # ① 心跳判死（心跳为 NULL = 老行/刚开始，退回用 started_at 判）
+        hb = row.get("hb")
+        if hb is not None and float(hb) > hb_stale:
+            db.execute(
+                """UPDATE sync_job SET status='failed', finished_at=now(),
+                          error=COALESCE(error, %s) WHERE id=%s AND status='running'""",
+                (f"进程异常退出：心跳已停 {int(float(hb) // 60)} 分钟"
+                 f"（阈值 {hb_stale // 60} 分钟），自动标记为失败", row["id"]))
+            return False
+        # ② 绝对超时兜底
         if row.get("el") is not None and float(row["el"]) > stale:
             db.execute(
                 """UPDATE sync_job SET status='failed', finished_at=now(),
@@ -182,7 +203,10 @@ class SyncService:
     def _patch_job(self, job_id, **fields):
         if not fields:
             return
-        keys = ", ".join(f"{k} = %s" for k in fields)
+        # 每次进度更新顺带刷新心跳：心跳停了 = 进程没了（见 schema.sql 的说明）。
+        # ⚠️ 心跳用字面量 `now()` 内联，其余字段一律参数化 —— 不用「值等于某个魔法字符串」
+        # 当哨兵（真实取值可能与哨兵撞车，那会把用户数据拼进 SQL）。
+        keys = ", ".join(f"{k} = %s" for k in fields) + ", heartbeat_at = now()"
         db.execute(f"UPDATE sync_job SET {keys} WHERE id = %s",
                    (*fields.values(), job_id))
 
