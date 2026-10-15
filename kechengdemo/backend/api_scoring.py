@@ -9,6 +9,8 @@ import idempotency
 import retention
 import scheduler
 import scoring_service as ss
+import security
+import settings_registry
 from scoring_service import service
 
 import analyze                       # noqa: E402  提示词/契约版本常量
@@ -203,6 +205,32 @@ def set_schedule(payload: dict = Body(default={})):
     return scheduler.set_scoring_interval(int(payload.get("interval_minutes") or 0))
 
 
+# ---------------- Schema 漂移检测（部分替代迁移框架，评审 P1-3）----------------
+
+@router.get("/schema-check")
+def schema_check_ep():
+    """对比 `schema.sql`（权威）与当前库的实际列，报告漂移。
+
+    为什么需要它：DDL 曾散在三处（`schema.sql` + `failure_worker.ensure_columns()` +
+    `idempotency._ensure_table()`），「新库建对了、老库缺列」只有跑到那行代码才暴露。
+    现在把「漂移」从「运行时才炸」变成「一条查询可见」。
+    """
+    import schema_check
+    return schema_check.check()
+
+
+@router.get("/defaults-manifest")
+def defaults_manifest_ep():
+    """默认值清单：**默认开启的保护** vs **默认关闭的观测/优化**（评审 §5.5）。
+
+    评审原话：「『防御措施存在但未接线』这类状态比没写更危险，
+    因为看代码的人会以为已经防住了。」本端点把「谁默认开、属于哪一类、
+    哪个定时任务真的接了线」变成可查的事实，不用读 50 个键的源码去猜。
+    """
+    import defaults_manifest
+    return defaults_manifest.verify()
+
+
 # ---------------- D2-1 等级 → 微伴标签（独立开关的读写入口）----------------
 
 @router.get("/grade-tags")
@@ -280,11 +308,11 @@ def rules_publish(payload: dict = Body(default={})):
                                         limit=int(payload.get("limit") or 0),
                                         run_if_possible=True)
         if dec.get("blocked") and not force:
-            ss._audit("manual", "rule_publish_blocked", f"rv:{ss.current_rule_version()}",
+            ss._audit(security.actor(), "rule_publish_blocked", f"rv:{ss.current_rule_version()}",
                       {"diffs": dec.get("diffs")})
             return {"ok": False, "reason": dec.get("reason"), "gate": dec}
         res = ss.sync_rules()
-        ss._audit("manual", "rule_publish", f"rv:{res.get('rule_version')}",
+        ss._audit(security.actor(), "rule_publish", f"rv:{res.get('rule_version')}",
                   {"gate": {k: dec.get(k) for k in ("enabled", "has_baseline",
                                                     "decidable", "gate_passed", "blocked")},
                    "forced": force, "rules": res.get("rules")})
@@ -340,7 +368,7 @@ def public_class_review(payload: dict = Body(default={})):
                             min_messages=int(payload.get("min_messages") or 0),
                             force=False,                    # 增量刷新（D3）
                             triggered_by="public_class", grades=grades)
-        ss._audit("manual", "public_class_review", f"mode:{mode}",
+        ss._audit(security.actor(), "public_class_review", f"mode:{mode}",
                   {"mode": mode, "grades": grades, "started": bool(res.get("ok")),
                    "reason": res.get("reason")})
         return {"ok": bool(res.get("ok")), "mode": mode, "scope": grades,
@@ -372,102 +400,37 @@ def retention_purge(payload: dict = Body(default={})):
 
 @router.get("/settings")
 def get_settings():
-    return {
-        "writeback_mode": service.writeback_mode(),
+    """运行时配置全量读取。
+
+    ⚠️ **键/类型/默认值一律来自 `settings_registry`**（代码评审 P2-10）：
+    改造前这里是 62 行手写 `ss.setting_int("ctx_window_size", "CTX_WINDOW_SIZE", 60)`，
+    与写侧的 46 项白名单元组**各存一份** → 新增配置极易只改一侧。
+    现在两侧同源，无法漂移。取值仍走 `ss.setting_*`（app_setting > .env > 默认），
+    **行为逐字不变**（`tests/test_settings_registry.py` 做逐键等值对比）。
+
+    少数「计算值 / 非 app_setting 来源」的键仍在此显式给出（见下方注释）。
+    """
+    out = {
+        # ---- 计算值与非 app_setting 来源（刻意不进注册表）----
+        "writeback_mode": service.writeback_mode(),      # 综合 app_setting + .env
         "env_writeback_mode": config.get("SCORE_WRITEBACK") or "dry_run",
-        "runtime": db.all_settings(),
-        "max_sessions": ss.setting_int("scoring_max_sessions", "SCORING_MAX_SESSIONS", 200),
-        "min_messages": ss.setting_int("scoring_min_messages", "SCORING_MIN_MESSAGES", 4),
-        "fetch_tags": ss.setting_bool("scoring_fetch_tags", "SCORING_FETCH_TAGS", False),
-        # Loop 护栏（架构 §2.2 G3/G4/G7）：0 = 不限
-        "deadline_minutes": ss.setting_int("scoring_deadline_minutes",
-                                           "SCORING_DEADLINE_MINUTES", 120),
-        "max_llm_calls": ss.setting_int("scoring_max_llm_calls",
-                                        "SCORING_MAX_LLM_CALLS", 500),
-        "priority_order": ss.setting_bool("scoring_priority_order",
-                                          "SCORING_PRIORITY_ORDER", True),
-        # 单次 LLM 调用超时（0 = 用 llm 模块默认 120s）
-        "llm_timeout_sec": ss.setting_int("llm_timeout_sec", "LLM_TIMEOUT_SEC", 0),
-        # 边界4 数据保留：**0 = 不清理**（保留多久是业务决策，代码不替业务拍板）
-        "data_retention_days": ss.setting_int("data_retention_days", "DATA_RETENTION_DAYS", 0),
-        # 闸6 回归门禁：改规则前必须跑评估集、指标不降才允许发布
-        "eval_gate_enabled": ss.setting_bool("eval_gate_enabled", "EVAL_GATE_ENABLED", True),
-        "eval_baseline_path": ss.setting("eval_baseline_path", "EVAL_BASELINE_PATH", ""),
-        # F2（D3 已拍板）：早会复核触发时刻（HH:MM，**空 = 关闭**）+ 公开课复核等级范围
-        "morning_cron": ss.setting("scoring_morning_cron", "SCORING_MORNING_CRON", ""),
-        "public_class_grade_scope": ss.setting("public_class_grade_scope",
-                                               "PUBLIC_CLASS_GRADE_SCOPE", "S,A"),
-        # D2-1 差值累加：微伴「客户评分」是累计行为分、无覆盖接口 →
-        # 必须只写增量。false = 退回改造前的整值语义（回滚开关，**开 live 前不要关**）
-        "writeback_delta_mode": ss.setting_bool("writeback_delta_mode",
-                                                "WRITEBACK_DELTA_MODE", True),
-        # ---- D2-1 等级 → 微伴标签：**与分数回写开关完全独立** ----
-        # ⚠️ 默认 off：打标签是「写外部系统」的副作用，必须人显式打开
-        "grade_tag_mode": ss.setting("grade_tag_mode", "GRADE_TAG_MODE", "off"),
-        "grade_tag_group": ss.setting("grade_tag_group", "GRADE_TAG_GROUP",
-                                      grade_tag.DEFAULT_TAG_GROUP),
-        "grade_tag_ids": grade_tag.get_tag_ids(),
-        # 建标签载体（专用测试客户，`staff_id:external_user_id`）—— 空 = 不允许自动建标签
+        "runtime": db.all_settings(),                    # 原始运行时设置（排障用）
+        "grade_tag_ids": grade_tag.get_tag_ids(),        # 标签 id 缓存（由 sync 写入）
         "grade_tag_probe_customer": db.get_setting(grade_tag.PROBE_KEY) or "",
-        # 回写副作用配额（架构 边界3）：**默认 0 = 不限**（不改变既有行为，
-        # 上线前由业务确认后再收紧；文档建议单客户单日 3 次）
-        "writeback_quota_per_run": ss.setting_int("writeback_quota_per_run",
-                                                  "WRITEBACK_QUOTA_PER_RUN", 0),
-        "writeback_quota_per_customer_per_day": ss.setting_int(
-            "writeback_quota_per_customer_per_day", "WRITEBACK_QUOTA_PER_CUSTOMER_PER_DAY", 0),
-        # 上下文预处理层（ctx_preprocess）运行时设置
-        "ctx_window_size": ss.setting_int("ctx_window_size", "CTX_WINDOW_SIZE", 60),
-        "ctx_drop_msgtypes": ss.setting("ctx_drop_msgtypes", "CTX_DROP_MSGTYPES", "31,9"),
-        "ctx_drop_pure_url": ss.setting_bool("ctx_drop_pure_url", "CTX_DROP_PURE_URL", True),
-        "ctx_drop_system": ss.setting_bool("ctx_drop_system", "CTX_DROP_SYSTEM", True),
-        "ctx_display_relative": ss.setting_bool("ctx_display_relative", "CTX_DISPLAY_RELATIVE", True),
-        "ctx_min_kept": ss.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4),
-        # B4（架构 §2.3）有效信息量的另两个口径：客户开口数 / 文本总长度
-        # （0 = 不限；min_customer_msgs 默认 1 = 客户至少说一句话）
-        "ctx_min_customer_msgs": ss.setting_int("ctx_min_customer_msgs",
-                                                "CTX_MIN_CUSTOMER_MSGS", 1),
-        "ctx_min_effective_chars": ss.setting_int("ctx_min_effective_chars",
-                                                  "CTX_MIN_EFFECTIVE_CHARS", 0),
-        # 关键历史检索（架构 §4.4）：④ 段总量上限 / ④′ 冷启动早期锚点条数
-        "ctx_key_history": ss.setting_bool("ctx_key_history", "CTX_KEY_HISTORY", True),
-        "ctx_key_history_max": ss.setting_int("ctx_key_history_max", "CTX_KEY_HISTORY_MAX", 30),
-        "ctx_cold_start_early": ss.setting_int("ctx_cold_start_early", "CTX_COLD_START_EARLY", 10),
-        # ③ 增量段 / 预算（架构 §4.5）：增量条数软上限（0 = 关闭增量，退回「最近窗口」）
-        # 与整段文本的 token 硬预算（超限先砍 ⑤ 再砍 ③ 最早）
-        "ctx_delta_max": ss.setting_int("ctx_delta_max", "CTX_DELTA_MAX", 200),
-        "ctx_tokens_max": ss.setting_int("ctx_tokens_max", "CTX_TOKENS_MAX", 12000),
-        # ①② 记忆段（架构 §4.5.3 / C-C）：读回上次评估结论（档案 + 上次明细）
-        "ctx_memory": ss.setting_bool("ctx_memory", "CTX_MEMORY", True),
-        # ⑤ 兜底窗口的触发阈值（架构 §4.5.2）：③④ 有效条数低于它就补最近 60 条。
-        # 默认 4 = 文档原设计（①② 已落地，连续性由记忆承担）；设 60 可退回保守行为。
-        "ctx_fallback_min": ss.setting_int("ctx_fallback_min", "CTX_FALLBACK_MIN", 4),
-        # 输出契约（阶段A）：模型调用与修复重试的运行时设置
-        "llm_temperature": ss.setting_float("llm_temperature", "LLM_TEMPERATURE", 0.0),
-        "llm_max_tokens": ss.setting_int("llm_max_tokens", "LLM_MAX_TOKENS", 0),
-        "llm_retry_attempts": ss.setting_int("llm_retry_attempts", "LLM_RETRY_ATTEMPTS", 3),
-        "rejudge_retries": ss.setting_int("rejudge_retries", "REJUDGE_RETRIES",
-                                          analyze.DEFAULT_MAX_REPAIRS),
-        "session_max_failures": ss.setting_int("session_max_failures", "SESSION_MAX_FAILURES", 3),
-        "prompt_version": analyze.PROMPT_VERSION,
-        "schema_version": contracts.SCHEMA_VERSION,
-        # 阶段B：图化灰度开关与回写 outbox（均为加性能力，默认关/开见下）
-        "use_graph_session": ss.setting_bool("use_graph_session", "USE_GRAPH_SESSION", False),
-        "use_outbox": ss.setting_bool("use_outbox", "USE_OUTBOX", True),
-        "trace_enabled": ss.setting_bool("trace_enabled", "TRACE_ENABLED", False),
-        # 置信度与复核触发（架构 第六章 E4）：默认值按 52 条真实评估标定，全部可调
-        "confidence_review_min": ss.setting_float("confidence_review_min", "CONFIDENCE_REVIEW_MIN",
-                                                  confidence.REVIEW_CONF_MIN),
-        "confidence_boundary_delta": ss.setting_int("confidence_boundary_delta",
-                                                    "CONFIDENCE_BOUNDARY_DELTA",
-                                                    confidence.GRADE_BOUNDARY_DELTA),
-        "confidence_flip_steps": ss.setting_int("confidence_flip_steps", "CONFIDENCE_FLIP_STEPS",
-                                                confidence.GRADE_FLIP_STEPS),
-        "confidence_weak_weight": ss.setting_int("confidence_weak_weight", "CONFIDENCE_WEAK_WEIGHT",
-                                                 confidence.WEAK_EVIDENCE_WEIGHT),
-        # ⚠️ 默认 true = 不放松（保持改造前的行为）；实测关掉可把复核率 90% → 60%
-        "review_engine_negative": ss.setting_bool("review_engine_negative", "REVIEW_ENGINE_NEGATIVE",
-                                                  confidence.REVIEW_ENGINE_NEGATIVE),
+        "prompt_version": analyze.PROMPT_VERSION,        # 代码常量（只读）
+        "schema_version": contracts.SCHEMA_VERSION,      # 代码常量（只读）
     }
+    # ---- 注册表派生的通用键（类型/默认值来自声明）----
+    # ⚠️ 写进响应用的键名是 `api_key`（历史对外名），**不是** app_setting 键名 ——
+    # 少数键两者不同（如 max_sessions ← scoring_max_sessions），用 app_setting 键名
+    # 会直接破坏前端读取（改名是破坏性变更，不是重构）。
+    fn = {settings_registry.INT: ss.setting_int,
+          settings_registry.BOOL: ss.setting_bool,
+          settings_registry.FLOAT: ss.setting_float,
+          settings_registry.STR: ss.setting}
+    for spec in settings_registry.SETTINGS:
+        out[spec.api_key] = settings_registry.typed_get(spec, fn[spec.type])
+    return out
 
 
 @router.post("/settings")
@@ -500,7 +463,7 @@ def _apply_settings(payload: dict):
         # 已有审计查询/前端可能按这个名字过滤，改名字是行为变更而非重构。
         db.set_setting("score_writeback_mode", m)
         db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-                   ("manual", "writeback_mode", m, db.as_json({"mode": m})))
+                   (security.actor(), "writeback_mode", m, db.as_json({"mode": m})))
         changed.append("score_writeback_mode")
     # ---- D2-1 等级标签开关：**独立于分数回写**，且默认 off ----
     # 为什么单独一个分支（而不是并进下面的通用循环）：需要校验取值，
@@ -514,57 +477,14 @@ def _apply_settings(payload: dict):
             db.set_setting("grade_tag_mode", gm)
             db.execute("INSERT INTO audit_log (actor, action, target, detail) "
                        "VALUES (%s,%s,%s,%s)",
-                       ("manual", "grade_tag_mode", gm,
+                       (security.actor(), "grade_tag_mode", gm,
                         db.as_json({"mode": gm, "old": old or "off",
                                     "scope": "仅等级标签，不影响分数回写"})))
             changed.append("grade_tag_mode")
-    for key, skey in (("max_sessions", "scoring_max_sessions"),
-                      ("min_messages", "scoring_min_messages"),
-                      ("fetch_tags", "scoring_fetch_tags"),
-                      ("deadline_minutes", "scoring_deadline_minutes"),
-                      ("max_llm_calls", "scoring_max_llm_calls"),
-                      ("priority_order", "scoring_priority_order"),
-                      ("llm_timeout_sec", "llm_timeout_sec"),
-                      ("data_retention_days", "data_retention_days"),
-                      ("eval_gate_enabled", "eval_gate_enabled"),
-                      ("eval_baseline_path", "eval_baseline_path"),
-                      ("morning_cron", "scoring_morning_cron"),
-                      ("public_class_grade_scope", "public_class_grade_scope"),
-                      ("writeback_delta_mode", "writeback_delta_mode"),
-                      ("grade_tag_mode", "grade_tag_mode"),
-                      ("grade_tag_group", "grade_tag_group"),
-                      ("grade_tag_probe_customer", "grade_tag_probe_customer"),
-                      ("writeback_quota_per_run", "writeback_quota_per_run"),
-                      ("writeback_quota_per_customer_per_day",
-                       "writeback_quota_per_customer_per_day"),
-                      ("ctx_window_size", "ctx_window_size"),
-                      ("ctx_drop_msgtypes", "ctx_drop_msgtypes"),
-                      ("ctx_drop_pure_url", "ctx_drop_pure_url"),
-                      ("ctx_drop_system", "ctx_drop_system"),
-                      ("ctx_display_relative", "ctx_display_relative"),
-                      ("ctx_min_kept", "ctx_min_kept"),
-                      ("ctx_min_customer_msgs", "ctx_min_customer_msgs"),
-                      ("ctx_min_effective_chars", "ctx_min_effective_chars"),
-                      ("ctx_key_history", "ctx_key_history"),
-                      ("ctx_key_history_max", "ctx_key_history_max"),
-                      ("ctx_cold_start_early", "ctx_cold_start_early"),
-                      ("ctx_delta_max", "ctx_delta_max"),
-                      ("ctx_tokens_max", "ctx_tokens_max"),
-                      ("ctx_memory", "ctx_memory"),
-                      ("ctx_fallback_min", "ctx_fallback_min"),
-                      ("llm_temperature", "llm_temperature"),
-                      ("llm_max_tokens", "llm_max_tokens"),
-                      ("llm_retry_attempts", "llm_retry_attempts"),
-                      ("rejudge_retries", "rejudge_retries"),
-                      ("session_max_failures", "session_max_failures"),
-                      ("use_graph_session", "use_graph_session"),
-                      ("use_outbox", "use_outbox"),
-                      ("trace_enabled", "trace_enabled"),
-                      ("confidence_review_min", "confidence_review_min"),
-                      ("confidence_boundary_delta", "confidence_boundary_delta"),
-                      ("confidence_flip_steps", "confidence_flip_steps"),
-                      ("confidence_weak_weight", "confidence_weak_weight"),
-                      ("review_engine_negative", "review_engine_negative")):
+    # ⚠️ 白名单**不再手写** —— 与读侧同源（`settings_registry.WRITABLE`）。
+    # 改造前这里是 46 项手写元组、读侧另有 62 行手工取值，两份清单靠约定同步：
+    # 新增配置只改一侧就会「改了不生效」或「改完看不见」（评审 P2-10）。
+    for key, skey in settings_registry.WRITABLE:
         if key in payload:
             old = db.get_setting(skey)
             db.set_setting(skey, payload[key])
@@ -585,7 +505,7 @@ def _audit_setting(key: str, old, new) -> None:
     """写一条配置变更审计（**失败不影响配置生效** —— 审计是旁路观测）。"""
     try:
         db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-                   ("manual", "set_setting", key,
+                   (security.actor(), "set_setting", key,
                     db.as_json({"key": key, "old": None if old is None else str(old),
                                 "new": None if new is None else str(new)})))
     except Exception as e:                      # noqa: BLE001

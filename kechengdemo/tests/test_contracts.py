@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """契约层单元测试（需要 pydantic，请用后端 venv 的 python 运行）。
 
-    .venv\Scripts\python.exe tests/test_contracts.py
+    .venv\\Scripts\\python.exe tests/test_contracts.py
 """
 # 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
 # UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。

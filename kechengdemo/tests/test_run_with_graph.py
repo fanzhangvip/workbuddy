@@ -70,22 +70,46 @@ def run_batch(use_graph, tag):
     return db.query_one("SELECT * FROM scoring_run WHERE id=%s", (run_id,)), res
 
 
+def _purge_run(run_id):
+    """清掉某个 run 的全部产物（评估 / 回写 / 审计 / run 行本身）。"""
+    for tbl in ("writeback_outbox", "negative_review", "score_writeback"):
+        db.execute(f"""DELETE FROM {tbl} WHERE assessment_id IN
+                       (SELECT assessment_id FROM customer_intent_assessment
+                         WHERE source_run_id=%s)""", (run_id,))
+    db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id=%s", (run_id,))
+    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+    try:
+        ss.repair_current_flags()
+    except Exception:
+        pass
+    db.execute("DELETE FROM scoring_run WHERE id=%s", (run_id,))
+    # ⚠️ Loop 护栏（H2）之后 `_run` 会写 `scoring_start` / `scoring_done` 审计 ——
+    # 这是**新增的写副作用**，跑该链路的测试必须同步清理（测试卫生铁律第 1 条）。
+    db.execute("DELETE FROM audit_log WHERE target=%s", (f"run:{run_id}",))
+
+
 def cleanup(run_ids):
     for run in run_ids:
         if not run:
             continue
-        for tbl in ("writeback_outbox", "negative_review", "score_writeback"):
-            db.execute(f"""DELETE FROM {tbl} WHERE assessment_id IN
-                           (SELECT assessment_id FROM customer_intent_assessment
-                             WHERE source_run_id=%s)""", (run,))
-        db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id=%s", (run,))
-        # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
-        try: ss.repair_current_flags()
-        except Exception: pass
-        db.execute("DELETE FROM scoring_run WHERE id=%s", (run,))
-        # ⚠️ Loop 护栏（H2）之后 `_run` 会写 `scoring_start` / `scoring_done` 审计 ——
-        # 这是**新增的写副作用**，跑该链路的测试必须同步清理（测试卫生铁律第 1 条）。
-        db.execute("DELETE FROM audit_log WHERE target=%s", (f"run:{run}",))
+        _purge_run(run)
+
+
+def cleanup_stale_test_runs():
+    """兜底：清掉**历史遗留**的测试 run（防「清理没跑到」留下永久残留）。
+
+    ⚠️ 为什么必须有这一步：`cleanup()` 依赖本轮拿到的 `run_id`；若测试中途异常/被 kill，
+    `run_id` 可能拿不到，残留就**永远清不掉**。实测后果：一次历史 run 留下 **4 条
+    `is_current=true` 的评估** → 4 个真实客户被当成「已评分且 D 级」，从此不再进入候选集
+    （静默漏评，从数字上完全看不出来）。
+
+    收口条件刻意很窄：只认 `triggered_by LIKE 'test-%'`，**绝不碰** `manual` / `schedule`。
+    """
+    ids = [r["id"] for r in db.query(
+        "SELECT id FROM scoring_run WHERE triggered_by LIKE %s", ("test-%",))]
+    for rid in ids:
+        _purge_run(rid)
+    return ids
 
 
 def main():
@@ -133,6 +157,7 @@ def main():
     finally:
         analyze.analyze = orig_analyze
         cleanup([run_old, run_new])
+        cleanup_stale_test_runs()      # 兜底：连历史遗留一并收口（见该函数注释）
         db.execute("DELETE FROM app_setting WHERE key='use_graph_session'")
         if _ORIG_MODE is None:
             db.execute("DELETE FROM app_setting WHERE key=%s", (_MODE_KEY,))

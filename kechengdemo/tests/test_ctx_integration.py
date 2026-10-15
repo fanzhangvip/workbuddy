@@ -2,7 +2,7 @@
 """阶段二集成测试（需数据库）：预处理层 + 接口层 + 配置登记。
 
 运行（用后端 venv python，连宿主 5433）：
-    .venv\Scripts\python.exe tests/test_ctx_integration.py
+    .venv\\Scripts\\python.exe tests/test_ctx_integration.py
 
 覆盖：
   1) DB 取数 → build_context → 编号回链 message_id → 证据闭环

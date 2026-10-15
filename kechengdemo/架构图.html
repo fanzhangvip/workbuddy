@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>客户意向评分系统 · 架构图</title>
+<style>
+  :root { --ink:#1f2933; --muted:#66788a; --line:#dfe6ee; --bg:#f6f8fb; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:32px 24px 64px; background:var(--bg); color:var(--ink);
+         font-family:"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif; }
+  .wrap { max-width:1560px; margin:0 auto; }
+  .scroll { overflow-x:auto; }
+  h1 { font-size:26px; margin:0 0 6px; letter-spacing:.5px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:28px; line-height:1.8; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px;
+          padding:20px 24px 26px; margin-bottom:28px;
+          box-shadow:0 1px 3px rgba(31,41,51,.06); }
+  .card h2 { font-size:17px; margin:0 0 6px; }
+  .card p.note { color:var(--muted); font-size:12.5px; margin:0 0 18px; line-height:1.8; }
+  .mermaid { text-align:center; }
+  .legend { display:flex; flex-wrap:wrap; gap:10px 26px; margin-top:18px;
+            font-size:12.5px; color:var(--muted);
+            border-top:1px dashed var(--line); padding-top:14px; }
+  .legend b { color:var(--ink); font-weight:600; }
+  code { background:#eef2f7; padding:1px 5px; border-radius:4px;
+         font-family:Consolas,Monaco,monospace; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>客户意向评分系统 · 架构图</h1>
+  <div class="sub">
+    依据当前源码实测生成：<code>backend/</code> 26 个模块 · <code>schema.sql</code> 22 张表 ·
+    <code>rules.json</code> 15 条规则 · Vue 3 七视图 · 8 个定时 job。<br />
+    配套文档：<code>客户意向评分_架构设计文档_v2.md</code> ·
+    <code>客户意向评分_代码评审报告_v1.md</code>
+  </div>
+
+  <div class="card" id="fig1">
+    <h2>图 1 · 系统分层总览</h2>
+    <p class="note">
+      实线为依赖方向（自上而下单向），虚线为定时触发。
+      唯一的反向依赖是 <code>db.py</code> 为复用根目录模块而回插 <code>sys.path</code>。
+    </p>
+    <div class="scroll"><div class="mermaid">
+flowchart TB
+    subgraph L1["① 表现层 · Vue 3 + Vite（7 视图，hash 路由）"]
+        direction LR
+        V1["总览"]
+        V2["会话管理"]
+        V3["评分中心"]
+        V4["负分复核"]
+        V5["评估集"]
+        V6["同步中心"]
+        V7["登录与凭据"]
+    end
+    subgraph L2["② 接口层 · FastAPI（6 个 router，前缀 /api）"]
+        direction LR
+        A1["api_auth"]
+        A2["api_sync"]
+        A3["api_chat"]
+        A4["api_scoring"]
+        A5["api_review"]
+        A6["api_eval"]
+    end
+    subgraph L3["③ 应用服务层 · 编排（8 个模块）"]
+        direction LR
+        S1["sync_service<br/>同步编排 + 水位"]
+        S2["scoring_service<br/>评分编排 + 护栏"]
+        S3["eval_runner<br/>抽样 / 跑分 / 门禁"]
+        S4["meta_loop<br/>误报率 / 回流"]
+        S5["failure_worker<br/>失败重投"]
+        S6["outbox + grade_tag<br/>两条独立回写链路"]
+        S7["scheduler<br/>8 个定时 job"]
+        S8["auth_service<br/>扫码取凭据"]
+    end
+    subgraph L4["④ 领域 / 公共层 · 纯函数优先（8 个模块）"]
+        direction LR
+        C1["rules<br/>计分 + 等级"]
+        C2["contracts<br/>双层契约"]
+        C3["confidence<br/>三层置信度"]
+        C4["hooks<br/>四类判定点"]
+        C5["ctx_preprocess<br/>上下文 6 阶段"]
+        C6["analyze<br/>提示词 + 回链"]
+        C7["graph_session<br/>LangGraph 图（灰度）"]
+        C8["idempotency<br/>trace<br/>retention"]
+    end
+    subgraph L5["⑤ 基础设施层（6 个模块）"]
+        direction LR
+        I1["db<br/>psycopg3 连接池"]
+        I2["http_client<br/>超时 + 分类重试"]
+        I3["llm<br/>异常分层"]
+        I4["config<br/>运行时设置"]
+        I5["weiban / ww_chatdata<br/>外部 API 客户端"]
+        I6["wb_bootstrap<br/>wb_keepalive"]
+    end
+    subgraph L6["⑥ 数据层 · PostgreSQL 5433（22 张表）"]
+        direction LR
+        D1["归档域<br/>staff · chat_session<br/>chat_message"]
+        D2["任务域<br/>sync_job · sync_cursor<br/>credential"]
+        D3["结论域<br/>customer_intent_assessment<br/>negative_review"]
+        D4["回写域<br/>writeback_outbox<br/>ledger · grade_tag_*"]
+        D5["评估域<br/>eval_case · eval_run<br/>session_failure"]
+        D6["观测域<br/>scoring_run · audit_log<br/>app_setting · trace_span"]
+    end
+    subgraph L7["⑦ 外部系统（经基础设施层访问）"]
+        direction LR
+        E1["微伴助手 OpenAPI<br/>员工 / 会话 / 消息 / 评分 / 标签"]
+        E2["企业微信<br/>会话存档组件 getchatdata"]
+        E3["DeepSeek<br/>chat/completions JSON mode"]
+        E4["本机 Chrome<br/>扫码登录 · 登录态保活"]
+    end
+
+    V1 ~~~ A1
+    A1 ~~~ S1
+    S1 ~~~ C1
+    C1 ~~~ I1
+    I1 ~~~ D1
+    D1 ~~~ E1
+    </div></div>
+    <div class="legend">
+      <span><b>端口</b> 后端 8848 · 前端 dev 5173 · PostgreSQL 5433</span>
+      <span><b>进程模型</b> 单 uvicorn 进程 + 后台线程 + APScheduler</span>
+      <span><b>依赖方向</b> 自上而下单向：表现 → 接口 → 服务 → 领域 → 基础设施 → 数据 → 外部</span>
+    </div>
+  </div>
+
+  <div class="card" id="fig2">
+    <h2>图 2 · 评分链路（单会话，含四道护栏）</h2>
+    <p class="note">
+      ①② 为「记忆段」：不参与任何裁剪，也不参与证据回链（决议 M-C —— 记忆能影响理解，改不了分数）。
+      <code>persist</code> 把 assessment 与 outbox 写在同一个事务里，这是「回写不丢失」的前提。
+    </p>
+    <div class="scroll"><div class="mermaid">
+flowchart LR
+    C["候选会话<br/>_candidates<br/>S/A→未评→B/C→其他"] --> P["prepare_context<br/>build_context 五段装配"]
+    P --> G1{"① before_llm_call<br/>G3 总超时 / G4 成本预算<br/>B4 有效信息量三口径"}
+    G1 -->|"拒绝：insufficient_content"| SKIP["skipped<br/>计入 hook_denials"]
+    G1 -->|放行| F["compute_facts<br/>48h 未回复等引擎事实"]
+    F --> J["judge · LLM 判定<br/>契约校验失败→回灌修复"]
+    J --> IT["items<br/>拆正负 + 叠加引擎硬指标"]
+    IT --> LS["local_score<br/>rules 计分 + confidence 三层合成"]
+    LS --> G2{"② after_llm_output<br/>极性终检 / 覆盖率 / 证据体检"}
+    G2 -->|"极性异常"| FATAL["FatalLLMError<br/>→ session_failure 转人工"]
+    G2 -->|通过| PS["③ persist_assessment<br/>assessment + outbox 同事务"]
+    PS --> TG["tag_evidence<br/>写 chat_message.rule_tags"]
+    TG --> WB["④ before_writeback<br/>开关 / 幂等 / 配额 / 差值"]
+    WB --> O1["正分 → writeback_outbox"]
+    WB --> O2["负分 → negative_review 队列"]
+    </div></div>
+    <div class="legend">
+      <span><b>上下文五段</b> ①状态档案 ②上次明细 ③增量 ④关键历史 ⑤兜底窗口</span>
+      <span><b>裁剪顺序</b> ⑤整段砍 → ④每组留最新 1 条 → ③从最早按批砍</span>
+    </div>
+  </div>
+
+  <div class="card" id="fig3">
+    <h2>图 3 · 回写 outbox 状态机</h2>
+    <p class="note">分数回写与等级标签是<b>两条完全独立的链路</b>：表、开关、水位互不共享。</p>
+    <div class="mermaid">
+stateDiagram-v2
+    [*] --> pending: 与 assessment 同事务入队
+    pending --> sending: _claim + FOR UPDATE SKIP LOCKED
+    sending --> done: errcode == 0 → 推进水位
+    sending --> failed: 失败 → 退避 30s→3600s
+    failed --> sending: next_attempt_at 到期
+    failed --> dead: attempts ≥ 8 → 待人工
+    done --> [*]
+    </div>
+    <div class="legend">
+      <span><b>分数</b> 差值累加 · <code>writeback_ledger</code> · 开关 <code>score_writeback_mode</code>（默认 dry_run）</span>
+      <span><b>等级</b> 标签覆盖 · <code>grade_tag_ledger</code> · 开关 <code>grade_tag_mode</code>（默认 off）</span>
+      <span><b>卡死回收</b> sending 超 600s 回退为 failed</span>
+    </div>
+  </div>
+
+  <div class="card" id="fig4">
+    <h2>图 4 · 评估集与回归门禁闭环</h2>
+    <p class="note">
+      AI 预标注（<code>prefilled=true</code>）默认<b>排除</b>在指标之外 —— 否则就是「AI 批改自己」。
+      门禁的「无法判定」与「通过」是两个字段，前端必须如实展示。
+    </p>
+    <div class="scroll"><div class="mermaid">
+flowchart LR
+    S["分层抽样<br/>等级 × 有无负分 × 消息数档"] --> PV["AI 预标注<br/>prefilled=true · 零 LLM 调用"]
+    PV --> H["人工复核修正<br/>保存后 prefilled=false"]
+    H --> R["run_sync 跑分<br/>逐条 run_case 只算不落库"]
+    R --> M["metrics<br/>rule_f1 / grade_acc / fp_case_rate"]
+    M --> G{"gate 对比 baseline<br/>容差 2 个百分点"}
+    G -->|"下降"| B["阻断发布<br/>rules/publish 被拦"]
+    G -->|"持平或变好"| P2["允许同步 scoring_rule"]
+    H -->|"改判 corrected / rejected"| BF["meta_loop 回流 → eval_case"]
+    BF --> R
+    R --> FP["rule_fp_ranking<br/>改 rules.json 的依据"]
+    </div></div>
+    <div class="legend">
+      <span><b>三条铁律</b> 只标 rule_id 不标总分 · 跑分只算不落库 · 门禁看方向</span>
+      <span><b>漂移防护</b> <code>messages_hash</code> 不一致则样本失效</span>
+    </div>
+  </div>
+
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      fontFamily: '"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif',
+      fontSize: '13px',
+      primaryColor: '#eaf1fb',
+      primaryBorderColor: '#93b4dd',
+      primaryTextColor: '#1f2933',
+      lineColor: '#8c9bab',
+      clusterBkg: '#f8fafd',
+      clusterBorder: '#c8d5e4',
+      edgeLabelBackground: '#ffffff'
+    },
+    flowchart: { curve: 'basis', nodeSpacing: 18, rankSpacing: 40, useMaxWidth: false },
+    state: { useMaxWidth: false }
+  });
+</script>
+</body>
+</html>

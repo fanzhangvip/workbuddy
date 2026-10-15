@@ -42,7 +42,7 @@ def pick_session():
              FROM chat_session c
             WHERE c.session_type = 'ext_user' AND c.target_id IS NOT NULL
               AND c.msg_count >= 1
-            ORDER BY c.msg_count DESC LIMIT 1""")
+            ORDER BY c.msg_count DESC, c.session_id LIMIT 1""")
 
 
 # ============================================================ A3

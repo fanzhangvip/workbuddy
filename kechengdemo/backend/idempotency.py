@@ -80,6 +80,23 @@ def run_once(request_key: str, endpoint: str, fn, *, ttl_seconds: int = None):
     first = bool(got)
 
     if not first:
+        # ①′ 过期判定（此前 `ttl` 算出来却**从未使用** —— 参数被静默忽略，是死参数）：
+        # 记录超过 ttl 视为过期 → 删掉旧记录并**重新执行**，而不是无限期复用旧结果。
+        # 默认 ttl=RETENTION_SECONDS，与 `reap()` 的清理周期一致，故默认行为不变；
+        # 只有显式传更短 ttl 的调用方才会看到「过期后重新执行」的语义。
+        old = db.query_one(
+            """SELECT EXTRACT(EPOCH FROM (now() - created_at)) AS age
+                 FROM request_guard WHERE request_key=%s""", (request_key,))
+        if old and old.get("age") is not None and float(old["age"]) > ttl:
+            db.execute("DELETE FROM request_guard WHERE request_key=%s", (request_key,))
+            got = db.execute(
+                """INSERT INTO request_guard (request_key, endpoint, response)
+                   VALUES (%s, %s, NULL) ON CONFLICT (request_key) DO NOTHING""",
+                (request_key, endpoint))
+            if got:
+                first = True                   # 过期记录已让位，本次是新的首次执行
+
+    if not first:
         # ② 已有记录：复用（可能还在执行中 → 短暂等待）
         for _ in range(20):
             row = db.query_one("SELECT response FROM request_guard WHERE request_key=%s",
@@ -98,7 +115,7 @@ def run_once(request_key: str, endpoint: str, fn, *, ttl_seconds: int = None):
     # ③ 首次：执行并落结果
     try:
         result = fn()
-    except Exception as e:
+    except Exception:
         # 失败**不留幂等记录** —— 否则用户重试会被「重放」成同样的失败，
         # 明明一次重试就能成功的事被永久钉死。
         db.execute("DELETE FROM request_guard WHERE request_key=%s", (request_key,))

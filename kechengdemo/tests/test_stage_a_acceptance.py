@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """阶段 A（输出契约）端到端验收 —— 需要 PostgreSQL(5433) + DeepSeek 真实调用。
 
-    .venv\Scripts\python.exe tests/test_stage_a_acceptance.py
+    .venv\\Scripts\\python.exe tests/test_stage_a_acceptance.py
 
 做三件事：
   ① 挑一个**从未被评过**的真实会话，走后端 `service.score_session()` 完整跑一遍
@@ -52,7 +52,7 @@ def pick_candidates(limit=6):
              ) last ON true
             WHERE c.session_type = 'ext_user' AND c.target_id IS NOT NULL
               AND c.msg_count BETWEEN 8 AND 40 AND last.assessment_id IS NULL
-            ORDER BY c.msg_count DESC LIMIT 6""")
+            ORDER BY c.msg_count DESC, c.session_id LIMIT 6""")
 
 
 def find_hit_candidate():

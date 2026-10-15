@@ -65,16 +65,29 @@ def stub_analyze(conversation, facts, rules, **kw):
 
 
 def pick_unscored_candidate():
+    """挑一个能做 G6 实测的会话。
+
+    ⚠️ 选候选取必须**确定且前提成立**，不能依赖生产数据现状（踩过）：
+      · ``msg_count`` 有大量并列 → 只按它排序时 ``LIMIT 1`` 的结果**不稳定**，
+        每次可能挑到不同会话（实测同一批 59 条消息的会话里，有的 ``customer_msgs=0``）。
+      · 若挑到「客户一句话没说过」的会话，会被 B4 闸门（``min_customer_msgs``）
+        拦下 → ``_score_one`` 返回 ``skipped`` → 断言失败，但看起来像功能坏了。
+    故：① 补 ``session_id`` 作次序键（结果确定）；
+        ② 要求该会话**客户至少说过 1 句**（让闸门前提主动成立，而不是碰运气）。
+    """
     return db.query_one(
         """SELECT c.staff_id, s.name AS staff_name, c.session_id, c.target_id,
                   c.name AS target_name, c.msg_count, c.last_msg_time
              FROM chat_session c LEFT JOIN staff s ON s.staff_id = c.staff_id
             WHERE c.session_type = 'ext_user' AND c.target_id IS NOT NULL
               AND c.msg_count >= 8
+              AND EXISTS (
+                  SELECT 1 FROM chat_message m
+                   WHERE m.session_id = c.session_id AND m.direction = 'receive')
               AND NOT EXISTS (
                   SELECT 1 FROM customer_intent_assessment a
                    WHERE a.relationship_key = c.staff_id || ':' || c.target_id)
-            ORDER BY c.msg_count DESC LIMIT 1""")
+            ORDER BY c.msg_count DESC, c.session_id LIMIT 1""")
 
 
 def cleanup(staff_id, session_id):

@@ -1,0 +1,7 @@
+# 开发期依赖（CI / 本地检查用；运行时依赖见 requirements.txt）
+#
+# 安装：.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+-r requirements.txt
+
+# lint（代码评审 P2-4：项目此前没有任何 lint 配置）
+ruff>=0.6

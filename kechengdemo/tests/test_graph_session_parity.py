@@ -95,7 +95,7 @@ def pick_candidates(n):
               AND NOT EXISTS (
                   SELECT 1 FROM customer_intent_assessment a
                    WHERE a.relationship_key = c.staff_id || ':' || c.target_id)
-            ORDER BY c.msg_count DESC LIMIT %s""", (n,))
+            ORDER BY c.msg_count DESC, c.session_id LIMIT %s""", (n,))
 
 
 def row_of(run_id, session_id):

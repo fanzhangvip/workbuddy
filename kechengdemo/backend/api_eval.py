@@ -17,6 +17,7 @@ import eval_runner
 import meta_loop
 import rules as rules_mod
 import scoring_service as ss
+import security
 
 router = APIRouter(prefix="/api/eval", tags=["eval"])
 
@@ -159,7 +160,9 @@ def save(payload: dict = Body(default={})):
     neg = [i for i in valid if i["polarity"] == "negative"]
     score = rules_mod.compute_score(pos, neg, rules)
     grade = rules_mod.grade_of(score["raw_score"], rules)
-    annotator = (payload.get("annotator") or "复核员").strip()
+    # 审计主体由服务端推导（评审 P0-2）：客户端自报值只进 detail.reported_actor
+    reported = payload.get("annotator")
+    annotator = security.actor()
 
     db.execute(
         """UPDATE eval_case SET expected_items=%s, expected_raw_score=%s, expected_grade=%s,
@@ -169,8 +172,9 @@ def save(payload: dict = Body(default={})):
          (payload.get("note") or "").strip(), bool(payload.get("disputed")), cid))
     db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
                (annotator, "eval_annotate", str(cid),
-                db.as_json({"items": valid, "raw_score": score["raw_score"],
-                            "grade": grade["grade"], "invalid": bad})))
+                db.as_json(security.actor_detail(
+                    reported, items=valid, raw_score=score["raw_score"],
+                    grade=grade["grade"], invalid=bad))))
     return {"ok": True, "expected_raw_score": score["raw_score"], "expected_grade": grade["grade"],
             "positive_total": score["positive_total"], "negative_total": score["negative_total"],
             "invalid_items": bad}
@@ -185,8 +189,9 @@ def freeze(payload: dict = Body(default={})):
     n = db.execute("UPDATE eval_case SET frozen=%s, updated_at=now() WHERE case_id=%s",
                    (frozen, cid))
     db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-               ((payload.get("annotator") or "复核员"), "eval_freeze", str(cid),
-                db.as_json({"frozen": frozen})))
+               (security.actor(), "eval_freeze", str(cid),
+                db.as_json(security.actor_detail(payload.get("annotator"),
+                                                 frozen=frozen))))
     return {"ok": bool(n), "frozen": frozen}
 
 
@@ -225,12 +230,13 @@ def prefill(payload: dict = Body(default={})):
     ⚠️ **预标注不是金标准**：内容来自 AI 自己 → 跑分与门禁**默认排除** `prefilled`。
     人工在标注页保存后自动转为「已确认」。`dry_run=true` 可先看会填哪些。
     """
+    # ⚠️ `annotator` 是**系统身份**（「AI 预标注」），刻意**不接受客户端指定** ——
+    # 否则可以伪造「这条是 AI 预标注/这条是人工标注」的溯源信息。
+    # 操作者身份由鉴权中间件从凭据推导，只进审计 detail。
     return eval_runner.prefill(kind=(payload.get("kind") or ""),
                                limit=int(payload.get("limit") or 0),
                                overwrite=bool(payload.get("overwrite")),
-                               dry_run=bool(payload.get("dry_run")),
-                               annotator=(payload.get("annotator") or "AI预标注"))
-
+                               dry_run=bool(payload.get("dry_run")))
 
 # ---------------- 跑分（后台线程 + 进度）----------------
 
@@ -318,7 +324,7 @@ def set_baseline(payload: dict = Body(default={})):
                                     case_total=row.get("case_total") or 0,
                                     note=(payload.get("note") or "").strip())
     db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-               ("manual", "eval_set_baseline", str(row["id"]),
+               (security.actor(), "eval_set_baseline", str(row["id"]),
                 db.as_json({"metrics": row.get("metrics")})))
     return {"ok": True, "baseline": out}
 

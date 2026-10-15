@@ -189,24 +189,50 @@ def _post_tag(path: str, body: dict) -> dict:
                          headers={"access_token": get_access_token()})
 
 
-def list_tags(limit: int = 1000, offset: int = 0) -> dict:
-    """获取标签列表（`/open-api/tag/list`）。返回 `tag_list`（含 tag_id/tag_group/tag_name）。"""
-    return _check(request_retry("GET", "/open-api/tag/list", params={
-        "access_token": get_access_token(), "limit": limit, "offset": offset,
+#: `/open-api/tag/list` 的 limit 上限 —— **实测**：101 以上（200/500/1000）一律
+#: 返回 ``errcode=20357 查询tags limit不合法``，即整条标签链路直接不可用。
+TAG_PAGE_MAX = 100
+
+
+def _norm_tag(t: dict) -> dict:
+    """把标签的**组名**归一到统一的 ``tag_group`` 键（原键保留）。
+
+    ⚠️ 实测官方 ``/open-api/tag/list`` 返回的是 ``tag_group_name``（**没有** ``tag_group``）。
+    直接读 ``tag_group`` 会永远拿到空串 → 任何「按组名筛选」的逻辑都会**全部匹配失败**，
+    表现为「标签明明存在却被判为缺失」，进而在 create_missing 时**重复创建标签**（真副作用）。
+    """
+    if isinstance(t, dict) and not t.get("tag_group") and t.get("tag_group_name"):
+        return {**t, "tag_group": t["tag_group_name"]}
+    return t
+
+
+def list_tags(limit: int = TAG_PAGE_MAX, offset: int = 0) -> dict:
+    """获取标签列表（`/open-api/tag/list`）。返回 `tag_list`（含 tag_id/tag_group/tag_name）。
+
+    ⚠️ ``limit`` **不得超过 :data:`TAG_PAGE_MAX`（100）**：微伴对超出上限的请求
+    直接返回 20357，不会自动截断。这里主动夹取并改成合法值，避免调用方传大值就静默全失败。
+    """
+    lim = TAG_PAGE_MAX if not limit or int(limit) > TAG_PAGE_MAX else int(limit)
+    res = _check(request_retry("GET", "/open-api/tag/list", params={
+        "access_token": get_access_token(), "limit": lim, "offset": offset,
     }, retries=2), "获取标签列表")
+    if isinstance(res, dict) and res.get("tag_list"):
+        res["tag_list"] = [_norm_tag(t) for t in res["tag_list"]]
+    return res
 
 
-def iter_all_tags(page_size: int = 200):
-    """迭代全部标签（自动翻页）。"""
+def iter_all_tags(page_size: int = TAG_PAGE_MAX):
+    """迭代全部标签（自动翻页）。``page_size`` 同样受 :data:`TAG_PAGE_MAX` 约束。"""
+    size = TAG_PAGE_MAX if not page_size or int(page_size) > TAG_PAGE_MAX else int(page_size)
     offset = 0
     while True:
-        res = list_tags(limit=page_size, offset=offset)
+        res = list_tags(limit=size, offset=offset)
         batch = res.get("tag_list") or []
         for t in batch:
-            yield t
-        if len(batch) < page_size:
+            yield _norm_tag(t)          # 已在 list_tags 归一，这里兜底（防止其它传入路径）
+        if len(batch) < size:
             break
-        offset += page_size
+        offset += size
 
 
 def add_customer_tag(staff_id: str, external_user_id: str = "", unionid: str = "",

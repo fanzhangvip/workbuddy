@@ -86,7 +86,7 @@ def _session():
                   c.msg_count, c.last_msg_time, s.name AS staff_name
              FROM chat_session c LEFT JOIN staff s ON s.staff_id=c.staff_id
             WHERE c.session_type='ext_user' AND c.target_id IS NOT NULL
-              AND c.msg_count >= 8 ORDER BY c.msg_count DESC LIMIT 1""")
+              AND c.msg_count >= 8 ORDER BY c.msg_count DESC, c.session_id LIMIT 1""")
     return dict(r) if r else None
 
 

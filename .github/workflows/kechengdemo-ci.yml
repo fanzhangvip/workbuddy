@@ -1,0 +1,87 @@
+# 客户意向评分系统 —— CI（代码评审 P2-3 / P2-4）
+#
+# 此前：无 CI、无 lint、无统一测试入口 → 「改了不知道有没有跑全」。
+# 现在：每次 push / PR 自动跑 lint + 全部脚本式测试。
+#
+# ⚠️ 本仓库是多项目共用的 monorepo（git 根 = 工作区根），
+# 故用 paths 过滤器 + working-directory 把范围限死在 kechengdemo/，
+# 其他子项目（book / p12306 / videodemo …）的改动不会触发本流水线。
+
+name: kechengdemo CI
+
+on:
+  push:
+    paths:
+      - 'kechengdemo/**'
+      - '.github/workflows/kechengdemo-ci.yml'
+  pull_request:
+    paths:
+      - 'kechengdemo/**'
+      - '.github/workflows/kechengdemo-ci.yml'
+  workflow_dispatch:        # 支持手动触发
+
+defaults:
+  run:
+    working-directory: kechengdemo
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    # 测试需要 PostgreSQL（本机开发用 Docker，端口 5433）
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-not-a-secret
+          POSTGRES_DB: weiban_chat
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d weiban_chat"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # 所有测试脚本统一 UTF-8 输出（评审 P2-2：GBK 控制台会 UnicodeEncodeError）
+      PYTHONIOENCODING: utf-8
+      DATABASE_URL: postgresql://postgres:ci-not-a-secret@127.0.0.1:5433/weiban_chat
+      # CI 里关闭应用层鉴权，避免测试脚本每条请求都要带凭据
+      # （鉴权本身由 tests/test_security.py 单独覆盖）
+      API_AUTH: 'off'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: kechengdemo/requirements*.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint（ruff：只查真 bug 类规则）
+        run: python -m ruff check .
+
+      - name: 等待 PostgreSQL 就绪
+        run: |
+          for i in $(seq 1 30); do
+            if python -c "import psycopg,os;psycopg.connect(os.environ['DATABASE_URL']).close()" 2>/dev/null; then
+              echo "PostgreSQL 就绪"; exit 0
+            fi
+            echo "等待 PostgreSQL… ($i)"; sleep 2
+          done
+          echo "PostgreSQL 未就绪"; exit 1
+
+      - name: 建表（schema.sql 是唯一权威来源）
+        run: python -c "import sys;sys.path.insert(0,'backend');import db;db.init_db();print('schema 已应用')"
+
+      - name: 全量测试（统一入口，串行）
+        run: python tests/run_all.py

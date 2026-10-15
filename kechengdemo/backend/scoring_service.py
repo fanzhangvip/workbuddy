@@ -38,7 +38,8 @@ import contracts                    # noqa: E402  模型输出的双层契约（
 import ctx_preprocess               # noqa: E402  上下文预处理层（统一「消息 → 文本」）
 import hooks                        # noqa: E402  显式钩子（架构 §2.4 H3）；护栏判定本体在此
 import llm                          # noqa: E402  异常分层：可重试 vs 不可重试
-import grade_tag                    # noqa: E402  D2-1 等级→微伴标签（独立链路）
+# 等级 → 微伴标签（决策 D2 第 1 条，独立链路，与分数回写完全分开）
+import grade_tag                    # noqa: E402
 import outbox                       # noqa: E402  回写 outbox（修 G6：回写与评分解耦）
 import rules as rules_mod           # noqa: E402
 import weiban                       # noqa: E402
@@ -613,7 +614,7 @@ def build_context(staff_id: str, session_id: str, limit: int = None,
                 for rid in (r.get("tags") or []):
                     by_rule.setdefault(rid, []).append(r)
             shrink = set()
-            for rid, rs in by_rule.items():
+            for _rid, rs in by_rule.items():
                 if len(rs) <= 1:
                     continue
                 rs = sorted(rs, key=lambda x: (x.get("msg_time") or 0, str(x.get("message_id") or "")))
@@ -962,9 +963,19 @@ class ScoringService:
             args=(run_id, staff_ids, max_sessions, min_messages, force, rv, grades),
             daemon=True, name=f"scoring-{run_id}")
         self._thread.start()
-        # 审计三节点之一（架构 H2）：启动就留痕，便于追溯「谁在什么时候全量重评了」
-        _audit(triggered_by, "scoring_start", f"run:{run_id}",
-               {"kind": "full" if force else "incremental", "rule_version": rv,
+        # 审计三节点之一（架构 H2）：启动就留痕，便于追溯「谁在什么时候全量重评了」。
+        # 主体由服务端推导（评审 P0-2）：这里仍在**请求上下文**内（线程刚启动、
+        # contextvar 尚可见），故 `security.actor()` 拿得到认证用户名；
+        # `triggered_by`（manual/schedule/public_class）是**触发来源**、语义不同，
+        # 保留在 detail 里单独记录。
+        try:
+            import security as _sec
+            _actor = _sec.actor()
+        except Exception:                       # noqa: BLE001
+            _actor = triggered_by
+        _audit(_actor, "scoring_start", f"run:{run_id}",
+               {"triggered_by": triggered_by,
+                "kind": "full" if force else "incremental", "rule_version": rv,
                 "max_sessions": max_sessions, "min_messages": min_messages,
                 "deadline_minutes": deadline_min, "max_llm_calls": max_llm_calls,
                 "staff_ids": staff_ids})

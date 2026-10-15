@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """模型客户端异常分层单测（不依赖网络：用假响应替换 urlopen）。
 
-    .venv\Scripts\python.exe tests/test_llm_client.py
+    .venv\\Scripts\\python.exe tests/test_llm_client.py
 """
 # 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
 # UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。

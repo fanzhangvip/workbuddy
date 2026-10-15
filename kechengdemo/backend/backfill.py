@@ -425,20 +425,20 @@ def _report(rows, plan, summary, applied, backup=None, skipped=None, flag_only=N
     print(f"  字段变更数 : {summary or '无'}")
     if skipped:
         print(f"  ⚠️ 跳过（缺 evidence_ids，无法算置信度）: {len(skipped)} 行")
-        print(f"      → 这批是阶段A 之前写的（无证据回链编号）。按生产口径必然算出"
-              f" conf=0.0 + low_confidence，属**失真**，故不写。")
-        print(f"      → 可用 --legacy-evidence 以「原文行」代替编号兜底计算（非生产口径）")
+        print("      → 这批是阶段A 之前写的（无证据回链编号）。按生产口径必然算出"
+              " conf=0.0 + low_confidence，属**失真**，故不写。")
+        print("      → 可用 --legacy-evidence 以「原文行」代替编号兜底计算（非生产口径）")
     if flag_only:
         print(f"  ✔ 另做自洽性修复: {len(flag_only)} 行（flag 与 reasons 不一致 / 缺原因）")
-        print(f"      · 类型一：有负分却 flag=False → 置 true（老判据 `bool(neg or unchecked)` 就该 True）")
-        print(f"      · 类型二：已 flag=True、有负分但 reasons 缺失 → 补 ['has_negative']")
-        print(f"      → 这些 reason **不依赖置信度**，可由事实无损推出，故可在「不回填置信度」时单独修")
+        print("      · 类型一：有负分却 flag=False → 置 true（老判据 `bool(neg or unchecked)` 就该 True）")
+        print("      · 类型二：已 flag=True、有负分但 reasons 缺失 → 补 ['has_negative']")
+        print("      → 这些 reason **不依赖置信度**，可由事实无损推出，故可在「不回填置信度」时单独修")
     if applied and backup:
         print(f"  备份文件   : {backup}")
         print(f"  回滚命令   : python -m backend.backfill --rollback {backup}")
     if plan and not applied:
         print("\n  样例（前 5 行）：")
-        for r, new, d in plan[:5]:
+        for r, new, _d in plan[:5]:
             print(f"    #{r['assessment_id']} grade={r['grade']} → "
                   f"conf={new['session_confidence']} "
                   f"reasons={new['review_reasons']} review={new['needs_human_review']}")

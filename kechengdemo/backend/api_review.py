@@ -14,6 +14,7 @@ from fastapi import APIRouter, Body
 import db
 import rules as rules_mod
 import scoring_service as ss
+import security
 
 router = APIRouter(prefix="/api/review", tags=["review"])
 
@@ -130,7 +131,10 @@ def submit(payload: dict = Body(default={})):
     valid = [i for i in valid if i["polarity"] == "negative"]
     total = sum(i["score"] for i in valid)
     note = (payload.get("note") or "").strip()
-    reviewer = (payload.get("reviewer") or "工作人员").strip()
+    # 审计与署名主体**由服务端从凭据推导**（评审 P0-2）；客户端自报值只进
+    # `detail.reported_actor` 且明确标记不可信 —— 否则 `audit_log` 无法作为追责依据。
+    reported = payload.get("reviewer")
+    reviewer = security.actor()
 
     db.execute(
         """UPDATE negative_review SET human_negative_items=%s, human_negative_total=%s,
@@ -156,9 +160,10 @@ def submit(payload: dict = Body(default={})):
         (vstatus, r["assessment_id"]))
     db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
                (reviewer, "review_submit", str(rid),
-                db.as_json({"human_negative_total": total, "items": valid,
-                            "ai_negative_total": r["ai_negative_total"],
-                            "verification_status": vstatus, "note": note})))
+                db.as_json(security.actor_detail(
+                    reported, human_negative_total=total, items=valid,
+                    ai_negative_total=r["ai_negative_total"],
+                    verification_status=vstatus, note=note))))
     # E5 meta-loop：改判过的复核**立刻回流评估集**（人工判断是最贵的资源，不该只用一次）。
     # 失败不影响复核提交本身 —— 回流是「后续改进」，不是「本次结论」。
     backflow = {}
@@ -185,7 +190,8 @@ def set_status(payload: dict = Body(default={})):
     if not r:
         return {"ok": False, "reason": "复核记录不存在"}
 
-    reviewer = (payload.get("reviewer") or "工作人员").strip()
+    reported = payload.get("reviewer")
+    reviewer = security.actor()          # 服务端推导，不采信请求体（评审 P0-2）
     reviewed = "now()" if st in ("done", "ignored") else "NULL"
     db.execute(
         f"""UPDATE negative_review SET status=%s, reviewer=%s,
@@ -196,7 +202,8 @@ def set_status(payload: dict = Body(default={})):
     db.execute("UPDATE customer_intent_assessment SET review_status=%s WHERE assessment_id=%s",
                (st, r["assessment_id"]))
     db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-               (reviewer, "review_status", str(rid), db.as_json({"status": st})))
+               (reviewer, "review_status", str(rid),
+                db.as_json(security.actor_detail(reported, status=st))))
     return {"ok": True, "status": st}
 
 
@@ -208,13 +215,14 @@ def batch_status(payload: dict = Body(default={})):
     st = str(payload.get("status") or "").strip()
     if st not in STATUSES or not ids:
         return {"ok": False, "reason": "参数不合法"}
-    reviewer = (payload.get("reviewer") or "工作人员").strip()
+    reported = payload.get("reviewer")
+    reviewer = security.actor()          # 服务端推导（评审 P0-2）
     n = db.execute(
         "UPDATE negative_review SET status=%s, updated_at=now() WHERE id = ANY(%s)",
         (st, list(ids)))
     db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
                (reviewer, "review_batch_status", f"{len(ids)} 条",
-                db.as_json({"status": st, "ids": list(ids)})))
+                db.as_json(security.actor_detail(reported, status=st, ids=list(ids)))))
     return {"ok": True, "updated": n}
 
 

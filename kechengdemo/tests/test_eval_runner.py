@@ -50,7 +50,7 @@ def _pick(min_msgs=60):
         """SELECT c.staff_id, c.session_id, c.target_id, c.msg_count
              FROM chat_session c
             WHERE c.session_type='ext_user' AND c.target_id IS NOT NULL AND c.msg_count >= %s
-            ORDER BY c.msg_count DESC LIMIT 1""", (min_msgs,))
+            ORDER BY c.msg_count DESC, c.session_id LIMIT 1""", (min_msgs,))
 
 
 # ============================================================ 纯函数：指标

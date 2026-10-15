@@ -57,7 +57,7 @@ def _pick_session():
               AND (SELECT count(*) FROM chat_message m
                     WHERE m.staff_id = s.staff_id AND m.session_id = s.session_id
                       AND (m.plain IS NOT NULL OR (m.content IS NOT NULL AND m.content <> ''))) > 120
-            ORDER BY s.msg_count DESC LIMIT 1""")
+            ORDER BY s.msg_count DESC, s.session_id LIMIT 1""")
 
 
 def _readable_ids(S):

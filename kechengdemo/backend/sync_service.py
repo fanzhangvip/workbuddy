@@ -360,7 +360,7 @@ class SyncService:
                 print(f"[sync] 凭据预检未通过：{pre.get('message')}（继续尝试同步）")
 
             self._bump(job_id, detail={"stage": "同步员工列表"})
-            info = self._sync_staff(job_id)
+            self._sync_staff(job_id)          # 进度与结果由 _bump 落库，返回值无需使用
 
             targets = staff_ids or self._staff_id_list()
             ww = ww_chatdata.WecomChatData(verbose=False)
@@ -395,7 +395,7 @@ class SyncService:
                                        "session_total": len(todo)})
 
             # ---------- 第二遍：逐会话拉消息 + 解密 + 落库 ----------
-            for idx, (sid, s) in enumerate(todo, 1):
+            for _idx, (sid, s) in enumerate(todo, 1):
                 if self._stop:
                     break
                 sess_id = s["id"]

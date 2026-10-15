@@ -69,7 +69,7 @@ def _pick_session(min_msgs=4):
                   c.msg_count, c.last_msg_time, s.name AS staff_name
              FROM chat_session c LEFT JOIN staff s ON s.staff_id=c.staff_id
             WHERE c.session_type='ext_user' AND c.target_id IS NOT NULL
-              AND c.msg_count >= %s ORDER BY c.msg_count DESC LIMIT 1""", (min_msgs,))
+              AND c.msg_count >= %s ORDER BY c.msg_count DESC, c.session_id LIMIT 1""", (min_msgs,))
 
 
 # ============================================================ 1. H2 审计
