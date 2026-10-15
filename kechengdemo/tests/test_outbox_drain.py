@@ -7,6 +7,13 @@
     ok / failed（退避并前推 next_attempt_at）/ dry_run / off / dead（超尝试上限）
 不触网、可反复运行；用负数 assessment_id 造数据，结束后清理。
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import sys
 

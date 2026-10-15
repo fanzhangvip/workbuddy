@@ -19,7 +19,9 @@ if str(ROOT) not in sys.path:          # 复用根目录下已验证的 weiban /
 
 import config  # noqa: E402
 
-DEFAULT_DSN = "postgresql://postgres:weiban123@127.0.0.1:5433/weiban_chat"
+# ⚠️ 回退连接串**不含口令**：口令只能来自 .env / 环境变量（`DATABASE_URL`）。
+# 曾把真实口令写死在这里，等于仓库里带着一套可用凭据（部署时会直接沿用弱口令）。
+DEFAULT_DSN = "postgresql://postgres@127.0.0.1:5433/weiban_chat"
 DSN = config.get("DATABASE_URL") or config.get("PG_DSN") or DEFAULT_DSN
 
 _pool: ConnectionPool | None = None
@@ -91,6 +93,17 @@ def set_setting(key: str, value) -> None:
         """INSERT INTO app_setting (key, value, updated_at) VALUES (%s, %s, now())
            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
         (key, None if value is None else str(value)))
+    if key == "trace_enabled":
+        # trace 的开关做了进程内缓存（避免每节点一次 DB 查询）→ 变更时必须立即失效，
+        # 否则「改了设置却不生效」会持续到缓存过期。用 sys.modules 取模块，避开
+        # backend/trace.py 与标准库 trace 的重名问题。
+        try:
+            import sys as _sys
+            _m = _sys.modules.get("trace")
+            if _m is not None and hasattr(_m, "invalidate_enabled_cache"):
+                _m.invalidate_enabled_cache()
+        except Exception:
+            pass
 
 
 def all_settings() -> dict:

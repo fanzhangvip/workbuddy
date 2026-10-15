@@ -7,7 +7,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: weiban123
+      # 口令从 .env 读取（compose 会自动加载同目录 .env）；未设置则直接报错，
+      # 避免仓库里带着口令、部署时静默沿用弱口令
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置，请在 .env 中配置}
       POSTGRES_DB: weiban_chat
     ports:
       - "5433:5432"

@@ -8,6 +8,13 @@
   · **H1**  互斥守卫：同步与评分不得同时跑（改造前 `_job` 只查同步自己）
   · **G1**  取标签不静默：`compute_facts` 取标签失败须留 `tool_failure` 并在事实文本标注降级
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import sys
 
@@ -74,6 +81,9 @@ def test_force_full_scan():
     finally:
         if aid:
             db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (aid,))
+            # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+            try: ss.repair_current_flags()
+            except Exception: pass
             print("（已清理合成的 assessment）")
 
 

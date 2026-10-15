@@ -2,7 +2,7 @@
 """阶段二集成测试（需数据库）：预处理层 + 接口层 + 配置登记。
 
 运行（用后端 venv python，连宿主 5433）：
-    "C:/Users/EDY/.workbuddy/binaries/python/envs/default/Scripts/python.exe" tests/test_ctx_integration.py
+    .venv\Scripts\python.exe tests/test_ctx_integration.py
 
 覆盖：
   1) DB 取数 → build_context → 编号回链 message_id → 证据闭环
@@ -11,6 +11,13 @@
 
 测试数据用唯一 session_id（__itest_*），finally 清理，不污染库。
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import json
 import os
 import sys

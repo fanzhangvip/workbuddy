@@ -315,10 +315,17 @@ CREATE TABLE IF NOT EXISTS session_failure (
     attempts      INT DEFAULT 0,              -- 连续失败次数（超阈值转 dead）
     status        TEXT DEFAULT 'pending',     -- pending / retrying / dead
     next_retry_at TIMESTAMPTZ,
+    -- 以下 4 列原先只由 failure_worker.ensure_columns() 用 ALTER 补（DDL 存在两个来源），
+    -- 这里补进权威 schema；旧库仍由 ensure_columns() 幂等补齐
+    manual_required BOOLEAN NOT NULL DEFAULT false,  -- 达阈值转人工
+    resolved_at     TIMESTAMPTZ,                     -- 处理完成时间
+    last_attempt_at TIMESTAMPTZ,                     -- 最近一次重投时间
+    resolution      TEXT,                            -- auto / manual
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_session_failure_status ON session_failure (status, next_retry_at);
 CREATE INDEX IF NOT EXISTS ix_session_failure_session ON session_failure (staff_id, session_id);
+CREATE INDEX IF NOT EXISTS ix_session_failure_manual ON session_failure (manual_required) WHERE manual_required;
 
 -- ============================================================================
 -- 阶段 B：回写解耦（修 G6）+ 本地链路追踪
@@ -538,3 +545,55 @@ CREATE TABLE IF NOT EXISTS request_guard (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_request_guard_time ON request_guard (created_at);
+
+-- ---------------- 评估集「AI 预标注」标记 ----------------
+-- 用途：把 AI 当时的判定（baseline_items）预填成 expected_items 初稿，人工只需**复核修正**
+--   → 从空白开始标 30 条很慢，从草稿改很快。
+-- ⚠️ 为什么必须单独打标（而不是直接当已标注）：预填内容来自 AI 自己，
+--   若计入指标就成了「AI 批改自己」→ 指标虚高、门禁形同虚设。
+--   所以口径：**默认只统计 `NOT prefilled`（人工确认过的）**，prefilled 仅供对照。
+ALTER TABLE eval_case ADD COLUMN IF NOT EXISTS prefilled BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_eval_prefilled ON eval_case (kind) WHERE prefilled;
+
+-- ---------------- D2-1：等级改用微伴标签（与分数回写完全独立）----------------
+-- 背景（架构 §10 D2）：微伴「客户评分」只能累加、无覆盖接口 → 分数必须差值回写；
+-- 而**标签有增有删**，用 `tag/batch_update` 一次 add 新等级 + remove 旧等级
+-- 天然表达「当前等级」，不存在「加了新的、旧的没删掉」的中间态。
+--
+-- ⚠️ 为什么**不复用** `writeback_outbox` 与 `writeback_ledger`：
+--    · `outbox._record()` 会写 `score_writeback` 表并**推进分数水位** `writeback_ledger`
+--    · 标签任务若混进去，会被当成一次「分数回写」→ **差值累加被污染**（客户分数虚高）
+--    · 且两者的幂等键与重试语义不同（分数：一个评估一次；标签：同一客户只认最新等级）
+CREATE TABLE IF NOT EXISTS grade_tag_ledger (
+    relationship_key   TEXT PRIMARY KEY,
+    staff_id           TEXT,
+    external_user_id   TEXT,
+    grade              TEXT,                    -- 已写入的等级（S/A/B/C/D）
+    tag_id             TEXT,                    -- 已写入的标签 id
+    last_assessment_id BIGINT,
+    last_write_at      TIMESTAMPTZ,
+    writes             INT NOT NULL DEFAULT 0,
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS grade_tag_outbox (
+    outbox_id        BIGSERIAL PRIMARY KEY,
+    assessment_id    BIGINT NOT NULL,
+    relationship_key TEXT NOT NULL,
+    staff_id         TEXT NOT NULL,
+    external_user_id TEXT NOT NULL,
+    grade            TEXT NOT NULL,             -- 目标等级
+    remove_tag_id    TEXT,                      -- 要摘掉的旧标签（入队时**固化**，出队不再算）
+    mode             TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    attempts         INT NOT NULL DEFAULT 0,
+    max_attempts     INT NOT NULL DEFAULT 8,
+    next_attempt_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_errcode     INT,
+    last_errmsg      TEXT,
+    last_response    JSONB,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (assessment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_grade_tag_due ON grade_tag_outbox (next_attempt_at) WHERE status IN ('pending','failed');

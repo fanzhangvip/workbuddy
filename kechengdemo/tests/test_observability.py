@@ -14,6 +14,13 @@
 
 ⚠️ 全部用**合成数据 / 打桩**，不真调 LLM；跑完清理，断言不依赖生产现状。
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import sys
 import time
@@ -42,6 +49,9 @@ def _cleanup():
     # （踩过：`old_raw_score` 断言莫名失败）。必须按**后缀/包含**匹配。
     like = "%OBSTEST_SUBJ"
     db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key LIKE %s", (like,))
+    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+    try: ss.repair_current_flags()
+    except Exception: pass
     db.execute("DELETE FROM score_writeback WHERE relationship_key LIKE %s", (like,))
     db.execute("DELETE FROM negative_review WHERE relationship_key LIKE %s", (like,))
     db.execute("DELETE FROM audit_log WHERE action='set_setting'")
@@ -67,7 +77,9 @@ def _pick_session(min_msgs=4):
 def test_audit_settings():
     print("\n--- 1. H2：set_settings 的 key 级 audit（含旧值→新值）---")
     _cleanup()
-    before = db.query_one("SELECT count(*) AS n FROM audit_log")["n"]
+    # ⚠️ 必须是 **id 水位**，不是行数！拿行数当 id 阈值会删掉全部真实审计
+    # （实测踩到：id 已涨到 253 而行数只有 2 → `id > 2` 把 run#151 的 scoring_start/done 全删了）
+    before = db.query_one("SELECT coalesce(max(id), 0) AS n FROM audit_log")["n"]
     try:
         # 直调路由函数（FastAPI 的 handler 本身就是普通函数）
         out = api_scoring.set_settings({

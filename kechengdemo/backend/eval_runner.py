@@ -168,6 +168,90 @@ def sample(kind: str = "golden", limit: int = 30, min_messages: int = 5,
             "created": len(created), "case_ids": created, "distribution": dict(dist)}
 
 
+# ============================================================ 2.5 AI 预标注
+
+def prefill(kind: str = "", limit: int = 0, overwrite: bool = False,
+            annotator: str = "AI预标注", dry_run: bool = False) -> dict:
+    """把「AI 当时的判定」预填成人工标注的**初稿**，人工只需复核修正。
+
+    为什么需要它：30 条从空白开始标注很慢（每条要约 110 条消息 + 15 条规则）；
+    而从一份草稿开始改很快 —— 人擅长「判断对不对」，不擅长「从零列清单」。
+
+    数据来源 = `eval_case.baseline_items`（抽样时从该会话最近一次评估直接取的快照）：
+    · **零 LLM 调用、零成本、瞬时**（重跑模型要 ~10 分钟且要花钱）
+    · 它同时是「改动前基线」，作为初稿恰好让人一眼看出「哪里该改」
+
+    ⚠️ 三条纪律（否则预标注会毁掉评估集）：
+    1. **必须打 `prefilled=true`** —— 预填内容来自 AI 自己，直接当金标准就是
+       「AI 批改自己」，F1 必然虚高。跑分与门禁**默认排除** `prefilled`。
+    2. **人工保存后自动转 false**（`api_eval.save` 里已处理）—— 「复核过」才叫金标准。
+    3. **不覆盖已有标注**（除非显式 `overwrite=True`）：人工改过的内容比 AI 草稿可信，
+       默认覆盖会把人的工作抹掉。
+
+    返回 `{total, filled, skipped_no_baseline, skipped_labeled, case_ids}`。
+    """
+    params, cond = {}, ["active = true", "baseline_items IS NOT NULL"]
+    if kind:
+        cond.append("kind = %(kind)s")
+        params["kind"] = kind
+    if not overwrite:
+        cond.append("expected_items IS NULL")
+    sql = (f"SELECT case_id, staff_id, session_id, target_id, msg_count, baseline_items, "
+           f"expected_items FROM eval_case WHERE {' AND '.join(cond)} ORDER BY case_id ASC")
+    if limit:
+        sql += " LIMIT %(limit)s"
+        params["limit"] = int(limit)
+    rows = db.query(sql, params)
+
+    # 无基线可预填的（有 active + 无 baseline）——单独计数，好在报告里如实说明
+    nog = db.query_one(
+        "SELECT count(*) AS n FROM eval_case "
+        " WHERE active AND baseline_items IS NULL" + (" AND kind = %(kind)s" if kind else ""),
+        {"kind": kind} if kind else {})
+
+    rules = rules_mod.load_rules()
+    plan, filled, invalid_total = [], [], 0
+    for r in rows:
+        raw = r.get("baseline_items") or []
+        # 走与生产同一套校验：分值不在档位 / 未知规则的项会被剔除，
+        # 避免把非法项预填进去（人工看到的是"可保存的合法草稿"）
+        valid, bad = rules_mod.validate_items(raw, rules)
+        invalid_total += len(bad)
+        pos = [i for i in valid if i.get("polarity") == "positive"]
+        neg = [i for i in valid if i.get("polarity") == "negative"]
+        score = rules_mod.compute_score(pos, neg, rules)
+        grade = rules_mod.grade_of(score["raw_score"], rules)
+        filled.append(r["case_id"])
+        plan.append({"case_id": r["case_id"], "items": valid,
+                     "raw_score": score["raw_score"], "grade": grade["grade"],
+                     "invalid": len(bad)})
+
+    if not dry_run and plan:
+        for p in plan:
+            db.execute(
+                """UPDATE eval_case
+                      SET expected_items=%s, expected_raw_score=%s, expected_grade=%s,
+                          prefilled=true, annotator=%s, updated_at=now()
+                    WHERE case_id=%s""",
+                (db.as_json(p["items"]), p["raw_score"], p["grade"],
+                 annotator, p["case_id"]))
+        total = len(plan)
+        if total <= 30:                      # 条数不多时留审计，便于追溯"谁预填的"
+            db.execute("INSERT INTO audit_log (actor, action, target, detail) "
+                       "VALUES (%s,%s,%s,%s)",
+                       (annotator, "eval_prefill", f"{kind or 'all'}",
+                        db.as_json({"case_ids": filled, "count": total,
+                                    "invalid_items_dropped": invalid_total})))
+
+    return {"ok": True, "dry_run": bool(dry_run),
+            "total": len(rows),
+            "filled": len(plan), "case_ids": filled,
+            "invalid_items_dropped": invalid_total,
+            "skipped_no_baseline": int((nog or {}).get("n") or 0),
+            "plan_preview": [{k: p[k] for k in ("case_id", "grade", "raw_score", "invalid")}
+                             for p in plan[:10]]}
+
+
 # ============================================================ 3. 跑单条（只算不落库）
 
 def run_case(case: dict, rules: dict = None, fetch_tags: bool = None) -> dict:
@@ -351,11 +435,19 @@ def gate_decision(kind: str = "", limit: int = 0, run_if_possible: bool = True,
     if st.get("result") and (st["result"].get("metrics")):
         now_metrics = st["result"]["metrics"]
     if now_metrics is None and run_if_possible:
+        # ⚠️ 只认**人工确认过**的标注（`NOT prefilled`）：AI 预标注是自己批自己，
+        #    计入指标会得到虚高的 F1 与「虚假通过」，比没有门禁更危险。
         labeled = db.query_one(
-            "SELECT count(*) AS n FROM eval_case WHERE active AND expected_items IS NOT NULL")
+            "SELECT count(*) AS n FROM eval_case "
+            " WHERE active AND expected_items IS NOT NULL AND NOT prefilled")
         if not (labeled or {}).get("n"):
-            out["reason"] = ("有基线，但**没有已人工标注的样本** → 无法计算指标，放行但不代表通过。"
-                             "标注后可用 POST /api/eval/run 复算")
+            pf = db.query_one(
+                "SELECT count(*) AS n FROM eval_case "
+                " WHERE active AND expected_items IS NOT NULL AND prefilled")
+            extra = (f"（另有 {pf['n']} 条 **AI 预标注**待人工复核 —— 预标注不计入门禁，"
+                     f"否则就是「AI 批改自己」）") if (pf or {}).get("n") else ""
+            out["reason"] = ("有基线，但**没有已人工确认的标注样本** → 无法计算指标，放行但不代表通过。"
+                             "请在评估页（`#/eval`）复核标注后用 POST /api/eval/run 复算。" + extra)
             return out
         res = run_sync(kind=kind, limit=limit, check_drift=False)
         now_metrics = res.get("metrics")
@@ -406,8 +498,17 @@ def status() -> dict:
     return out
 
 
-def _cases(kind: str, limit: int, case_ids: list = None) -> list:
+def _cases(kind: str, limit: int, case_ids: list = None,
+           include_prefilled: bool = False) -> list:
+    """取「可跑分」的样本。
+
+    ⚠️ 默认**排除 AI 预标注**（`prefilled`）：预填内容来自 AI 自己，若计入指标
+    就成了「AI 批改自己」→ F1 虚高、门禁失效。要对照「AI 自评一致性」时才开
+    ``include_prefilled=True``（结果不能当门禁依据）。
+    """
     params, cond = {}, ["active = true", "expected_items IS NOT NULL"]
+    if not include_prefilled:
+        cond.append("NOT prefilled")
     if kind:
         cond.append("kind = %(kind)s")
         params["kind"] = kind
@@ -422,10 +523,13 @@ def _cases(kind: str, limit: int, case_ids: list = None) -> list:
 
 
 def run_sync(kind: str = "", limit: int = 0, on_progress=None, check_drift: bool = True,
-             case_ids: list = None) -> dict:
-    """同步跑一遍评估集：逐条 `run_case` → 汇总 → 落 `eval_run` → 门禁。"""
+             case_ids: list = None, include_prefilled: bool = False) -> dict:
+    """同步跑一遍评估集：逐条 `run_case` → 汇总 → 落 `eval_run` → 门禁。
+
+    ``include_prefilled=True`` 会把 AI 预标注也计入（**仅供对照，不能当门禁依据**）。
+    """
     t0 = time.time()
-    cases = _cases(kind, limit, case_ids)
+    cases = _cases(kind, limit, case_ids, include_prefilled=include_prefilled)
     rules = rules_mod.load_rules()
     pairs, details, drift = [], [], []
 

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Body, Query
 
 import config
 import db
+import grade_tag
 import idempotency
 import retention
 import scheduler
@@ -202,6 +203,50 @@ def set_schedule(payload: dict = Body(default={})):
     return scheduler.set_scoring_interval(int(payload.get("interval_minutes") or 0))
 
 
+# ---------------- D2-1 等级 → 微伴标签（独立开关的读写入口）----------------
+
+@router.get("/grade-tags")
+def grade_tags_status():
+    """等级标签回写状态：开关 / 标签组 / 已缓存 tag_id / outbox 流水 / 最近错误。
+
+    与 `/scoring/settings` 里的分数回写状态**完全分开**，便于"到底谁在写微伴"一眼可辨。
+    """
+    return grade_tag.stats()
+
+
+@router.post("/grade-tags/sync")
+def grade_tags_sync(payload: dict = Body(default={})):
+    """扫描微伴标签库，找出「意向等级」组下的 S/A/B/C/D 并缓存 `tag_id`。
+
+    ⚠️ `create_missing=true` 会在微伴后台**真的创建缺失的标签**（副作用）——
+    故默认 `dry_run=true` 只报告。**建标签是人工动作，不由评分链路隐式完成**
+    （`tag/add` 的「不存在则自动创建」意味着一次拼写错误就能留下垃圾标签组）。
+    """
+    return grade_tag.sync_tags(create_missing=bool(payload.get("create_missing")),
+                               dry_run=bool(payload.get("dry_run", True)))
+
+
+@router.post("/grade-tags/align")
+def grade_tags_align(payload: dict = Body(default={})):
+    """**人工触发**：把当前等级对齐到微伴标签（补历史 / 修正漂移）。
+
+    - 默认 `dry_run=true`：只报告会改哪些客户，不调接口
+    - `remove_all_others=true`：把其它 4 个等级标签一并摘掉（修正人工改过标签的漂移）
+    """
+    return idempotency.run_once(
+        payload.get("request_key"), "grade_tag.align",
+        lambda: grade_tag.align(relationship_keys=payload.get("relationship_keys"),
+                                limit=int(payload.get("limit") or 0),
+                                dry_run=bool(payload.get("dry_run", True)),
+                                remove_all_others=bool(payload.get("remove_all_others"))))
+
+
+@router.post("/grade-tags/drain")
+def grade_tags_drain(payload: dict = Body(default={})):
+    """手动跑一次标签 outbox（排障用；正常由 scheduler 每 30s 自动跑）。"""
+    return grade_tag.drain(limit=int(payload.get("limit") or 50))
+
+
 @router.get("/repair-current")
 def repair_current():
     """E2 自愈：修「有行但无 current」与「superseded_by 悬空」。只读式汇报 + 幂等修复。"""
@@ -355,7 +400,15 @@ def get_settings():
         # D2-1 差值累加：微伴「客户评分」是累计行为分、无覆盖接口 →
         # 必须只写增量。false = 退回改造前的整值语义（回滚开关，**开 live 前不要关**）
         "writeback_delta_mode": ss.setting_bool("writeback_delta_mode",
-                                                 "WRITEBACK_DELTA_MODE", True),
+                                                "WRITEBACK_DELTA_MODE", True),
+        # ---- D2-1 等级 → 微伴标签：**与分数回写开关完全独立** ----
+        # ⚠️ 默认 off：打标签是「写外部系统」的副作用，必须人显式打开
+        "grade_tag_mode": ss.setting("grade_tag_mode", "GRADE_TAG_MODE", "off"),
+        "grade_tag_group": ss.setting("grade_tag_group", "GRADE_TAG_GROUP",
+                                      grade_tag.DEFAULT_TAG_GROUP),
+        "grade_tag_ids": grade_tag.get_tag_ids(),
+        # 建标签载体（专用测试客户，`staff_id:external_user_id`）—— 空 = 不允许自动建标签
+        "grade_tag_probe_customer": db.get_setting(grade_tag.PROBE_KEY) or "",
         # 回写副作用配额（架构 边界3）：**默认 0 = 不限**（不改变既有行为，
         # 上线前由业务确认后再收紧；文档建议单客户单日 3 次）
         "writeback_quota_per_run": ss.setting_int("writeback_quota_per_run",
@@ -449,6 +502,22 @@ def _apply_settings(payload: dict):
         db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
                    ("manual", "writeback_mode", m, db.as_json({"mode": m})))
         changed.append("score_writeback_mode")
+    # ---- D2-1 等级标签开关：**独立于分数回写**，且默认 off ----
+    # 为什么单独一个分支（而不是并进下面的通用循环）：需要校验取值，
+    # 且要在审计里明确写「这是标签开关」—— 与分数开关混在一起事后查不清是谁开的。
+    if "grade_tag_mode" in payload:
+        gm = str(payload["grade_tag_mode"]).strip().lower()
+        if gm not in ("live", "dry_run", "off"):
+            return {"ok": False, "reason": "grade_tag_mode 只能是 live / dry_run / off"}
+        old = db.get_setting("grade_tag_mode")
+        if str(old or "off") != gm:
+            db.set_setting("grade_tag_mode", gm)
+            db.execute("INSERT INTO audit_log (actor, action, target, detail) "
+                       "VALUES (%s,%s,%s,%s)",
+                       ("manual", "grade_tag_mode", gm,
+                        db.as_json({"mode": gm, "old": old or "off",
+                                    "scope": "仅等级标签，不影响分数回写"})))
+            changed.append("grade_tag_mode")
     for key, skey in (("max_sessions", "scoring_max_sessions"),
                       ("min_messages", "scoring_min_messages"),
                       ("fetch_tags", "scoring_fetch_tags"),
@@ -462,6 +531,9 @@ def _apply_settings(payload: dict):
                       ("morning_cron", "scoring_morning_cron"),
                       ("public_class_grade_scope", "public_class_grade_scope"),
                       ("writeback_delta_mode", "writeback_delta_mode"),
+                      ("grade_tag_mode", "grade_tag_mode"),
+                      ("grade_tag_group", "grade_tag_group"),
+                      ("grade_tag_probe_customer", "grade_tag_probe_customer"),
                       ("writeback_quota_per_run", "writeback_quota_per_run"),
                       ("writeback_quota_per_customer_per_day",
                        "writeback_quota_per_customer_per_day"),

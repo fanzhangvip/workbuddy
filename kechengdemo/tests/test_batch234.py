@@ -20,6 +20,13 @@
 
 ⚠️ 全部用合成数据/打桩，不真调 LLM；跑完清理；断言不依赖生产现状。
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import sys
 
@@ -54,7 +61,9 @@ def check(name, cond, detail=""):
 _SESS = "_b234test_sess"
 
 #: 测试开始时间戳 —— 用于清理「被间接触发的代码」写的审计（actor 不是测试自己的）
-_T0 = None
+#: 测试开始时的 audit_log 最大 id（**水位**）。用它而不用时间戳：
+#: id 单调、无时区问题；时间戳会连带删掉「测试窗口内真实运行写的审计」。
+_AUDIT_MAX = 0
 
 
 def _cleanup():
@@ -66,8 +75,8 @@ def _cleanup():
     db.execute("DELETE FROM session_failure WHERE staff_id = %s", ("B234TEST",))
     # audit_log：被间接触发的代码会用**自己的 actor** 写审计（如 meta_loop），
     # 按 actor 前缀删不干净 → 统一按「测试开始时间」删（通用做法，踩过）
-    if _T0:
-        db.execute("DELETE FROM audit_log WHERE created_at >= %s", (_T0,))
+    if _AUDIT_MAX:
+        db.execute("DELETE FROM audit_log WHERE id > %s", (_AUDIT_MAX,))
     db.execute("DELETE FROM app_setting WHERE key LIKE %s", ("b234test%",))
 
 
@@ -145,6 +154,7 @@ def test_e2_selfheal():
         a2 = ss.service._persist_assessment(0, cand, _res(), *mk(6, "S"), False, [],
                                             _res()["positive_items"], [], "off")
         # 模拟「新行被外部删除」：留下旧行非 current、superseded_by 悬空
+        # ⚠️ 这里**故意不修** —— 本用例就是要复现破损再验证自愈（不要在此加 repair）
         db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (a2,))
         rows = db.query("""SELECT is_current, superseded_by FROM customer_intent_assessment
                             WHERE relationship_key LIKE %s""", ("%B234TEST_E2H",))
@@ -572,8 +582,8 @@ def main():
     print("=" * 72)
     print("第 2/3/4 批「架构全量落实」验收")
     print("=" * 72)
-    global _T0
-    _T0 = (db.query_one("SELECT now() AS t") or {}).get("t")
+    global _AUDIT_MAX
+    _AUDIT_MAX = (db.query_one("SELECT coalesce(max(id),0) AS n FROM audit_log") or {}).get("n", 0)
     try:
         test_e2_is_current()
         test_e2_selfheal()

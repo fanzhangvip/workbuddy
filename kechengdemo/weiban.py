@@ -22,7 +22,8 @@ TOKEN_FILE = CACHE_DIR / "weiban_token.json"
 TIMEOUT = 30
 
 
-def _request(method: str, path: str, params: dict = None, body: dict = None) -> dict:
+def _request(method: str, path: str, params: dict = None, body: dict = None,
+             headers: dict = None, retries: int = 2) -> dict:
     """统一走 `backend/http_client`（架构 §2.5 工具层）。
 
     改造前这里是裸 ``urlopen``：**一次瞬时网络抖动就整轮同步失败**（没有重试），
@@ -39,7 +40,8 @@ def _request(method: str, path: str, params: dict = None, body: dict = None) -> 
         sys.path.insert(0, _backend)
     import http_client
     return http_client.request_json(method, BASE + path, params=params, body=body,
-                                    timeout=TIMEOUT, retries=2, label="weiban")
+                                    headers=headers, timeout=TIMEOUT, retries=retries,
+                                    label="weiban")
 
 
 def get_access_token(force: bool = False) -> str:
@@ -72,15 +74,21 @@ def _check(res: dict, what: str) -> dict:
 
 
 def request_retry(method: str, path: str, params: dict = None, body: dict = None,
-                  retries: int = 3, base_delay: float = 0.8) -> dict:
+                  retries: int = 3, base_delay: float = 0.8, headers: dict = None,
+                  inner_retries: int = 2) -> dict:
     """带指数退避的请求（网络抖动 / 限流时自动重试）。
 
     与 ``_request`` 的区别：会吞掉网络层异常并重试；业务错误码仍由调用方判断。
+
+    :param headers: 附加请求头（例如 ``access_token`` 走 header 而非 URL）。
+    :param inner_retries: 内层 ``http_client`` 的重试次数；**单次投递**场景传 0
+        （外层已有 outbox 退避，不需要这里再退避）。
     """
     last = None
     for i in range(max(1, retries)):
         try:
-            return _request(method, path, params=params, body=body)
+            return _request(method, path, params=params, body=body,
+                            headers=headers, retries=inner_retries)
         except Exception as e:               # URLError / HTTPError / 超时
             last = e
             if i < retries - 1:
@@ -117,15 +125,12 @@ def add_customer_score(staff_id: str, external_user_id: str = "",
         body["external_user_openid"] = openid
 
     tok = get_access_token()
-    if use_header_token:                     # token 走 header，避免出现在 URL/日志里
-        url = BASE + "/open-api/external_user/score/add"
-        data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data,
-            headers={"Content-Type": "application/json", "access_token": tok},
-            method="POST")
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+    # token 走 header（避免写进 URL / 日志）；**两种模式都经同一个 HTTP 层**。
+    # 曾出现「同一函数两种行为」：header 模式是裸 urlopen，没有超时分类、没有 metrics，
+    # 而另一支走 request_retry —— 改动一处时极易漏掉另一支。
+    if use_header_token:
+        return request_retry("POST", "/open-api/external_user/score/add", body=body,
+                             retries=2, headers={"access_token": tok})
     return request_retry("POST", "/open-api/external_user/score/add",
                          params={"access_token": tok}, body=body, retries=2)
 
@@ -163,6 +168,115 @@ def get_custom_fields(staff_id: str, external_user_id: str) -> list:
         return res.get("custom_remark_list") or []
     except Exception:
         return []
+
+
+# ---------------- 客户标签（D2-1：等级改用微伴标签）----------------
+#
+# 与「客户评分」的根本差别（架构 §10 D2）：
+#   评分 = 累计行为分，**只能累加、无覆盖接口** → 必须差值回写
+#   标签 = **有增有删** → 用 batch_update 一次 add 新 + remove 旧 = 天然的「覆盖语义」
+#
+# ⚠️ 官方文档标注：以下标签接口**需购买基础席位**。
+
+def _post_tag(path: str, body: dict) -> dict:
+    """标签类 POST：token 走 **header**（不放 URL，避免写进日志/审计），单次投递。
+
+    重试交给 `tag_outbox`（与分数回写同一套「至少一次 + 独立退避」思路），
+    这里不叠加网络层重试 —— 否则两层重试会让「失败一次」变得很慢才可见。
+    但仍走统一 ``http_client``（拿超时分类与 metrics 计数），只是把重试关到 0 次。
+    """
+    return request_retry("POST", path, body=body, retries=1, inner_retries=0,
+                         headers={"access_token": get_access_token()})
+
+
+def list_tags(limit: int = 1000, offset: int = 0) -> dict:
+    """获取标签列表（`/open-api/tag/list`）。返回 `tag_list`（含 tag_id/tag_group/tag_name）。"""
+    return _check(request_retry("GET", "/open-api/tag/list", params={
+        "access_token": get_access_token(), "limit": limit, "offset": offset,
+    }, retries=2), "获取标签列表")
+
+
+def iter_all_tags(page_size: int = 200):
+    """迭代全部标签（自动翻页）。"""
+    offset = 0
+    while True:
+        res = list_tags(limit=page_size, offset=offset)
+        batch = res.get("tag_list") or []
+        for t in batch:
+            yield t
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+
+def add_customer_tag(staff_id: str, external_user_id: str = "", unionid: str = "",
+                     tag_group: str = "", tag_name: str = "") -> dict:
+    """给客户添加企业标签（`/open-api/tag/add`）。
+
+    ⚠️ **标签/标签组不存在时会自动创建** —— 这是真副作用。等级标签应**预先建好**
+    （见 `grade_tag.sync_tags`），不要在评分链路里隐式创建。
+    """
+    if not staff_id:
+        raise ValueError("add_customer_tag 需要 staff_id")
+    if not external_user_id and not unionid:
+        raise ValueError("add_customer_tag 需要 external_user_id 或 unionid")
+    if not tag_group or not tag_name:
+        raise ValueError("add_customer_tag 需要 tag_group 与 tag_name")
+    body = {"staff_id": staff_id, "tag_group": tag_group, "tag_name": tag_name}
+    if external_user_id:
+        body["external_user_id"] = external_user_id
+    if unionid:
+        body["external_user_unionid"] = unionid
+    return _post_tag("/open-api/tag/add", body)
+
+
+def remove_customer_tag(staff_id: str, external_user_id: str = "", unionid: str = "",
+                        tag_group: str = "", tag_name: str = "") -> dict:
+    """删除客户的企业标签（`/open-api/tag/remove`）。
+
+    ⚠️ 只影响**该客户**，不会从所有客户身上删除这个标签。
+    """
+    if not staff_id:
+        raise ValueError("remove_customer_tag 需要 staff_id")
+    if not external_user_id and not unionid:
+        raise ValueError("remove_customer_tag 需要 external_user_id 或 unionid")
+    if not tag_group or not tag_name:
+        raise ValueError("remove_customer_tag 需要 tag_group 与 tag_name")
+    body = {"staff_id": staff_id, "tag_group": tag_group, "tag_name": tag_name}
+    if external_user_id:
+        body["external_user_id"] = external_user_id
+    if unionid:
+        body["external_user_unionid"] = unionid
+    return _post_tag("/open-api/tag/remove", body)
+
+
+def batch_update_customer_tags(staff_id: str, external_user_id: str,
+                               add_tag_id_list: list = None,
+                               remove_tag_id_list: list = None) -> dict:
+    """批量更新客户企业标签（`/open-api/tag/batch_update`）—— **D2-1 用这个**。
+
+    一次调用同时 `add_tag_id_list`（新等级）+ `remove_tag_id_list`（旧等级），
+    等价于「把该客户的等级设为 X」，且**不会出现中间态**。
+
+    约束：`add` 与 `remove` **至少填一个**，各最多 50 个；`external_user_id` 必填。
+    """
+    if not staff_id:
+        raise ValueError("batch_update_customer_tags 需要 staff_id")
+    if not external_user_id:
+        raise ValueError("batch_update_customer_tags 需要 external_user_id")
+    add = [x for x in (add_tag_id_list or []) if x]
+    rm = [x for x in (remove_tag_id_list or []) if x]
+    if not add and not rm:
+        raise ValueError("add_tag_id_list 与 remove_tag_id_list 至少要填一个")
+    for name, lst in (("add_tag_id_list", add), ("remove_tag_id_list", rm)):
+        if len(lst) > 50:
+            raise ValueError(f"{name} 最多 50 个，收到 {len(lst)}")
+    body = {"staff_id": staff_id, "external_user_id": external_user_id}
+    if add:
+        body["add_tag_id_list"] = add
+    if rm:
+        body["remove_tag_id_list"] = rm
+    return _post_tag("/open-api/tag/batch_update", body)
 
 
 def list_staff(limit: int = 100, offset: int = 0) -> dict:

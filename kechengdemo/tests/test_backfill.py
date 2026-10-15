@@ -13,6 +13,13 @@
 ⚠️ 测试只用 `rel_like` 隔离出的**合成行**，绝不碰生产数据；
 所有断言用自造数据（不依赖全库现状），跑完清理。
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import json
 import os
 import sys
@@ -127,6 +134,9 @@ def test_snapshot_determinism():
     marker = "BFTEST:snap"
     try:
         db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key=%s", (marker,))
+        # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+        try: ss.repair_current_flags()
+        except Exception: pass
         a1 = db.query_one("""INSERT INTO customer_intent_assessment
               (relationship_key, staff_id, session_id, raw_score, positive_total,
                negative_total, grade, positive_items, negative_items, unchecked_rules,
@@ -153,6 +163,9 @@ def test_snapshot_determinism():
         check("快照幂等（重复计算一致）", snap == snap2, f"{snap} vs {snap2}")
     finally:
         db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key=%s", (marker,))
+        # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+        try: ss.repair_current_flags()
+        except Exception: pass
 
 
 # ============================================================ 3. 端到端：回填 + 幂等 + 回滚
@@ -228,8 +241,14 @@ def test_end_to_end():
     finally:
         for aid in aids:
             db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (aid,))
+            # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+            try: ss.repair_current_flags()
+            except Exception: pass
         db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key LIKE %s",
                    ("BFTEST%",))
+        # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+        try: ss.repair_current_flags()
+        except Exception: pass
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -316,6 +335,9 @@ def test_consistency_repair():
     finally:
         db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key LIKE %s",
                    (f"{REL}%",))
+        # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+        try: ss.repair_current_flags()
+        except Exception: pass
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -363,8 +385,14 @@ def test_backup_shape():
     finally:
         if aid:
             db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (aid,))
+            # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+            try: ss.repair_current_flags()
+            except Exception: pass
         db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key LIKE %s",
                    ("BFTEST%",))
+        # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+        try: ss.repair_current_flags()
+        except Exception: pass
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
 

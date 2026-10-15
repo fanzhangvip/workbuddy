@@ -13,6 +13,13 @@
 设计原则：**纯函数 + 不真跑 LLM**。护栏判定抽成 `guard_reason()` 便于穷举边界；
 `partial` 状态用「打桩 _score_cand 秒返回」的方式跑一次真实 `_run`，不产生模型调用。
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import sys
 import time
@@ -47,6 +54,9 @@ def _cleanup_run(run_id):
                    "(SELECT assessment_id FROM customer_intent_assessment WHERE source_run_id=%s)",
                    (run_id,))
     db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id=%s", (run_id,))
+    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+    try: ss.repair_current_flags()
+    except Exception: pass
     db.execute("DELETE FROM session_failure WHERE run_id=%s", (run_id,))
     db.execute("DELETE FROM scoring_run WHERE id=%s", (run_id,))
     db.execute("DELETE FROM audit_log WHERE target=%s", (f"run:{run_id}",))

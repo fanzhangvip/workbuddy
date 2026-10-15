@@ -30,6 +30,9 @@ def stats():
           (SELECT count(*) FROM eval_case)                                   AS total,
           (SELECT count(*) FROM eval_case WHERE expected_items IS NOT NULL)  AS labeled,
           (SELECT count(*) FROM eval_case WHERE expected_items IS NULL)      AS unlabeled,
+          (SELECT count(*) FROM eval_case WHERE prefilled)                   AS prefilled,
+          (SELECT count(*) FROM eval_case
+             WHERE expected_items IS NOT NULL AND NOT prefilled)             AS confirmed,
           (SELECT count(*) FROM eval_case WHERE frozen)                      AS frozen,
           (SELECT count(*) FROM eval_case WHERE disputed)                    AS disputed,
           (SELECT count(*) FROM eval_case WHERE kind='golden')               AS golden,
@@ -49,7 +52,7 @@ def stats():
 @router.get("/list")
 def list_cases(kind: str = "", status: str = "", q: str = "",
                page: int = 1, page_size: int = 20):
-    """status: all / labeled / unlabeled / frozen / disputed / drift"""
+    """status: all / labeled / unlabeled / frozen / disputed / drift / prefilled / confirmed"""
     cond, params = ["1=1"], {}
     if kind:
         cond.append("kind = %(kind)s"); params["kind"] = kind
@@ -57,6 +60,12 @@ def list_cases(kind: str = "", status: str = "", q: str = "",
         cond.append("expected_items IS NOT NULL")
     elif status == "unlabeled":
         cond.append("expected_items IS NULL")
+    elif status == "prefilled":
+        # AI 预标注 → 还没人工复核过（这是复核队列真正要清的）
+        cond.append("prefilled = true")
+    elif status == "confirmed":
+        # 人工已确认（预标注复核后保存会转 false）
+        cond.append("expected_items IS NOT NULL AND NOT prefilled")
     elif status == "frozen":
         cond.append("frozen = true")
     elif status == "disputed":
@@ -71,9 +80,9 @@ def list_cases(kind: str = "", status: str = "", q: str = "",
         SELECT case_id, kind, staff_id, session_id, target_id, staff_name, target_name,
                msg_count, last_msg_time, expected_items, expected_raw_score, expected_grade,
                baseline_raw_score, baseline_grade, baseline_rule_version, baseline_at,
-               source, disputed, annotator, frozen, note, created_at, updated_at
+               source, disputed, annotator, prefilled, frozen, note, created_at, updated_at
           FROM eval_case WHERE {where}
-         ORDER BY (expected_items IS NULL) DESC, case_id DESC
+         ORDER BY prefilled DESC, (expected_items IS NULL) DESC, case_id DESC
          LIMIT %(limit)s OFFSET %(offset)s""", params)
     total = db.query_one(f"SELECT count(*) AS n FROM eval_case WHERE {where}",
                          {k: v for k, v in params.items() if k not in ("limit", "offset")})
@@ -154,7 +163,7 @@ def save(payload: dict = Body(default={})):
 
     db.execute(
         """UPDATE eval_case SET expected_items=%s, expected_raw_score=%s, expected_grade=%s,
-               annotator=%s, note=%s, disputed=%s, updated_at=now()
+               annotator=%s, note=%s, disputed=%s, prefilled=false, updated_at=now()
              WHERE case_id=%s""",
         (db.as_json(valid), score["raw_score"], grade["grade"], annotator,
          (payload.get("note") or "").strip(), bool(payload.get("disputed")), cid))
@@ -207,12 +216,44 @@ def sample(payload: dict = Body(default={})):
                               staff_ids=payload.get("staff_ids"))
 
 
+# ---------------- AI 预标注（把草稿填好，人工只复核）----------------
+
+@router.post("/prefill")
+def prefill(payload: dict = Body(default={})):
+    """把 AI 当时的判定预填成标注初稿（`prefilled=true`），人工只需复核修正。
+
+    ⚠️ **预标注不是金标准**：内容来自 AI 自己 → 跑分与门禁**默认排除** `prefilled`。
+    人工在标注页保存后自动转为「已确认」。`dry_run=true` 可先看会填哪些。
+    """
+    return eval_runner.prefill(kind=(payload.get("kind") or ""),
+                               limit=int(payload.get("limit") or 0),
+                               overwrite=bool(payload.get("overwrite")),
+                               dry_run=bool(payload.get("dry_run")),
+                               annotator=(payload.get("annotator") or "AI预标注"))
+
+
 # ---------------- 跑分（后台线程 + 进度）----------------
 
 @router.post("/start")
 def start_run(payload: dict = Body(default={})):
     return eval_runner.start(kind=(payload.get("kind") or ""),
                              limit=int(payload.get("limit") or 0))
+
+
+@router.post("/run")
+def run_now(payload: dict = Body(default={})):
+    """**同步**跑一遍评估集并返回指标（后台版是 `/start`）。
+
+    同步版的意义：门禁判定与「改完规则立刻看指标」都要**当场拿到结果**，
+    而后台版要轮询 `/status`。样本少（30 条）时同步跑完全可接受。
+
+    ⚠️ `include_prefilled=true` 会把 AI 预标注也计入 —— **仅供对照「AI 自评一致性」，
+    不能作为门禁依据**（那是 AI 批改自己）。
+    """
+    return eval_runner.run_sync(kind=(payload.get("kind") or ""),
+                                limit=int(payload.get("limit") or 0),
+                                check_drift=bool(payload.get("check_drift", True)),
+                                include_prefilled=bool(payload.get("include_prefilled")))
 
 
 @router.get("/status")

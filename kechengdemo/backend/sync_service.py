@@ -88,13 +88,47 @@ class SyncService:
     # ---------------- 对外接口 ----------------
 
     def is_running(self) -> bool:
+        """是否正在同步。**含跨进程检测**（修 P1-4：与 `scoring_service.is_running` 对称）。
+
+        `self._thread` 只反映**本进程**；后端 / 调度器 / 手工脚本跑在不同进程时互相看不见
+        → 会出现「同步与评分同时跑」，评分读到正在变化的 ``msg_count`` / ``last_msg_time``
+        （半截会话，结论不可复现）。故再查一次 DB：``sync_job`` 里有 ``status='running'``
+        即算在跑。
+
+        僵尸处理：进程崩溃来不及改状态会永久阻塞后续启动 → 超过 ``scoring_stale_minutes``
+        （与评分共用同一阈值，默认 240 分钟）仍 running 的标记为 failed 并放行。
+        DB 不可用时**宁可放行也不误拦**。
+        """
         with self._lock:
-            return self._thread is not None and self._thread.is_alive()
+            if self._thread is not None and self._thread.is_alive():
+                return True
+        try:
+            row = db.query_one(
+                """SELECT id, EXTRACT(EPOCH FROM (now() - started_at)) AS el
+                     FROM sync_job WHERE status='running' ORDER BY id DESC LIMIT 1""")
+        except Exception:
+            return False
+        if not row:
+            return False
+        try:
+            import scoring_service as _ss
+            stale = _ss.setting_int("scoring_stale_minutes", "SCORING_STALE_MINUTES",
+                                    _ss.STALE_MINUTES) * 60
+        except Exception:
+            stale = 240 * 60
+        if row.get("el") is not None and float(row["el"]) > stale:
+            db.execute(
+                """UPDATE sync_job SET status='failed', finished_at=now(),
+                          error=COALESCE(error, %s) WHERE id=%s AND status='running'""",
+                (f"进程异常退出：超过 {stale // 60} 分钟仍为 running，自动标记为失败",
+                 row["id"]))
+            return False
+        return True
 
     def status(self) -> dict:
         with self._lock:
-            running = self._thread is not None and self._thread.is_alive()
             job_id = self._job_id
+        running = self.is_running()      # 跨进程可见（后端重启后也能看到别的进程在跑）
         job = db.query_one("SELECT * FROM sync_job WHERE id = %s", (job_id,)) if job_id else None
         if not job:
             job = db.query_one("SELECT * FROM sync_job ORDER BY id DESC LIMIT 1")

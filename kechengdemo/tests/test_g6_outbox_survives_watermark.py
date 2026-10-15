@@ -17,6 +17,13 @@ G6 是什么
         · outbox 转 done
         · score_writeback 对该 assessment **恰好 1 行且 status=ok**
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import subprocess
 import sys
@@ -92,6 +99,9 @@ def cleanup(staff_id, session_id):
                   (SELECT assessment_id FROM customer_intent_assessment
                     WHERE source_run_id = %s)""", (RUN_ID,))
     db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id = %s", (RUN_ID,))
+    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+    try: ss.repair_current_flags()
+    except Exception: pass
     db.execute("DELETE FROM session_failure WHERE staff_id=%s AND session_id=%s",
                (staff_id, session_id))
 

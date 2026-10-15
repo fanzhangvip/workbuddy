@@ -12,6 +12,13 @@
 
 用确定性 stub 顶掉模型调用（无网络）；``mode="off"`` 不外写微伴；结束清理。
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import sys
 import time
@@ -72,6 +79,9 @@ def cleanup(run_ids):
                            (SELECT assessment_id FROM customer_intent_assessment
                              WHERE source_run_id=%s)""", (run,))
         db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id=%s", (run,))
+        # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+        try: ss.repair_current_flags()
+        except Exception: pass
         db.execute("DELETE FROM scoring_run WHERE id=%s", (run,))
         # ⚠️ Loop 护栏（H2）之后 `_run` 会写 `scoring_start` / `scoring_done` 审计 ——
         # 这是**新增的写副作用**，跑该链路的测试必须同步清理（测试卫生铁律第 1 条）。

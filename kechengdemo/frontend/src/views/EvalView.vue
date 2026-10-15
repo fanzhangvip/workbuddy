@@ -6,7 +6,8 @@ import { api, fmtRelative } from '../api'
 const TABS = [
   { key: '', label: '全部' },
   { key: 'unlabeled', label: '待标注' },
-  { key: 'labeled', label: '已标注' },
+  { key: 'prefilled', label: '待复核' },
+  { key: 'confirmed', label: '已确认' },
   { key: 'frozen', label: '已冻结' },
   { key: 'disputed', label: '有争议' },
 ]
@@ -176,6 +177,24 @@ async function setBaseline() {
 
 function reset() { current.value = null; error.value = ''; msg.value = '' }
 
+// AI 预标注：把 AI 当时的判定填成草稿 → 人工从「改草稿」开始，而不是「从零列清单」
+async function doPrefill() {
+  busy.value = true; error.value = ''; msg.value = ''
+  try {
+    const res = await api.evalPrefill({ kind: kind.value })
+    msg.value = `已预填 ${res.filled} 条草稿`
+      + (res.skipped_no_baseline ? `｜${res.skipped_no_baseline} 条无 AI 判定可参考，需全手标` : '')
+      + '。⚠️ 预标注来自 AI 自己，请逐条复核后保存（保存后才算「已确认」并计入指标）'
+    if (res.plan_preview?.length) {
+      msg.value += '｜预览 ' + res.plan_preview.slice(0, 5)
+        .map(p => `#${p.case_id}:${p.grade}`).join(' ')
+    }
+    tab.value = 'prefilled'
+    await refresh()
+  } catch (e) { error.value = e.message }
+  busy.value = false
+}
+
 const GTAG = { S: 'red', A: 'orange', B: 'blue', C: 'green', D: '' }
 const pct = (v) => (v === null || v === undefined) ? '-' : (v * 100).toFixed(1) + '%'
 const fmtMetric = (k, v) => (v === null || v === undefined) ? '-' : (k === 'rule_f1' || k === 'precision' || k === 'recall' || k === 'grade_acc' || k === 'fp_case_rate' ? pct(v) : v)
@@ -260,7 +279,11 @@ onUnmounted(() => clearInterval(timer))
       <div class="card-body">
         <div class="metrics">
           <div class="m"><div class="mv">{{ stats.total || 0 }}</div><div class="ml">样本总数</div></div>
-          <div class="m"><div class="mv">{{ stats.labeled || 0 }}</div><div class="ml">已标注</div></div>
+          <div class="m"><div class="mv">{{ stats.confirmed || 0 }}</div><div class="ml">已确认</div></div>
+          <div class="m">
+            <div class="mv" :class="stats.prefilled ? 'bad' : ''">{{ stats.prefilled || 0 }}</div>
+            <div class="ml">待复核（AI 预标注）</div>
+          </div>
           <div class="m"><div class="mv">{{ stats.unlabeled || 0 }}</div><div class="ml">待标注</div></div>
           <div class="m"><div class="mv">{{ stats.frozen || 0 }}</div><div class="ml">已冻结</div></div>
           <div class="m"><div class="mv">{{ stats.golden || 0 }}<span class="sub">/{{ stats.regression || 0 }}/{{ stats.edge || 0 }}</span></div><div class="ml">金/回归/边界</div></div>
@@ -305,6 +328,9 @@ onUnmounted(() => clearInterval(timer))
               <div class="row-inline">
                 <input v-model.number="sampleN" class="input" type="number" min="1" max="200" style="width:70px" />
                 <button class="btn sm" :disabled="busy" @click="doSample">抽样</button>
+                <button class="btn sm" :disabled="busy" title="把 AI 当时的判定填成草稿，人工只复核" @click="doPrefill">
+                  AI 预标注
+                </button>
               </div>
             </div>
             <input v-model="filters.q" class="input" placeholder="客户 / 员工 / 会话 id" @keyup.enter="search" />
@@ -330,6 +356,8 @@ onUnmounted(() => clearInterval(timer))
                   <td>
                     <span v-if="r.expected_grade" class="tag" :class="GTAG[r.expected_grade]">{{ r.expected_grade }}</span>
                     <span v-else class="muted" style="font-size:12px">—</span>
+                    <span v-if="r.prefilled" class="tag orange" style="margin-left:4px"
+                          title="AI 预标注草稿 —— 复核并保存后才算「已确认」">预</span>
                   </td>
                   <td>
                     <span v-if="r.baseline_grade" class="tag" :class="GTAG[r.baseline_grade]">{{ r.baseline_grade }}</span>

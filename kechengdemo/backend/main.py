@@ -71,7 +71,8 @@ app.include_router(api_eval.router)
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "db": db.DSN.split("@")[-1]}
+    """健康检查。**不返回连接串信息**（曾返回 host:port/dbname；在无鉴权的端点里没有理由暴露）。"""
+    return {"ok": True}
 
 
 # ---------------- 前端静态资源（构建后自动托管）----------------

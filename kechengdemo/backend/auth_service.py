@@ -12,7 +12,6 @@
     浏览器抓取是阻塞操作，放在独立线程里跑；主进程只维护一个状态机供前端轮询。
 """
 import json
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -100,10 +99,8 @@ def _worker(staff_id: str = None, session_id: str = None, wait_sec: int = 300):
         _set("launching", "正在启动 Chrome…")
         CACHE_DIR.mkdir(exist_ok=True)
 
-        # 清掉残留 Chrome，避免 profile 被占用
-        subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1)
+        # 清掉本项目**自己**残留的 Chrome，避免 profile 被占用（不影响用户其他 Chrome 窗口）
+        wb_bootstrap.kill_own_chrome(wait_sec=1)
 
         sid_s, sess_s = wb_bootstrap.pick_staff_session(staff_id, session_id)
         url = wb_bootstrap.MSG_URL.format(s=sid_s, c=sess_s)

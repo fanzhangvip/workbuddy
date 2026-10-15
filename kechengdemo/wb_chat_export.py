@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 os.environ["no_proxy"] = "127.0.0.1,localhost"
@@ -30,9 +31,13 @@ from playwright.sync_api import sync_playwright
 
 from ww_chatdata import TYPE_NAME      # 与权威映射统一（原脚本私有映射 4/5/7/8 错位，已弃用）
 
-CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-PROFILE = r"C:\Users\EDY\.workbuddy\browser-profiles\wb-session"
-TMP = r"C:\zero\workbuddy\kechengdemo\.workbuddy\tmp"
+ROOT = Path(__file__).resolve().parent
+# 浏览器与临时目录改为可配置（换机器 / 换用户名不再需要改代码）
+CHROME = (os.environ.get("CHROME_PATH")
+          or r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+PROFILE = (os.environ.get("BROWSER_PROFILE_DIR")
+           or str(Path.home() / ".workbuddy" / "browser-profiles" / "wb-session"))
+TMP = os.environ.get("WB_TMP_DIR") or str(ROOT / ".workbuddy" / "tmp")
 
 
 def extract(meta_resp, chat_resp):

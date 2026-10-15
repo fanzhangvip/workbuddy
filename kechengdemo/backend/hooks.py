@@ -71,6 +71,22 @@ REASON_CN = {
     "polarity_violation": "命中项极性与规则不符",
     "missing_field": "落库必填字段缺失",
     "bad_relation_key": "关系键不合法",
+    # D2-1 等级标签（与分数回写**各自独立**的一组原因）
+    "tag_mode_off": "等级标签回写已关闭",
+    "tag_mode_dry_run": "演练模式：仅记录，未写标签",
+    "bad_grade": "等级不在允许范围内",
+    "tag_not_ready": "等级标签尚未就绪（需先同步标签 id）",
+    "grade_unchanged": "等级未变，无需改写标签",
+}
+
+# 等级标签回写：reason → 落 `grade_tag_outbox` / `grade_tag_ledger` 的 status
+REASON_TO_TAG_STATUS = {
+    "ok": "ok",
+    "tag_mode_off": "skipped",
+    "tag_mode_dry_run": "dry_run",
+    "bad_grade": "skipped",
+    "tag_not_ready": "skipped",
+    "grade_unchanged": "unchanged",
 }
 
 # `_writeback` 的 status 与 hook reason 的映射（保持与改造前完全一致）
@@ -258,6 +274,49 @@ def before_writeback(*, positive_total=0, mode="off", already_written=False,
 
 
 # ============================================================ ④ before_persist
+
+def before_grade_tag(*, mode="off", grade=None, tag_id=None, current_grade=None,
+                     valid_grades=("S", "A", "B", "C", "D")) -> HookResult:
+    """**等级标签**回写之前的判定（架构 §10 D2-1）。
+
+    ## 为什么等级走标签而不是分数
+
+    微伴「客户评分」是累计行为分、**无覆盖接口** → 等级若也用分数表达，就永远
+    「只会往上升」表达不了降级；而**标签有增有删**，用 `tag/batch_update`
+    一次 add 新等级 + remove 旧等级，天然就是「当前等级 = X」的语义。
+
+    ## 与 `before_writeback`（分数）的关系：**完全独立**
+
+    两个开关、两条链路、两张水位表：
+    · 分数：`score_writeback_mode` → 差值累加（`writeback_ledger`）
+    · 等级：`grade_tag_mode` → 标签覆盖（`grade_tag_ledger`）
+    关掉其中一个，另一个照常工作（刻意如此：可以「只记分不打标」或「只打标不记分」）。
+
+    ## 判定顺序与理由
+
+    1. `off` → 拒绝（成本为零，**一次接口都不调**）
+    2. 等级非法 → 拒绝（防止把 `None`/空值写成标签）
+    3. **标签 id 未就绪** → 拒绝（`tag_id` 需先由人工触发 `sync_tags` 拿到；
+       绝不在这里隐式创建标签 —— `tag/add` 会自动建标签组，那是真副作用）
+    4. **等级未变** → 拒绝（`grade_unchanged`）：同一客户重复评分时绝大多数等级不变，
+       这一步让「无变化」不产生任何网络调用，而不是每次评估都去刷一遍标签
+
+    ``current_grade`` = 我们**上次写进去的**等级（`grade_tag_ledger`），由调用方查好传入。
+    """
+    if mode == "off":
+        return HookResult(False, "tag_mode_off", {"mode": mode})
+    g = str(grade or "").strip().upper()
+    if g not in tuple(valid_grades):
+        return HookResult(False, "bad_grade", {"grade": grade, "valid": list(valid_grades)})
+    if not tag_id:
+        return HookResult(False, "tag_not_ready", {"grade": g})
+    cur = str(current_grade or "").strip().upper()
+    if cur and cur == g:
+        return HookResult(False, "grade_unchanged", {"grade": g, "tag_id": tag_id})
+    return HookResult(True, "ok", {"grade": g, "tag_id": tag_id,
+                                   "from_grade": cur or None,
+                                   "dry_run": mode == "dry_run"})
+
 
 def before_persist(*, rel_key=None, staff_id=None, target_id=None, session_id=None,
                    score=None, grade=None, rule_version=None) -> HookResult:

@@ -10,6 +10,13 @@
 
 跑法：``.venv\\Scripts\\python.exe tests/test_cb_delta_and_budget.py``
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import re
 import sys
@@ -63,6 +70,9 @@ def _readable(sid):
 def _mk_watermark(staff_id, wm):
     """给合成关系键插一条评估，只为了提供水位（不产生任何真实业务痕迹）。"""
     db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key = %s", (_REL,))
+    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+    try: ss.repair_current_flags()
+    except Exception: pass
     db.execute(
         """INSERT INTO customer_intent_assessment (relationship_key, staff_id, last_msg_time)
            VALUES (%s, %s, %s)""",
@@ -71,6 +81,9 @@ def _mk_watermark(staff_id, wm):
 
 def _clear_watermark():
     db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key = %s", (_REL,))
+    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+    try: ss.repair_current_flags()
+    except Exception: pass
 
 
 def _set(key, val):
@@ -282,6 +295,9 @@ def main():
                                    (SELECT assessment_id FROM customer_intent_assessment
                                      WHERE source_run_id = 996000001)""")
                 db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id = 996000001")
+                # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+                try: ss.repair_current_flags()
+                except Exception: pass
         finally:
             graph_session.ss.build_context = orig_pin
 

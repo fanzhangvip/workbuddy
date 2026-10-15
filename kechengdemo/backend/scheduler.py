@@ -41,6 +41,8 @@ OUTBOX_JOB_ID = "writeback-outbox-drain"
 RETENTION_JOB_ID = "data-retention"
 FAILURE_JOB_ID = "session-failure-retry"
 MORNING_JOB_ID = "morning-sa-review"
+GRADE_TAG_JOB_ID = "grade-tag-drain"
+REAP_JOB_ID = "idempotency-reap"
 
 OUTBOX_INTERVAL_SECONDS = 30
 
@@ -202,6 +204,40 @@ def _morning_job():
         print(f"[scheduler] 早会复核异常：{type(e).__name__}: {e}")
 
 
+def _reap_job():
+    """定时任务体：清理过期幂等记录（修 P2-1）。
+
+    ``idempotency.reap()`` 早就写好了，但全仓库**只有定义、没有调用方** ——
+    叠加 ``data_retention_days`` 默认 0 不清理，``request_guard`` 实际**永不清理**。
+    这类「防御措施存在但没接线」的状态最容易误导：看代码的人会以为已经生效。
+    这里把它接上定时任务。
+    """
+    try:
+        import idempotency
+        n = idempotency.reap()
+        if n:
+            print(f"[scheduler] 幂等记录清理：{n} 条")
+    except Exception as e:
+        print(f"[scheduler] 幂等记录清理异常：{type(e).__name__}: {e}")
+
+
+def _grade_tag_job():
+    """定时任务体：排空「等级标签」outbox（D2-1，**与分数回写 outbox 独立的 job**）。
+
+    与分数回写的分工见 `backend/grade_tag.py`。**开关默认 off** ——
+    关着时 drain 只把任务延后（保持 pending），不会调用微伴。
+    """
+    try:
+        import grade_tag
+        if not grade_tag.enabled():
+            return                       # 关着就完全不碰（连 DB 都不查）
+        res = grade_tag.drain(limit=50)
+        if res.get("ok") or res.get("failed") or res.get("dry_run") or res.get("deferred"):
+            print(f"[scheduler] 等级标签回写：{res}")
+    except Exception as e:
+        print(f"[scheduler] 等级标签回写异常：{type(e).__name__}: {e}")
+
+
 def start():
     global _scheduler, _interval, _ka_interval, _sc_interval
     _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
@@ -216,6 +252,8 @@ def start():
     _reschedule_retention()
     _reschedule_failure()
     _reschedule_morning()
+    _reschedule_grade_tag()
+    _reschedule_reap()
     try:
         import scoring_service as _ss
         _mo = _ss.setting('scoring_morning_cron', 'SCORING_MORNING_CRON', '') or '关闭'
@@ -229,6 +267,36 @@ def start():
           f"｜失败重投 {int(config.get('FAILURE_RETRY_INTERVAL_MINUTES') or 15)} 分"
           f"｜保留期 {('关闭' if _rt <= 0 else str(_rt) + ' 天')}"
           f"｜早会复核 {_mo}")
+    # 等级标签回写（D2-1）：与分数回写**分开的开关与 job**，启动时把状态打出来 ——
+    # 「到底会不会写微伴」是运维最该一眼看清的事，不能靠翻配置猜。
+    try:
+        import grade_tag as _gt
+        _gm = _gt.mode()
+        print(f"[scheduler] 等级标签：{_gm}"
+              + (f"｜标签组「{_gt.tag_group()}」｜已缓存 {len(_gt.get_tag_ids())} 个 id"
+                 if _gm != "off" else "｜（关闭，不会调用微伴）"))
+    except Exception:
+        pass
+
+
+def _reschedule_reap():
+    """注册幂等记录清理任务（默认 60 分钟一次；0 = 关闭）。"""
+    if _scheduler.get_job(REAP_JOB_ID):
+        _scheduler.remove_job(REAP_JOB_ID)
+    minutes = int(config.get("REAP_INTERVAL_MINUTES") or 60)
+    if minutes > 0:
+        _scheduler.add_job(_reap_job, "interval", minutes=minutes,
+                           id=REAP_JOB_ID, replace_existing=True)
+
+
+def _reschedule_grade_tag():
+    """按 `GRADE_TAG_INTERVAL_SECONDS`（默认 30s）注册标签排空任务；0 = 关闭。"""
+    if _scheduler.get_job(GRADE_TAG_JOB_ID):
+        _scheduler.remove_job(GRADE_TAG_JOB_ID)
+    secs = int(config.get("GRADE_TAG_INTERVAL_SECONDS") or 30)
+    if secs > 0:
+        _scheduler.add_job(_grade_tag_job, "interval", seconds=secs,
+                           id=GRADE_TAG_JOB_ID, replace_existing=True)
 
 
 def _reschedule_morning():

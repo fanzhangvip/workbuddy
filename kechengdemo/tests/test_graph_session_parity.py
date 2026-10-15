@@ -21,6 +21,13 @@ C-B 之后的注意点
     两条路径看到的上下文就不再相同 —— 那是在比较「水位前 vs 水位后」，
     不是比较「图化前 vs 图化后」。故每条样本在新路径开跑前**先抹掉旧路径的痕迹**。
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import hashlib
 import os
 import sys
@@ -110,6 +117,9 @@ def _purge_run(run_id, session_id):
     for tbl in ("writeback_outbox", "negative_review", "score_writeback"):
         db.execute(f"DELETE FROM {tbl} WHERE assessment_id = %s", (aid,))
     db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id = %s", (aid,))
+    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+    try: ss.repair_current_flags()
+    except Exception: pass
 
 
 def cleanup(session_ids):
@@ -119,6 +129,9 @@ def cleanup(session_ids):
                            (SELECT assessment_id FROM customer_intent_assessment
                              WHERE source_run_id = %s)""", (run,))
         db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id = %s", (run,))
+        # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+        try: ss.repair_current_flags()
+        except Exception: pass
     for sid in session_ids:
         db.execute("DELETE FROM session_failure WHERE session_id = %s", (sid,))
 

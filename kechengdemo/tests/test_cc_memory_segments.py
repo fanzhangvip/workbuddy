@@ -10,6 +10,13 @@
 
 跑法：``.venv\\Scripts\\python.exe tests/test_cc_memory_segments.py``
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import re
 import sys
@@ -67,6 +74,9 @@ def _mk_last(S, *, grade="B", raw=3, pos=None, neg=None,
              prof="客户是一名 Java 后端工程师，想转大模型方向。", strat="先约体验课。"):
     """造一条「上次评估」，只为让 ①② 有内容可读。"""
     db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key = %s", (_REL,))
+    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+    try: ss.repair_current_flags()
+    except Exception: pass
     db.execute(
         """INSERT INTO customer_intent_assessment
              (relationship_key, staff_id, session_id, raw_score, positive_total, negative_total,
@@ -87,6 +97,9 @@ def _clear_settings(*keys):
 
 def _clear_last():
     db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key = %s", (_REL,))
+    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+    try: ss.repair_current_flags()
+    except Exception: pass
 
 
 def main():
@@ -270,6 +283,9 @@ def main():
                                    (SELECT assessment_id FROM customer_intent_assessment
                                      WHERE source_run_id = 997000001)""")
                 db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id = 997000001")
+                # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+                try: ss.repair_current_flags()
+                except Exception: pass
         finally:
             graph_session.ss.build_context = orig
 

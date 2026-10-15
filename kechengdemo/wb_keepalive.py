@@ -39,7 +39,6 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 import urllib.parse
@@ -49,11 +48,15 @@ from pathlib import Path
 os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
 os.environ.setdefault("no_proxy", "127.0.0.1,localhost")
 
-CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-PROFILE = r"C:\Users\EDY\.workbuddy\browser-profiles\wb-session"
-CDP_PORT = 9222
-
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+# 浏览器路径与生命周期统一由 wb_bootstrap 管理（可配置 + 只关自己的实例）
+import wb_bootstrap  # noqa: E402
+
+CHROME = wb_bootstrap.CHROME
+PROFILE = wb_bootstrap.PROFILE
+CDP_PORT = wb_bootstrap.CDP_PORT
 CACHE_DIR = ROOT / ".cache"
 BOOTSTRAP_FILE = CACHE_DIR / "ww_bootstrap.json"
 BACKUP_FILE = CACHE_DIR / "ww_bootstrap.bak.json"
@@ -159,13 +162,9 @@ def cdp_alive() -> bool:
 
 
 def launch_chrome(url: str):
-    """拉起常驻 Chrome（带已登录 profile）。"""
+    """拉起常驻 Chrome（带已登录 profile）。统一走 wb_bootstrap（会记录 PID）。"""
     log("未发现可用 CDP，拉起 Chrome…")
-    subprocess.Popen([
-        CHROME, f"--remote-debugging-port={CDP_PORT}", f"--user-data-dir={PROFILE}",
-        "--no-first-run", "--no-default-browser-check", "--no-sandbox",
-        "--disable-session-crashed-bubble", "--window-size=1400,950", url,
-    ])
+    wb_bootstrap.launch_chrome(url)
 
 
 def harvest(url: str, wait_sec: int = 45) -> dict:
@@ -273,10 +272,10 @@ def pick_session_url() -> str:
 def refresh(wait_sec: int = 45, restart: bool = False, source: str = "manual") -> dict:
     """执行一次保活刷新。返回 {ok, code, message, ...}，不会抛异常。"""
     if restart:
-        log("强制关闭旧 Chrome…")
-        subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(3)
+        # 只关本项目自己的 Chrome 实例（绝不无差别杀掉用户其他 Chrome 窗口）
+        log("重启浏览器：关闭本项目 Chrome 实例…")
+        res = wb_bootstrap.kill_own_chrome(wait_sec=3)
+        log(f"已关闭本项目 Chrome 实例 {res.get('count', 0)} 个")
 
     CACHE_DIR.mkdir(exist_ok=True)
     url = pick_session_url()

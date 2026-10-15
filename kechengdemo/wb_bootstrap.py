@@ -12,8 +12,9 @@
     python wb_bootstrap.py --staff-id XXX --session-id YYY
     python wb_bootstrap.py --verbose      # 保留浏览器窗口便于人工登录
 
-前提：``C:\\Users\\EDY\\.workbuddy\\browser-profiles\\wb-session`` 这个 Chrome
-配置里已登录过微伴（首次运行脚本会停在该窗口等你登录）。
+前提：``BROWSER_PROFILE_DIR``（默认 ``~/.workbuddy/browser-profiles/wb-session``）这个
+Chrome 配置里已登录过微伴（首次运行脚本会停在该窗口等你登录）。
+浏览器路径可用环境变量 ``CHROME_PATH`` / ``BROWSER_PROFILE_DIR`` / ``CDP_PORT`` 覆盖。
 """
 import argparse
 import json
@@ -26,13 +27,17 @@ from pathlib import Path
 os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
 os.environ.setdefault("no_proxy", "127.0.0.1,localhost")
 
-CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-PROFILE = r"C:\Users\EDY\.workbuddy\browser-profiles\wb-session"
-CDP_PORT = 9222
+# 浏览器路径改为可配置（换机器/换用户名不再需要改代码）
+CHROME = (os.environ.get("CHROME_PATH")
+          or r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+PROFILE = (os.environ.get("BROWSER_PROFILE_DIR")
+           or str(Path.home() / ".workbuddy" / "browser-profiles" / "wb-session"))
+CDP_PORT = int(os.environ.get("CDP_PORT") or 9222)
 
 ROOT = Path(__file__).resolve().parent
 CACHE_DIR = ROOT / ".cache"
 BOOTSTRAP_FILE = CACHE_DIR / "ww_bootstrap.json"
+PID_FILE = CACHE_DIR / "chrome.pid"
 
 MSG_URL = ("https://weibanzhushou.com/dashboard/messages"
            "#type=staff&sessionType=ext_user&staffExtId={s}&sessionExtId={c}")
@@ -63,15 +68,101 @@ def pick_staff_session(staff_id: str = None, session_id: str = None):
     raise RuntimeError("未能自动找到可用会话，请用 --staff-id/--session-id 手动指定")
 
 
+# ---------------------------------------------------------------- 浏览器生命周期
+#
+# ⚠️ 这里**只**管理本项目自己启动的 Chrome（独立 user-data-dir = PROFILE）。
+# 曾经的实现用 `taskkill /F /IM chrome.exe`，会**无差别杀掉用户所有 Chrome 窗口**
+# （未提交的表单、进行中的下载一并丢失），且被定时任务自动触发 —— 属数据丢失级副作用。
+# 现在改为：优先杀「记录在案的 PID（含进程树）」，其次按 profile 精确匹配，
+# 找不到自己的实例就什么都不做；全量杀进程必须显式传 force_all=True。
+
+
+def launch_chrome(url: str = "about:blank") -> "subprocess.Popen":
+    """拉起本项目专用 Chrome（独立 profile + CDP），并记录主进程 PID。"""
+    p = subprocess.Popen([
+        CHROME, f"--remote-debugging-port={CDP_PORT}", f"--user-data-dir={PROFILE}",
+        "--no-first-run", "--no-default-browser-check", "--no-sandbox",
+        "--disable-session-crashed-bubble", "--window-size=1400,950", url,
+    ])
+    try:
+        PID_FILE.parent.mkdir(exist_ok=True)
+        PID_FILE.write_text(str(p.pid), encoding="utf-8")
+    except Exception:
+        pass
+    return p
+
+
+def _read_pid() -> int | None:
+    try:
+        return int(PID_FILE.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+def _clear_pid() -> None:
+    try:
+        PID_FILE.unlink()
+    except Exception:
+        pass
+
+
+def _kill_pid_tree(pid: int) -> bool:
+    """杀一个 PID 及其子进程（/T）。返回是否成功。"""
+    try:
+        r = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _pids_by_profile() -> list:
+    """按 `--user-data-dir=<PROFILE>` 精确找出本项目 Chrome 的 PID（PID 文件丢失时的兜底）。"""
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+          f"Where-Object {{ $_.CommandLine -like '*{PROFILE}*' }} | "
+          "Select-Object -ExpandProperty ProcessId")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                             capture_output=True, text=True, timeout=20)
+        return [int(x) for x in (out.stdout or "").split() if x.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def kill_own_chrome(wait_sec: float = 2.0, force_all: bool = False) -> dict:
+    """关闭**本项目启动**的 Chrome。绝不波及其他 Chrome 窗口。
+
+    ``force_all=True`` 才执行历史上的全量 ``taskkill /F /IM chrome.exe``
+    （会关掉用户所有 Chrome，仅在人工明确要求时使用）。
+    """
+    if force_all:
+        subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _clear_pid()
+        if wait_sec:
+            time.sleep(wait_sec)
+        return {"ok": True, "killed": [], "count": 0, "forced_all": True,
+                "note": "已按显式要求关闭全部 Chrome"}
+
+    killed = []
+    pid = _read_pid()
+    if pid and _kill_pid_tree(pid):
+        killed.append(pid)
+    _clear_pid()
+    for p in _pids_by_profile():          # 兜底：PID 丢失 / 实例已被复用
+        if p not in killed and _kill_pid_tree(p):
+            killed.append(p)
+
+    if wait_sec and killed:
+        time.sleep(wait_sec)
+    return {"ok": True, "killed": killed, "count": len(killed), "forced_all": False}
+
+
 def harvest(target_url: str, wait_sec: int = 90) -> dict:
     from playwright.sync_api import sync_playwright
 
     captured = {}
-    subprocess.Popen([
-        CHROME, f"--remote-debugging-port={CDP_PORT}", f"--user-data-dir={PROFILE}",
-        "--no-first-run", "--no-default-browser-check", "--no-sandbox",
-        "--disable-session-crashed-bubble", "--window-size=1400,950", target_url,
-    ])
+    launch_chrome(target_url)
 
     def on_request(req):
         if "createOpenChatSession" in req.url and "body" not in captured:
@@ -132,9 +223,8 @@ def main():
 
     CACHE_DIR.mkdir(exist_ok=True)
 
-    # 关掉可能残留的 Chrome，避免 profile 被占用
-    subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 关掉本项目**自己**可能残留的 Chrome，避免 profile 被占用（不影响用户其他窗口）
+    kill_own_chrome()
 
     staff_id, session_id = pick_staff_session(args.staff_id, args.session_id)
     url = MSG_URL.format(s=staff_id, c=session_id)

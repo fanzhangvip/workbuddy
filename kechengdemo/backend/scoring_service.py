@@ -38,6 +38,7 @@ import contracts                    # noqa: E402  模型输出的双层契约（
 import ctx_preprocess               # noqa: E402  上下文预处理层（统一「消息 → 文本」）
 import hooks                        # noqa: E402  显式钩子（架构 §2.4 H3）；护栏判定本体在此
 import llm                          # noqa: E402  异常分层：可重试 vs 不可重试
+import grade_tag                    # noqa: E402  D2-1 等级→微伴标签（独立链路）
 import outbox                       # noqa: E402  回写 outbox（修 G6：回写与评分解耦）
 import rules as rules_mod           # noqa: E402
 import weiban                       # noqa: E402
@@ -70,14 +71,32 @@ def sync_rules(version: str = None) -> dict:
                               if r.get("conflict_priority") is not None else None)))
     with db.tx() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM scoring_rule WHERE rule_version = %s", (version,))
+            # ⚠️ 不再「先 DELETE 整个版本再 INSERT」：窗口期内 `/api/scoring/rules`
+            # 会读到空列表，且并发跑第二轮会互相清表。改为逐行 upsert，
+            # 最后只删掉「本版本里已不在 rules.json 中的档位」。
             for row in rows:
                 cur.execute(
                     """INSERT INTO scoring_rule
                          (rule_version, rule_id, polarity, dimension, score, criteria,
                           engine, source_type, examples, conflict_priority)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (rule_version, rule_id, score) DO NOTHING""", row)
+                       ON CONFLICT (rule_version, rule_id, score) DO UPDATE SET
+                         polarity = EXCLUDED.polarity,
+                         dimension = EXCLUDED.dimension,
+                         criteria = EXCLUDED.criteria,
+                         engine = EXCLUDED.engine,
+                         source_type = EXCLUDED.source_type,
+                         examples = EXCLUDED.examples,
+                         conflict_priority = EXCLUDED.conflict_priority""", row)
+            if rows:
+                cur.execute(
+                    """DELETE FROM scoring_rule sr
+                        WHERE sr.rule_version = %s
+                          AND NOT EXISTS (
+                              SELECT 1 FROM unnest(%s::text[], %s::int[])
+                                AS k(rule_id, score)
+                               WHERE k.rule_id = sr.rule_id AND k.score = sr.score)""",
+                    (version, [r[1] for r in rows], [r[4] for r in rows]))
     return {"rule_version": version, "rules": len(rows)}
 
 
@@ -1166,12 +1185,29 @@ class ScoringService:
         return {r["rule_id"] for r in rules.get("negative_rules", [])
                 if r.get("engine") == "rule"}
 
+    @staticmethod
+    def _rule_tier_score(rules: dict, rule_id: str, default: int = 0) -> int:
+        """取某条规则首个档位的分值 —— **从规则表读，不硬编码**。
+
+        曾经把 ``negative_no_reply_2d`` 的分值写死成 ``-2``：业务若把它改成 ``-3``，
+        代码仍产出 ``-2`` → ``validate_items()`` 会把它判为**非法项静默丢弃**
+        （表现为「该扣的分没扣」，日志里只剩一条 ``invalid_items``）。故改为查表。
+        """
+        for group in ("negative_rules", "positive_rules"):
+            for r in rules.get(group, []) or []:
+                if r.get("rule_id") == rule_id:
+                    opts = r.get("options") or []
+                    if opts and opts[0].get("score") is not None:
+                        return int(opts[0]["score"])
+        return default
+
     def _engine_negative_items(self, facts: dict, rules: dict) -> list:
         """规则引擎补充的硬指标扣分项（不由大模型判断）。"""
         items = []
         if facts.get("no_reply_48h"):
             items.append({
-                "rule_id": "negative_no_reply_2d", "score": -2,
+                "rule_id": "negative_no_reply_2d",
+                "score": self._rule_tier_score(rules, "negative_no_reply_2d", -2),
                 "evidence": [f"距最后一条员工消息已 {facts.get('hours')} 小时无客户回复"],
                 "reason": "规则引擎：销售正常跟进后，客户连续 48 小时未回复（如客户已说明忙/晚点聊，人工可驳回）",
             })
@@ -1460,6 +1496,20 @@ class ScoringService:
                 if send > 0:
                     outbox.enqueue(conn, aid, rel, cand["staff_id"], cand["target_id"],
                                    send, mode)
+
+            # ---- D2-1：等级 → 微伴标签（**与分数回写完全独立**的一条链路）----
+            # 为什么等级必须独立：微伴「客户评分」只能累加，表达不了「降级」；
+            # 而标签有增有删 → `tag/batch_update` 一次 add 新 + remove 旧 = 覆盖语义。
+            # ⚠️ 开关独立（`grade_tag_mode`），且**默认 off** —— 打标签是「写外部系统」的
+            #    副作用，必须由人显式打开，不能因为代码写好了就默认开始改微伴。
+            # ⚠️ `remove_tag_id` 在入队时**固化**（取当前水位里的旧标签）：出队重试时
+            #    不能再算一次（期间水位可能被别的任务推进 → 重算会摘错标签）。
+            if grade_tag.enabled() and grade.get("grade"):
+                led = grade_tag.ledger_state(rel)
+                grade_tag.enqueue(conn, aid, rel, cand["staff_id"], cand["target_id"],
+                                  grade["grade"], mode=grade_tag.mode(),
+                                  remove_tag_id=(led.get("tag_id")
+                                                 if led.get("grade") != grade["grade"] else None))
         return aid
 
     # ---------------- 内部：关键历史标签（架构 §4.4.1 的「写」侧）----------------

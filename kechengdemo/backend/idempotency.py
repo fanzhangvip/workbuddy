@@ -32,6 +32,11 @@ RETENTION_SECONDS = 7 * 24 * 3600
 
 
 def _ensure_table() -> None:
+    """确保 `request_guard` 存在（幂等）。
+
+    ⚠️ 本表的**权威定义在 `schema.sql`**（与这里逐字一致）；此处保留只为兼容老库。
+    若要改表结构，先改 `schema.sql`。
+    """
     db.execute("""CREATE TABLE IF NOT EXISTS request_guard (
                     request_key TEXT PRIMARY KEY,
                     endpoint    TEXT NOT NULL,

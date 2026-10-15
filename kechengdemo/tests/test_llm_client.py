@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
 """模型客户端异常分层单测（不依赖网络：用假响应替换 urlopen）。
 
-    C:/Users/EDY/.workbuddy/binaries/python/envs/default/Scripts/python.exe tests/test_llm_client.py
+    .venv\Scripts\python.exe tests/test_llm_client.py
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import io
 import json
 import os

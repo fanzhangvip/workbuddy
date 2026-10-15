@@ -14,6 +14,13 @@
   · **接入后行为逐字不变**：把改造前 `_writeback` 的 if-else 复刻成参考实现，
     与 hook 的 reason→status 映射**逐组合**对比（9 组全等）
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import sys
 

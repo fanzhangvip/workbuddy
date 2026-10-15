@@ -51,8 +51,16 @@ export const api = {
   scoringRulesPublish: (payload) => http.post('/scoring/rules/publish', payload).then(r => r.data),
   scoringRetention: (days) => http.get('/scoring/retention', { params: { days } }).then(r => r.data),
   scoringRetentionPurge: (payload) => http.post('/scoring/retention/purge', payload).then(r => r.data),
+  // D2-1 等级标签（独立于分数回写）
+  scoringGradeTags: () => http.get('/scoring/grade-tags').then(r => r.data),
+  scoringGradeTagSync: (payload) => http.post('/scoring/grade-tags/sync', payload).then(r => r.data),
+  scoringGradeTagAlign: (payload) => http.post('/scoring/grade-tags/align', payload).then(r => r.data),
+  scoringGradeTagDrain: (payload) => http.post('/scoring/grade-tags/drain', payload || {}).then(r => r.data),
   // E5 meta-loop：误报率排行 + 改判回流
   evalMetaLoop: () => http.get('/eval/meta-loop').then(r => r.data),
+  // AI 预标注：把 AI 当时判定填成草稿（人工只复核）；/run 是同步跑分
+  evalPrefill: (payload) => http.post('/eval/prefill', payload).then(r => r.data),
+  evalRunNow: (payload) => http.post('/eval/run', payload).then(r => r.data),
   evalBackflow: (payload) => http.post('/eval/backflow', payload).then(r => r.data),
 
   // ---------------- 负分人工复核 ----------------

@@ -57,6 +57,10 @@ const grades = computed(() => {
 const gradeMax = computed(() => Math.max(1, ...grades.value.map(g => g[1] || 0)))
 
 const WB_CN = { live: '真实写入', dry_run: '演练模式（不写入）', off: '已关闭' }
+// D2-1 等级标签：与上面的分数回写**完全独立**的一套开关与流水
+const gt = ref({ mode: 'off', tag_group: '意向等级', tag_ids: {}, outbox: [], ledger_rows: 0, errors: [] })
+const gtGroup = ref('意向等级')
+const TAG_CN = { live: '真实写入', dry_run: '演练模式（不写入）', off: '已关闭' }
 
 async function start() {
   busy.value = true; error.value = ''
@@ -118,6 +122,60 @@ async function loadRetention() {
   try { retention.value = await api.scoringRetention() } catch (e) { /* ignore */ }
 }
 
+// ---- D2-1 等级 → 微伴标签（与分数回写分开的开关）----
+async function loadGradeTags() {
+  try {
+    const r = await api.scoringGradeTags()
+    gt.value = r
+    if (r.tag_group) gtGroup.value = r.tag_group
+  } catch (e) { /* 未就绪时忽略 */ }
+}
+
+async function setTagMode(mode) {
+  busy.value = true; error.value = ''
+  try {
+    const r = await api.scoringSetSettings({ grade_tag_mode: mode })
+    if (!r.ok) error.value = r.reason || '保存失败'
+    else await loadGradeTags()
+  } catch (e) { error.value = e.message }
+  busy.value = false
+}
+
+async function syncGradeTags(createMissing) {
+  busy.value = true; error.value = ''; msg.value = ''
+  try {
+    const r = await api.scoringGradeTagSync({ create_missing: !!createMissing, dry_run: !createMissing })
+    if (!r.ok) { error.value = r.reason || '同步失败'; busy.value = false; return }
+    const found = Object.keys(r.found || {})
+    msg.value = `标签同步：已找到 ${found.length} 个（${found.join('/') || '无'}）`
+      + (r.missing?.length ? `；缺失 ${r.missing.join('/')}` : '')
+      + (r.created?.length ? `；已创建 ${r.created.join('/')}` : '')
+    await loadGradeTags()
+  } catch (e) { error.value = e.message }
+  busy.value = false
+}
+
+async function alignGradeTags(removeAll) {
+  busy.value = true; error.value = ''; msg.value = ''
+  try {
+    const r = await api.scoringGradeTagAlign({ limit: 200, dry_run: true, remove_all_others: !!removeAll })
+    msg.value = r.ok
+      ? `对齐预演：扫描 ${r.scanned} 位，待改 ${r.to_change} 位（未写微伴）`
+      : (r.reason || '失败')
+  } catch (e) { error.value = e.message }
+  busy.value = false
+}
+
+async function saveTagGroup() {
+  busy.value = true
+  try {
+    const r = await api.scoringSetSettings({ grade_tag_group: gtGroup.value })
+    if (!r.ok) error.value = r.reason || '保存失败'
+    await loadGradeTags()
+  } catch (e) { error.value = e.message }
+  busy.value = false
+}
+
 async function setMode(mode) {
   try { settings.value = await api.scoringSetSettings({ writeback_mode: mode }); refresh() }
   catch (e) { error.value = e.message }
@@ -145,7 +203,7 @@ const REASON_CN = {
 }
 
 onMounted(() => {
-  refresh(); loadStaffs(); loadSaReview(); loadGate(); loadRetention()
+  refresh(); loadStaffs(); loadSaReview(); loadGate(); loadRetention(); loadGradeTags()
   timer = setInterval(refresh, 3000)
 })
 onUnmounted(() => clearInterval(timer))
@@ -215,8 +273,8 @@ onUnmounted(() => clearInterval(timer))
               </template>
             </div>
             <div class="muted" style="font-size:11.5px;line-height:1.7">
-              微伴「添加客户评分」要求 score &gt; 0，且接口是覆盖还是累加尚未确认，
-              因此默认演练模式。可在微伴小号验证后再切换。
+              微伴「添加客户评分」要求 score &gt; 0，语义**已确认 = 累加**（无覆盖接口），
+              故系统按<b>差值累加</b>回写。等级另走上面的<b>意向等级标签</b>（独立开关）。
             </div>
             <div style="display:flex;gap:10px;align-items:flex-end">
               <div style="flex:1">
@@ -232,6 +290,72 @@ onUnmounted(() => clearInterval(timer))
             </div>
           </div>
         </div>
+        <div class="card">
+          <div class="card-head">
+            意向等级标签 · D2-1
+            <span class="tag orange" style="margin-left:8px">与评分回写相互独立</span>
+          </div>
+          <div class="card-body" style="display:grid;gap:12px">
+            <div class="seg">
+              <button :class="{ on: gt.mode === 'off' }" @click="setTagMode('off')">
+                已关闭<small>不写标签（连待办都不产生）</small>
+              </button>
+              <button :class="{ on: gt.mode === 'dry_run' }" @click="setTagMode('dry_run')">
+                演练模式<small>只记录，不写微伴</small>
+              </button>
+              <button :class="{ on: gt.mode === 'live' }" @click="setTagMode('live')">
+                真实写入<small>调用微伴标签接口</small>
+              </button>
+            </div>
+            <div class="alert" :class="gt.mode === 'live' ? 'warn' : 'info'">
+              当前：<b>{{ TAG_CN[gt.mode] }}</b>
+              <template v-if="gt.mode === 'off'">
+                —— 不会调用微伴标签接口（默认状态）。
+              </template>
+              <template v-else-if="gt.mode === 'live'">
+                —— 会真实给客户打「{{ gt.tag_group }}」标签。
+                等级改用标签是因为<b>评分只能累加、表达不了降级</b>，而标签有增有删。
+              </template>
+            </div>
+
+            <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+              <div style="width:170px">
+                <label class="lbl">标签组名</label>
+                <input v-model="gtGroup" class="input" />
+              </div>
+              <button class="btn" @click="saveTagGroup" :disabled="busy">保存</button>
+              <button class="btn ghost" @click="syncGradeTags(false)" :disabled="busy">同步标签</button>
+              <button class="btn ghost" @click="syncGradeTags(true)" :disabled="busy"
+                      title="缺失时会真的在微伴后台创建标签（副作用）">创建缺失标签</button>
+              <button class="btn ghost" @click="alignGradeTags(false)" :disabled="busy">对齐预演</button>
+            </div>
+
+            <div class="muted" style="font-size:11.5px;line-height:1.7">
+              <b>已缓存标签</b>：
+              <span v-if="Object.keys(gt.tag_ids || {}).length">
+                <span v-for="(v, k) in gt.tag_ids" :key="k" class="tag" style="margin-right:4px">{{ k }}</span>
+              </span>
+              <span v-else>尚未同步 —— 需先「同步标签」拿到 tag_id，否则不会写（也不会自动建标签）</span>
+              <br />
+              已写客户 <b>{{ gt.ledger_rows || 0 }}</b> 位 ·
+              <span v-if="(gt.outbox || []).length">
+                流水 <span v-for="o in gt.outbox" :key="o.status" style="margin-right:6px">
+                  {{ o.status }}={{ o.n }}</span>
+              </span>
+              <span v-else>暂无流水</span>
+            </div>
+
+            <div v-if="(gt.errors || []).length" class="alert err" style="font-size:12px">
+              <div v-for="e in gt.errors.slice(0, 3)" :key="e.outbox_id">
+                #{{ e.outbox_id }} {{ e.grade }} ×{{ e.attempts }}
+                {{ e.last_errcode }} {{ e.last_errmsg }}
+              </div>
+            </div>
+
+            <div v-if="msg" class="alert ok" style="font-size:12.5px">{{ msg }}</div>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head">复核入口（早会 / 公开课）· F2</div>
           <div class="card-body" style="display:grid;gap:12px">

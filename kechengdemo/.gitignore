@@ -1,6 +1,6 @@
-# ---- 虚拟环境 / 依赖锁 ----
+# ---- 虚拟环境 ----
 .venv/
-requirements.lock.txt
+# requirements.lock.txt 是 pip freeze 产物，用于「精确可复现安装」→ **必须提交**（勿忽略）
 
 # ---- IDE / 编辑器 ----
 .vscode/
@@ -23,5 +23,8 @@ frontend/dist/
 # ---- 运行时产物 ----
 *.log
 导出/
+# analyze.py 的**真实客户**运行输出：含会话正文、客户画像、逐条证据原文（客户 PII）
+# → 严禁进版本库。（构造样例 analyze_result.json / analyze_result_low.json 仍可跟踪）
+analyze_result_real.json
 # 数据回填/迁移的备份（含业务数据快照，勿提交）
 backups/

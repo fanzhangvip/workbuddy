@@ -13,6 +13,13 @@
 
 跑法：``.venv\\Scripts\\python.exe tests/test_confidence.py``
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import sys
 
@@ -306,6 +313,9 @@ def test_db():
     finally:
         if aid:
             db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (aid,))
+            # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+            try: ss.repair_current_flags()
+            except Exception: pass
 
 
 def main():

@@ -10,6 +10,13 @@
 
 跑法：``.venv\\Scripts\\python.exe tests/test_eval_runner.py``
 """
+# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
+# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8")
+    _sys.stderr.reconfigure(encoding="utf-8")
+
 import os
 import sys
 
@@ -18,6 +25,7 @@ sys.path.insert(0, os.path.join(BASE, "backend"))
 sys.path.insert(0, BASE)
 
 import analyze                   # noqa: E402
+import api_eval                  # noqa: E402
 import db                        # noqa: E402
 import eval_runner as er         # noqa: E402
 import rules as rules_mod        # noqa: E402
@@ -286,11 +294,75 @@ def test_hash_and_sample():
                                (_KIND,))["n"] == 0)
 
 
+def test_prefill():
+    """AI 预标注：把 AI 判定填成草稿，但**不得**被当成人标计入指标/门禁。"""
+    print("\n--- 6. AI 预标注（草稿 ≠ 金标准）---")
+    S = _pick(60)
+    before = db.query_one("SELECT count(*) AS n FROM eval_case WHERE kind=%s", (_KIND,))["n"]
+    # ⚠️ 用 **id 水位**清审计：`prefill` 写的 audit 是 `target=<kind>`（不是 case_id），
+    #    按 case_id 删不掉（实测踩到：edge 的预标注审计连跑三次留 3 条）。
+    audit_max = db.query_one("SELECT coalesce(max(id),0) AS n FROM audit_log")["n"]
+    cid = None
+    try:
+        base_items = [{"rule_id": "positive_coder_profile", "polarity": "positive",
+                       "score": 2, "reason": "AI 当时的判定"}]
+        cid = db.query_one(
+            """INSERT INTO eval_case (kind, staff_id, session_id, target_id, msg_count,
+                   messages_hash, baseline_items, baseline_raw_score, baseline_grade, source)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'sample') RETURNING case_id""",
+            (_KIND, S["staff_id"], S["session_id"], S["target_id"], S["msg_count"],
+             er.messages_hash(S["staff_id"], S["session_id"]),
+             db.as_json(base_items), 2, "B"))["case_id"]
+        check("造好样本：有 baseline，无 expected", bool(cid), str(cid))
+
+        dry = er.prefill(kind=_KIND, dry_run=True)
+        check("dry_run 不写库", dry.get("filled", 0) >= 1 and
+              db.query_one("SELECT expected_items FROM eval_case WHERE case_id=%s",
+                           (cid,))["expected_items"] is None, str(dry)[:120])
+
+        res = er.prefill(kind=_KIND)
+        row = db.query_one("""SELECT expected_items, expected_raw_score, expected_grade,
+                                     prefilled, annotator FROM eval_case WHERE case_id=%s""", (cid,))
+        check("★ 预标注已填入 expected_items", row["expected_items"] is not None, str(row)[:120])
+        check("★ 打上 prefilled=true（否则会变成「AI 批改自己」）",
+              row["prefilled"] is True, str(row["prefilled"]))
+        check("总分/等级由本地引擎算（不信 AI 自报）",
+              row["expected_raw_score"] == 2 and row["expected_grade"], str(row))
+        check("annotator 标记为 AI 预标注", "AI" in (row["annotator"] or ""), row["annotator"])
+
+        # 核心：默认口径必须排除预标注
+        check("★ 跑分默认**不**取预标注样本",
+              all(c["case_id"] != cid for c in er._cases(_KIND, 0)), "被错误计入")
+        check("★ 提供对照开关（include_prefilled=True 才取到）",
+              any(c["case_id"] == cid for c in er._cases(_KIND, 0, include_prefilled=True)))
+
+        check("重复预标注不覆盖已有（幂等）", er.prefill(kind=_KIND)["filled"] == 0, "")
+
+        # 人工保存 → 转「已确认」
+        api_eval.save({"case_id": cid, "items": base_items, "annotator": "张三",
+                       "note": "复核无误"})
+        row2 = db.query_one("SELECT prefilled, annotator FROM eval_case WHERE case_id=%s", (cid,))
+        check("★ 人工保存后 prefilled=false（这才算金标准）",
+              row2["prefilled"] is False and row2["annotator"] == "张三", str(row2))
+        check("人工确认后被跑分取到",
+              any(c["case_id"] == cid for c in er._cases(_KIND, 0)))
+    finally:
+        if cid:
+            db.execute("DELETE FROM eval_case WHERE case_id = ANY(%s)", ([cid],))
+            db.execute("DELETE FROM audit_log WHERE id > %s", (audit_max,))
+        # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
+        try: ss.repair_current_flags()
+        except Exception: pass
+    check("清理完成", db.query_one("SELECT count(*) AS n FROM eval_case WHERE kind=%s",
+                                   (_KIND,))["n"] == before, "残留")
+
+
 def main():
     print("=== 评估集验收（架构 第五章 / 闸6）===")
     test_metrics()
     test_gate()
     test_hash_and_sample()
+    test_prefill()
     print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
     return 1 if _FAILED else 0
 

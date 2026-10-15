@@ -24,15 +24,33 @@ import db
 _SAFE_KEYS = ("outcome", "aid", "wb_status", "needs_review", "review_enqueued", "error")
 
 
+# 进程内开关缓存：`enabled()` 原先**每次调用**都查一次 `app_setting`，
+# 而图有 11 个节点、每个节点外层都套一层 `traced` → 开启追踪后凭空多出 11 次 DB 查询。
+# 这里缓存 5 秒；设置变更会经 `db.set_setting` 主动调 `invalidate_enabled_cache()` 立即失效。
+_ENABLED_CACHE = {"at": 0.0, "val": False}
+_ENABLED_TTL = 5.0
+
+
+def invalidate_enabled_cache() -> None:
+    """让开关缓存立即失效（设置变更后调用）。"""
+    _ENABLED_CACHE["at"] = 0.0
+
+
 def enabled() -> bool:
-    """是否开启链路追踪。app_setting > .env > 默认(false)。"""
+    """是否开启链路追踪。app_setting > .env > 默认(false)。带进程内短缓存。"""
+    now = time.time()
+    if _ENABLED_CACHE["at"] and (now - _ENABLED_CACHE["at"]) < _ENABLED_TTL:
+        return _ENABLED_CACHE["val"]
     try:
         v = db.get_setting("trace_enabled")
         if v is None or v == "":
             v = config.get("TRACE_ENABLED", "false")
-        return str(v).strip().lower() in ("1", "true", "yes", "on")
+        val = str(v).strip().lower() in ("1", "true", "yes", "on")
     except Exception:
-        return False
+        val = False
+    _ENABLED_CACHE["at"] = now
+    _ENABLED_CACHE["val"] = val
+    return val
 
 
 def digest(value) -> str:

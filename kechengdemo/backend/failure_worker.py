@@ -45,7 +45,12 @@ def _max_attempts() -> int:
 
 
 def ensure_columns() -> None:
-    """补 worker 需要的列（幂等）。"""
+    """补 worker 需要的列（幂等）。
+
+    ⚠️ 这些列/索引的**权威定义在 `schema.sql`**（新库由 `init_db()` 一次建全）。
+    这里保留一份是为了兼容「建表后才加列」的老库 —— 属于兼容兜底，
+    新增字段请先改 `schema.sql`，再决定是否需要在这里补。
+    """
     for ddl in (
         "ALTER TABLE session_failure ADD COLUMN IF NOT EXISTS manual_required BOOLEAN NOT NULL DEFAULT false",
         "ALTER TABLE session_failure ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ",
