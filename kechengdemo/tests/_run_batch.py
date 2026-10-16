@@ -7,7 +7,8 @@
 import sys
 import time
 
-sys.path.insert(0, "backend")
+from _harness import ROOT  # noqa: E402
+
 import db                       # noqa: E402
 import scoring_service as ss    # noqa: E402
 

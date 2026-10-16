@@ -2,11 +2,43 @@ import axios from 'axios'
 
 const http = axios.create({ baseURL: '/api', timeout: 120000 })
 
+// 401（会话过期 / 未登录）→ 通知上层跳登录页。
+// 用「注册回调」而不是在这里 import router：api.js 是纯 HTTP 层，
+// 让它依赖路由会把「发请求」和「导航」两件事绑死，也不好测。
+//
+// ⚠️ 必须是**回调列表**，不能只有一个槽位：`useAuth`（清状态）与 `App.vue`
+//    （跳登录页）都要挂 —— 单槽位会让后注册的覆盖先注册的，表现为「状态清了但不跳转」。
+//    真踩到过：会话过期后页面一直空转、每 3 秒 401，看起来像"服务挂了"，
+//    而路由守卫只在**导航时**才跑，停在原页的标签页永远等不到那次导航。
+const _unauthorizedHandlers = []
+export function onUnauthorized(handler) {
+  if (handler && !_unauthorizedHandlers.includes(handler)) _unauthorizedHandlers.push(handler)
+}
+
+http.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    const status = err?.response?.status
+    // 登录接口自身 401 是「口令错」的正常返回，不该触发跳转（否则登录页会被自己踢走）
+    const url = String(err?.config?.url || '')
+    if (status === 401 && !url.includes('/auth/session')) {
+      for (const h of _unauthorizedHandlers) {
+        try { h(err) } catch (e) { /* 某个回调坏了不该拖累其它回调 */ }
+      }
+    }
+    return Promise.reject(err)
+  },
+)
+
 export const api = {
   // 鉴权
   authStatus: () => http.get('/auth/status').then(r => r.data),
   authLogin: (payload = {}) => http.post('/auth/login', payload).then(r => r.data),
   authVerify: () => http.post('/auth/verify').then(r => r.data),
+  // 登录本系统（与上面的「微伴扫码登录」是两件不同的事）
+  authMe: () => http.get('/auth/me').then(r => r.data),
+  authSignIn: (payload) => http.post('/auth/session', payload).then(r => r.data),
+  authSignOut: () => http.delete('/auth/session').then(r => r.data),
 
   // 同步
   syncStart: (payload) => http.post('/sync/start', payload).then(r => r.data),
@@ -15,6 +47,8 @@ export const api = {
   syncJobs: (limit = 20) => http.get('/sync/jobs', { params: { limit } }).then(r => r.data),
   syncSchedule: () => http.get('/sync/schedule').then(r => r.data),
   syncSetSchedule: (minutes) => http.post('/sync/schedule', { interval_minutes: minutes }).then(r => r.data),
+  // 日常任务（需求 4.2）：主同步+分析 / 补偿同步+分析 —— 时刻与窗口都可在后台配
+  syncSetDaily: (payload) => http.post('/sync/schedule/daily', payload).then(r => r.data),
   syncSetKeepalive: (minutes) => http.post('/sync/schedule', { keepalive_interval_minutes: minutes }).then(r => r.data),
 
   // 凭据保活（微伴登录态滑动过期，定期访问即可续期）
@@ -79,6 +113,8 @@ export const api = {
   evalDetail: (case_id, msg_limit = 100) =>
     http.get('/eval/detail', { params: { case_id, msg_limit } }).then(r => r.data),
   evalSave: (payload) => http.post('/eval/save', payload).then(r => r.data),
+  // 「我只判对错」：判错时**只打争议标记**（不改标注内容，仍排除在指标外）
+  evalDispute: (payload) => http.post('/eval/dispute', payload).then(r => r.data),
   evalFreeze: (payload) => http.post('/eval/freeze', payload).then(r => r.data),
   evalActive: (payload) => http.post('/eval/active', payload).then(r => r.data),
   evalSample: (payload) => http.post('/eval/sample', payload).then(r => r.data),
@@ -91,7 +127,170 @@ export const api = {
   evalExportUrl: (kind = '') => `/api/eval/export?kind=${encodeURIComponent(kind)}`,
 }
 
+/**
+ * 把「命中项的证据行数组」渲染成气泡。
+ *
+ * 证据行是后端按 `labels[#编号]` 回填的**整行文本**（`#012 [时间] 角色: 内容`），
+ * 所以直接显示会有两个毛病：① 编号/时间前缀对人不友好；② 正文里的换行会被折叠成一段。
+ * 复用 parseConversation 一次解决：去前缀 + 左右分栏 + 多行保留。
+ */
+export function evidenceBubbles(evidence) {
+  return parseConversation((evidence || []).join('\n'))
+}
+
+
 // ---------------- 展示用工具 ----------------
+
+// 聊天记录行的格式契约来自后端 `ctx_preprocess.render_lines()`：
+//     `#001 [10-08 09:12｜6天前] 客户: 内容`
+// ⚠️ 不能用 `line.indexOf(':')` 切分 —— 时间里的 `09:12` 会先被命中，
+//    于是 who 变成 "#001 [10-08 09"、正文变成 "12｜6天前] 客户: 内容"（实测踩到）。
+// ⚠️ 也不能用 `startsWith('销售')` 判左右 —— 行以 `#001` 开头，永远判不中 → 全部靠左。
+const CONV_LINE = /^#(\d{3,})\s*\[([^\]]*)\]\s*([^:：]{1,12})[:：]\s*([\s\S]*)$/
+
+// 企微「引用回复」的正文形态：被引用的原话在上、一行短横线、然后是自己写的内容。
+// 例：
+//     "你们总共有几个系列的课程呀"
+//     ------
+//     这边负责的是两个课程，……
+// 不拆开的话，读者会看到「销售气泡里写着客户的话」，误以为归属搞错了（实测被反馈过）。
+const QUOTE_SEP = /^-{3,}\s*$/
+
+/** 把一条消息正文拆成「引用块 + 正文」。没有引用分隔线时原样返回。 */
+export function splitQuote(text) {
+  const lines = (text || '').split('\n')
+  const i = lines.findIndex((l) => QUOTE_SEP.test(l.trim()))
+  if (i <= 0) return { quote: '', body: text }
+  const q = lines.slice(0, i).join('\n').trim()
+  const b = lines.slice(i + 1).join('\n').trim()
+  // 分隔线两侧任一侧为空 → 不是引用形态，别硬拆
+  if (!q || !b) return { quote: '', body: text }
+  return { quote: q, body: b }
+}
+
+/**
+ * 把后端返回的**结构化消息**（`/api/eval/detail` · `/api/review/detail` 的 `messages`）
+ * 转成气泡渲染用的形状。优先用它，而不是解析文本 —— 文本形态把媒体压成了 `[图片]`
+ * 占位、且不带 URL，图/表情根本渲染不出来。
+ */
+export function toBubbles(messages) {
+  return (messages || []).map((m) => {
+    const { quote, body } = splitQuote(m.text || '')
+    return {
+      ...m,
+      quote,
+      text: body,
+      side: (m.role || '') === '销售' ? 'right' : 'left',
+    }
+  })
+}
+
+// ---------------- 媒体消息的展示分类 ----------------
+
+/**
+ * 媒体类型 → 展示分类。**前端唯一一份**（`AGENTS.md` 的 Reuse Before Rewrite 规则）。
+ *
+ * 为什么前端还得有这张表：msgtype 的**数字**是企微协议的一部分
+ * （2 图片 / 3 表情 / 6 语音 / 7 视频 / 8 文件），「怎么画」只能按数字分支；
+ * 但**中文名一律用后端下发的 `type_name`**（唯一事实源 `ww_chatdata.TYPE_NAME`）。
+ * 前端只管画法，不管命名 —— 所以这里没有、也不该有中文名。
+ *
+ * 改造前 ChatView 与 ChatBubbles 各写一份判断（`2/3 出图、6/7/8 出卡片` vs
+ * `2||3 出图、其余出卡片`），同一个知识要改两处。
+ */
+export const MEDIA_KIND = { 2: 'image', 3: 'emoji', 6: 'voice', 7: 'video', 8: 'file' }
+
+/** 展示分类：`'image' | 'emoji' | 'voice' | 'video' | 'file' | ''（非媒体）`。 */
+export function mediaKindOf(m) {
+  if (!m || !m.is_media) return ''
+  return MEDIA_KIND[Number(m.msgtype)] || 'other'
+}
+
+/** 图片、表情**直接出图**；其余（语音 / 视频 / 文件）给可点卡片。 */
+export function isInlineImage(m) {
+  const k = mediaKindOf(m)
+  return k === 'image' || k === 'emoji'
+}
+
+/** 媒体卡片的「图标 + 名称 + 动作词」——两处渲染共用，避免同一类型两种说法。 */
+export function mediaCard(m) {
+  const k = mediaKindOf(m)
+  const ICON = { voice: '🎤', video: '🎬', file: '📎' }
+  const ACTION = { voice: '点击播放', video: '点击打开', file: '点击下载' }
+  return {
+    icon: ICON[k] || '📎',
+    name: (m && m.media_name) || (m && m.type_name) || '附件',
+    action: ACTION[k] || '点击打开',
+  }
+}
+
+/**
+ * 不画图 / 不画卡片时的媒体正文文案。
+ * ``url`` 为真 = 还有链接可点；为假 = 链接没取到（企微 CDN 有时效）。
+ */
+export function mediaText(m, url) {
+  const name = (m && m.type_name) || '附件'
+  return url ? `${name}（媒体链接有时效，点击尝试打开）`
+             : `${name}（链接已过期或未取到）`
+}
+
+// ---------------- 等级标签色 ----------------
+
+//: 等级 → `tag` 颜色类。**前端唯一一份**：改造前 ScoreView / ReviewView 各有一份
+//: 逐字相同的 `GRADE_TAG`，EvalView 又抄了一份叫 `GTAG` —— 三处同源，
+//: 改一次配色要动三个文件（实测就这样飘过一次）。
+const TAG_OF_GRADE = { S: 'red', A: 'orange', B: 'blue', C: 'green', D: '' }
+
+/** 等级 → 标签色类（未知等级返回空串，不抛）。 */
+export function gradeTag(grade) {
+  return TAG_OF_GRADE[grade] || ''
+}
+
+// ---------------- 回写模式中文名 ----------------
+
+//: `score_writeback_mode` / `grade_tag_mode` 的取值 → 中文名。
+//: 两个开关是**独立的两套流水**（分数回写 / 等级标签），但取值域与说法完全一样，
+//: 原先在 ScoreView 里各写了一份同内容的映射。
+export const MODE_CN = { live: '真实写入', dry_run: '演练模式（不写入）', off: '已关闭' }
+
+/**
+ * 把后端返回的聊天记录文本解析成可渲染的气泡。
+ * 解析不出来时**原样保留整行**（宁可显示得朴素，也不要把内容切碎丢掉）。
+ */
+export function parseConversation(txt) {
+  const out = []
+  for (const raw of (txt || '').split('\n')) {
+    const line = raw.replace(/\s+$/, '')
+    if (!line.trim()) continue
+    const m = line.match(CONV_LINE)
+    if (m) {
+      const who = m[3].trim()
+      out.push({
+        code: '#' + m[1],
+        time: m[2],
+        who,
+        text: m[4].trim(),
+        // 员工（销售）靠右、客户靠左 —— 与聊天软件一致
+        side: who === '销售' ? 'right' : 'left',
+      })
+    } else if (out.length) {
+      // ★ 续行：它属于**上一条消息**（正文里自带换行，如一段多行的直播宣传文案）。
+      //   不能当成新气泡 —— 那会造出一串"没有角色"的气泡、全部走兜底靠左。
+      //   实测：case 26 共 35 行，其中 30 行是续行，于是同一条销售消息的后续
+      //   30 行全跑到左边，看着像"销售在自问自答"。
+      out[out.length - 1].text += '\n' + line.trim()
+    } else {
+      // 首行就解析不出来：原样保留（宁可显示得朴素，也不要静默丢内容）
+      out.push({ code: '', time: '', who: '', text: line, side: 'left' })
+    }
+  }
+  // 引用块要**在整条正文拼好之后**再拆 —— 因为头行只带正文的第一行，
+  // 分隔线与后面的内容是以"续行"形式进来的。
+  return out.map((b) => {
+    const { quote, body } = splitQuote(b.text)
+    return { ...b, quote, text: body }
+  })
+}
 
 export function fmtTime(ts, withSeconds = false) {
   if (!ts) return '-'

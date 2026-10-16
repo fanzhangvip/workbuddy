@@ -982,6 +982,83 @@ ARCHITECTURE §9 T2 原计划"引入 Alembic 或合并回 schema.sql"。
 
 ---
 
+### ADR-014 · 日常任务改用「链条式定时」，而不是固定间隔（2026-10-15）
+
+> ⚠️ **ADR-015 取代了 ADR-011 的身份机制部分**（Basic → Basic + Cookie 会话并存），
+> 见下方 ADR-015。ADR-011 的其余决定（角色四档、审计主体服务端推导）继续有效。
+
+**背景**：需求 4.2 写明日常任务只有两条 ——
+「每晚 20:00–20:20 主增量同步 + 分析」（覆盖约 19:30 的销售主动发送及其后的客户互动）、
+「每日 03:30 48 小时补偿同步 + 分析」（修复接口入库延迟、网络失败、任务中断及漏处理）。
+
+而改造前系统里**只有** `SYNC_INTERVAL_MINUTES`（固定间隔，部署里还配成了 30 分钟）：
+
+· 形状不对 —— 每 30 分钟一跑，没有任何「同步完接着分析」的动作；
+· 后果很实在 —— 同步长时间占着互斥闸（同步在跑时「开始评分」被拒），
+  用户想手动评分时经常撞上「同步任务进行中」。
+
+**决定**：
+
+1. 新增两个 cron 任务 `daily-main` / `daily-compensate`；**时刻、执行窗口、
+   补偿回看小时数、是否自动跑分析全部可在后台配置**（`app_setting` > `.env` > 默认，
+   改完 `reschedule_all()` 立即生效，不必重启）。
+2. 「同步 → 分析」做成**显式状态机**：状态存 `app_setting.daily_run_state`（不是内存），
+   看门狗每 30 秒推进一步。为什么不用内存：后端重启会让「同步跑完了但没人起分析」
+   无声发生，而状态在库里重启后照样能接着走。
+3. 窗口收尾复用**跨进程停止**（往 `sync_job.stop_requested` 写标志，见 ADR-012/跨进程停止），
+   不做「杀线程」这种一半概率留下脏状态的事。
+4. 补偿任务**抛开水位**按「最近 N 小时」重拉。这是需求里「修复接口入库延迟」那句话的
+   真实落点：水位按 `last_msg_time` 前进，一条**迟到入库**的消息其 `msg_time` 会小于水位，
+   增量同步**永远不会再取它** → 永久丢失。重拉是幂等的（消息 upsert、水位只进不退）。
+5. 固定间隔同步**保留为可选项**（默认 0 = 关闭），供临时赶工用。
+
+**为什么不直接「同步任务里调评分」**：两者必须互斥（评分要读稳定的 `chat_message`），
+而互斥的判据是「库里有没有 running 行」。同进程内直接嵌套调用会让「同步还在跑」
+与「评分已开始」重叠 —— 那正是互斥要防的事。做成链条 + 看门狗，每一步都过同一道闸。
+
+**验证**：`/api/sync/schedule` 返回 `daily`（含下次运行时间与链条状态）；
+状态机三条路径（窗口收尾 / 同步结束收尾 / 过期清理）用 `.workbuddy/tmp/verify_daily_watch.py`
+直接验证（不花模型钱）；配置校验（`8:0` 这类非法时刻**拒绝保存**，而不是静默关闭任务）。
+
+---
+
+### ADR-015 · 登录改用「Cookie 会话」，Basic 保留给脚本（2026-10-15）
+
+**背景**（用户直接反馈）：全站 HTTP Basic 的代价是**首屏弹浏览器原生登录框** ——
+样式不可控、不能「记住我」、看不出当前是谁、退出还得关浏览器。
+而 ADR-011 当初选 Basic 的理由（「单机内部工具，浏览器原生支持，前端零改动」）在
+「要给非技术同事用」这个现实面前不成立了。
+
+**决定**：
+
+1. **新增服务端会话**：`POST /api/auth/session`（用户名+口令 → HttpOnly Cookie
+   `wb_session`），`DELETE` 退出，`GET /api/auth/me` 供前端判断登录态。
+   表 `login_session(sid, username, created_at, last_seen_at, expires_at, ua, ip)`。
+2. **Basic 不废**：脚本 / curl / 既有测试继续带 `Authorization` 头即可，
+   不必先登录拿 Cookie。两种凭据在中间件里并存（Basic 优先）。
+3. **不再发 `WWW-Authenticate`**：这一条是「弹框消失」的关键 —— 发了浏览器就弹原生框。
+   代价是「浏览器里直接访问 `/api/*` 会得到 401 JSON」，对 SPA 正是想要的。
+4. **静态资源放行**（SPA 外壳），真正的边界收在 `/api/*`：
+   登录页自己得先能加载出来。此前「连静态也保护」是为了逼出弹框，现在反而必须放开。
+5. **「记住我」= 30 天 Cookie**；不勾 → 浏览器会话 Cookie（关浏览器失效）+ 服务端 12 小时
+   过期（**双保险**：不勾也不留永久会话）。口令**不进前端存储**，浏览器只留不透明 sid。
+6. 前端加登录页 / 路由守卫 / 顶栏「当前用户 + 退出」；401 由 axios 拦截器统一踢回登录页。
+
+**顺手消除的一处歧义**：`/api/auth/login` 原本指「微伴扫码登录」（拿抓数凭据），
+与「登录本系统」撞名。现在会话登录走 `/session`，导航项也从「登录与凭据」改名
+「数据源凭据」，顶栏状态从「未登录」改成「数据源凭据未建立」。
+
+**代价与边界（如实）**：Cookie 存 sid、不签名也不塞用户信息，校验靠查库 ——
+单机内部工具够用；若要更严（多机部署 / 更强 CSRF 防护）该上签名 token + CSRF token。
+`SameSite=Lax` 已能挡住跨站 POST 带上 Cookie 的常见 CSRF。
+
+**验证**：`tests/test_login_session.py`（22 项，用 `TestClient` 跑**真实 ASGI 中间件**：
+含「401 不带 `WWW-Authenticate`」「Cookie 是 HttpOnly/SameSite=Lax」「不勾记住我无 Max-Age」
+「退出后旧 Cookie 立刻失效」「过期会话被拒并清行」「Basic 仍可用」）；
+Playwright **不带任何 Basic 凭据**打开首页，实拍登录页 → 登录 → 刷新保持 → 退出全流程。
+
+---
+
 ## 9. 实施计划
 
 > ⚠️ 本节之前补一条实施期决策记录（ADR-013），它影响"策略门与恢复的边界"，写在 §9 之前便于阅读。
@@ -1140,6 +1217,16 @@ ARCHITECTURE §9 T2 原计划"引入 Alembic 或合并回 schema.sql"。
 | 2026-10-15 | **实施硬伤 2/3/4/5/6**：新增 `backend/audit.py`（脱敏 + tool_audit + JSONL + 分档保留期）、`backend/policy.py`（三档策略）、`backend/task_runtime.py`（状态机 + 检查点 + 心跳 + 恢复 + 审批门控）；`llm.py`/`http_client.py`/`outbox.py`/`grade_tag.py` 补抖动与 `Retry-After`；`analyze.py` 加信任边界与截断自救并升 `PROMPT_VERSION=v4`；`scoring_service.py` 接入任务与 Policy；`main.py` 加启动恢复；`api_scoring.py` 暴露 11 个新接口 | §4、§5.1、§6.2、§6.3、§6.5、§6.6、§7、§9、§11.1 | ADR-004、ADR-005、ADR-008、ADR-013 | 新增 `tests/test_prompt_trust_boundary.py`（21/21）、`tests/test_production_hardening.py`（63/63）；真启动 uvicorn 冒烟 10 个接口全 200 + 无凭据 401；既有 26 个测试文件全绿 |
 | 2026-10-15 | 数据库新增 5 张表（`tool_audit`/`policy_decision`/`task`/`task_step`/`approval_request`）共 27 张；`task` 加 `resumed_from`；前置备份 `backups/pre-hardening-20261015-131541.dump` | §6 | ADR-012 | `schema_check.check()` → `drift: False`，`unparsed_statements: 0` |
 | 2026-10-15 | **T16 静态数据校验**：`rules.validate_rules()` + `load_rules()` 加载期拦截（INV-12/INV-13，覆盖 10 类错误）；并修掉 `outbox.drain()` **绕过 Policy 的真实缺陷**（同步路径拦住、异步路径照写 = 策略成摆设） | §6.7、§7.3、§9 | ADR-013 | `tests/test_rules_validation.py`（18/18）；**全量 29 个测试文件通过 29、失败 0** |
+| 2026-10-15 | **修评估流水线缺陷**：`eval_runner.run_case()` 原先复用生产的"按水位取增量"上下文 → 评估样本（都取自已评会话）里 v4 只看到 4~10 条消息（会话实为 52~160 条），指标测的是"被饿着的 v4"。改为固定"最近 N 条"（`delta=False`，`eval_ctx_limit` 默认 300）。**召回 0.776→0.95、漏检 28→5**，实测三条极端样本（case 29/13/6）等级回到合理区间 | §7.2、§9 | — | 重跑 run#100（27/27 条）；三案例上下文 5→160 / 4→52 / 10→35 |
+| 2026-10-15 | **前端修两个真 bug**：① ReviewView/EvalView 用 `indexOf(':')` 解析聊天记录行 —— 第一个冒号在时间 `09:12` 里，`who`/正文被切碎；`startsWith('销售')` 因行以 `#001` 开头而永不命中 → **左右气泡从未生效**。改为共用 `api.js` 的 `parseConversation()`。② 新增 `POST /api/eval/dispute`（只打争议标记、不动标注）+ 评估集「状态驱动」操作栏 | §7.2 | — | 容器内实测：首页 200、列表 30 条草稿、case 29 对话 192 行、首行解析出「销售 → 右」 |
+| 2026-10-15 | **全量核查聊天记录展示**（用户报告 case 26 销售消息出现在左侧）：根因是**多行消息被拆成一串无角色气泡** → 全部走兜底靠左。实测 case 26 共 35 行只有 5 行是消息头，另 30 行是同一条消息的续行。**影响面：已解密 32758 条消息中 13336 条（40.7%）正文含换行**。修复：`parseConversation()` 把无法解析的行**归并到上一条**（保留其左右）；`.bubble` 加 `white-space: pre-wrap`。同时修掉同类问题 3 处：评分中心/负分复核的**证据行**改为气泡渲染（去 `#编号 [时间]` 噪音 + 左右分栏）、总览搜索命中的正文加 `pre-wrap`、画像摘要/销售策略/命中项理由加 `pre-wrap` | §7.2 | — | node 直调前端函数验证：case 26 → 32 行归并成 **5 个气泡、0 个兜底气泡、5 个全部靠右** |
+| 2026-10-15 | **展示与「喂模型」解耦**（用户报告表情/图片不显示）：展示原先复用 `build_conversation()` 的纯文本 —— 那是给模型看的，媒体被压成 `[图片]`/`[表情]` 占位且 **URL 被故意剥掉**（CDN 链接会过期、对语义判断是噪声），所以人看不到图。新增 `scoring_service.build_display_messages()`（结构化消息，含 `media_url`/`media_name`/`is_media`），`/api/eval/detail` 与 `/api/review/detail` 增设 `messages` 字段；前端改用结构化数据渲染气泡（图片/表情出图、其它给可点文件卡、CDN 过期则降级占位），`parseConversation` 退化为兼容回退。同时把**引用回复**拆成引用块（企微用 `"原话"` + `------` + 答复 表达，不拆会被误读为归属错误），并在消息数超窗口时**显式提示截断**且提供「加载全部」 | §7.2 | — | 接口实测：case 30 返回 **143 条 messages、9 条媒体全部带 URL**（wework.qpic.cn）、12 条含引用分隔线；`/api/review/detail` 亦返回 59 条 |
+| 2026-10-15 | **代码复用收敛（8 类重复全部归位）**：审计 `audit.record_action`（15 处内联 SQL + `scoring_service._audit`/`task_runtime._audit`/`_audit_setting` 三个私有包装 → 1 个函数）、分页 `api_common.paginate`（**3 处**而非文档原记的 2 处，并加**单页上限 200**）、轮询 `composables/usePolling.js`（6 处，间隔不抹平）、媒体分类下沉 `api.js`（ChatView 删掉本地 `MEDIA_LABEL`，改用接口 `type_name`）；`weiban.request_retry` 由两层嵌套重试折成一层（总次数不变）。**顺带抓到两个真 bug**：① `api_review.audit()` 这个路由函数名把顶部 `import audit` 覆盖 → 同文件 `audit.record_action` 直接 AttributeError（URL `/review/audit` 不变，函数改名 `audit_log`）；② `add_customer_score` 实际最多打 **6 次** HTTP，而调用方 `scoring_service` 的注释写的是「单次投递，重试交给 outbox」—— `score/add` 是**累加**语义，超时重试会重复加分（**有业务后果**）。按注释的设计意图改为单次投递，与 `_post_tag` 口径一致 | §7.2、§7.3、§9 | ADR-013 · Reuse Before Rewrite | 脚本 dry-run→apply（带备份）；`tests/run_all.py --skip-llm`；前端 `vite build` 通过 |
+| 2026-10-15 | **复用收敛补遗 + 回归防线**：补发现并收敛 F4（`grade`→标签色三份、回写模式中文名两份 → `api.js` 的 `gradeTag`/`MODE_CN`）；新增 `tests/test_dedup_semantics.py`（31 个测试文件）——把本轮两个真 bug 的**语义**钉死：detail 必须是 JSON 对象、顶层定义不得覆盖已导入模块名（AST 全仓扫描）、`score/add` 必须单次投递 | §9、§11.4 | Reuse Before Rewrite | `tests/run_all.py`（**30/30 通过、新增测试单跑通过**）；容器重建后 4 个服务 healthy；Playwright 实拍会话页 / 评估集详情 / 评分中心，页面零报错 |
+| 2026-10-15 | **第二轮复用收敛（后端 Python + 测试代码）**：用户要求「不只是前端」。写量化扫描器（AST 抽函数体抹标识符后两两比相似度，581 个函数）后又清掉 11 组真重复 —— `setting*` 唯一实现下移 `db.py`（**87 处调用点**，原先 `sync_service`/`scheduler`/`audit` 为读一个设置要反向 import 评分服务）、`digest()` 两份逐字相同 → `backend/fingerprint.py`、`scheduler` 的间隔家族（3+8+3 个近似函数）→ `_cfg_int`/`_reschedule_interval`/`_set_interval_minutes`、`weiban` 的翻页循环 ×4 / 标签增删 / token 注入 ×7 → `_iter_paged`/`_customer_tag_op`/`_get`、队列回收 → `db.reclaim_stuck_sending`、安全取整数 → `db.query_int`、task 进度读写 → `_progress_snapshot/_write_progress`、**两个服务的骨架**（`__init__`/`is_running`/`_bump` 各一份且已漂移）→ `backend/job_service.py::JobService`、测试样板（`check()` **30 份**）→ `tests/_harness.py` | §2.3、§6.5、§9、§11.5 | Reuse Before Rewrite | `tests/run_all.py --skip-llm`；容器重建 + 冒烟；明细见 `代码复用审计.md` §11 |
+| 2026-10-15 | **第三轮：读接口重试降到 3 次 + 前端原语/横切收敛 + 两个真 bug**。① `weiban` 读接口重试预算 **9 → 3**（`READ_ATTEMPTS`；`request_retry` 参数从「轮数 × 每轮次数」改成直白的**总尝试次数**，写操作仍单次投递）；② 前端 17 组重复样式声明下沉 `styles.css` 通用原语（打包 CSS 21.61 → 18.97 kB、5 页截图零变化）、新增 `components/Pager.vue`（3 套分页合一）、新增 `composables/useAsyncAction.js`（手写 `busy.value` **45 → 1**、`catch→error` **35 → 10**）；③ 测试清理样板收敛（`_harness.delete_rows` 替 67 处、`purge_run` 替 5 份）；④ **抓到并修掉两个真 bug**：`ScoreView` 用了 `msg` 却从未声明（点「同步标签」抛 ReferenceError，提示永不出现）、`sync_service.stop()` **停不掉别的进程里的同步**（只设进程内标志，而评分那边是写库的跨进程停止）→ 给 `sync_job` 加 `stop_requested` 列 + `_run` 每轮轮询，**跨进程端到端验证通过**（宿主进程同步被容器的 stop 接口 2.5 秒内停掉） | §2.3、§6.4、§7.3、§9 | Reuse Before Rewrite · ADR-012 | `tests/run_all.py --skip-llm` **31/31 通过**；`schema_check` 无漂移；Playwright 实点验证；DDL 前备份 `backups/pre-sync-stop-20261015-194500.dump` |
+| 2026-10-15 | **第四轮 P3 架构治理 + 日常任务**。① **三组软环全拆**：互斥判定下沉 `job_service.running_kinds()`（查库、跨进程，服务之间不再互相 import）、`build_context/compute_facts/取数原语` 搬到中立模块 `scoring_context.py`（449 行，`scoring_service` 再导出，30 处调用点与测试零改动）、引擎硬指标 → `rules.engine_*`、置信度阈值 → `confidence.thresholds()`、`graph_session`/`eval_runner` 改为依赖中立模块 → **`arch_check` 报「模块级无环 + 无软环」**；② **三张多写入者表各配唯一写入口**：`assessment_repo.py` / `review_repo.py` / `eval_case_repo.py`，4+3+3 个写入方全部改调（`customer_intent_assessment` 只剩 `_persist_assessment` 一处 INSERT，且注明是单写入者）；③ **日常任务（需求 4.2）**：`daily-main`（默认 20:00，窗口 20 分钟）+ `daily-compensate`（默认 03:30，抛开水位回看 48h 重拉）+ 看门狗状态机（状态存 app_setting，跨进程/重启可见），时刻/窗口/回看/是否自动分析**均可在「同步中心 → 日常任务」配置**，`.env` 的 `SYNC_INTERVAL_MINUTES` 由 30 改为 0（改用日常任务） | §2.3、§4、§7.3、§9、ADR-014 | ADR-014 · P3 | `tests/run_all.py --skip-llm`；`arch_check.py` 无环；状态机三路径 `verify_daily_watch.py` 全过；`/api/sync/schedule` 实测返回 20:00 / 03:30 与下次运行时间；非法时刻被拒 |
+| 2026-10-15 | **对齐需求 4.3（增量与去重）**：审计发现两处与需求不符 —— ① 取数**只传 `start_time`（= 水位），没有「水位 − 15 分钟」的重叠回看** → 乱序/迟到的消息会被永久跳过；② **完全没传 `end_time`** → 微伴按时间**逆序 + offset** 分页，翻页途中新到的消息会把整页往后挤、边界那条（最新）被跳过。已修：新增纯函数 `sync_service.sync_window()`（`start = 水位 − overlap`、`end = 轮次开始 − 60s` 且**本轮固定**），重叠窗口做成可配项 `sync_overlap_minutes`（默认 15，进注册表/白名单）；**顺带修掉自身引入的洞**：会话跳过判据由「没超过水位」收紧为「连重叠窗口都没覆盖到」。幂等写入（`PRIMARY KEY(staff_id, session_id, message_id)` + `ON CONFLICT DO UPDATE`）与「全部页面写好才推进水位、失败保留」原本已符合需求 | §7.3、§9 | ADR-014 | 新增 `tests/test_sync_window.py`（15 项：窗口公式 / 参数透传 / **两页 end_time 一致** / 跳过判据）；`tests/run_all.py --skip-llm` **32/32 通过**；**只读实测微伴接口**：`end_time` 真生效（同一会话 total 57 → 中点 11 → 末尾之后 51，截断与单调性都成立） |
 
 ---
 
@@ -1208,6 +1295,127 @@ ARCHITECTURE §9 T2 原计划"引入 Alembic 或合并回 schema.sql"。
 **过程中被测试抓出的真 bug（已修）**：`request_approval()` 最初忘了对审批参数脱敏，
 token 会以明文落进 `approval_request.params_redacted` —— 由
 `test_production_hardening.py` 的「审批参数同样脱敏」断言发现并修复。
+
+### 11.2 五关的处置结果（2026-10-15 晚 · 第二轮）
+
+用户要求"五关都跑通 + 整套搬进 Docker"。实际结果**四关闭合、一关卡在流程上**：
+
+| 关 | 结果 | 证据 |
+|---|---|---|
+| 1 评估集回归 | ⚠️ **机制跑通，但门禁算不出指标** | 27/27 用例跑完、0 漂移、0 报错；但 30 条样本里 **27 条是 AI 预标注、人工确认为 0** → 按项目自己的规则（预标注必须排除）指标恒为空。**这是流程缺口，不是代码缺口** |
+| 2 git 历史 PII | ⏸ **准备完毕，等授权** | 整体镜像备份 1.42 GB 已就位；`scripts/purge-pii-history.ps1` 已写好（默认只分析，需 `-Confirm` 才重写，且不自动 push） |
+| 3 HTTPS | ✅ **已闭合** | Caddy `tls internal`，`https://localhost:8443/api/health` → 200、无凭据 → 401 |
+| 4 角色与范围 | ✅ **已闭合** | 多账号 `API_USERS` + 四档角色；**26 个危险接口**挂角色守卫；`tests/test_rbac.py` 21/21；容器内实测 viewer 写操作 403 |
+| 5 备份 / 告警 / 演练 | ✅ **已闭合** | 备份容器自动 dump + **`pg_restore --list` 校验** + 保留期清理；恢复脚本自带"恢复前快照"；**故障演练真做了一遍**（见下） |
+
+**故障演练（T19 的 ①）实测记录**：
+
+```
+造一个 running 且心跳过期 600s 的任务（模拟评分跑到一半进程没了）
+→ docker start 应用（模拟运维重新拉起）
+→ 启动日志：[app] 僵尸任务回收 1 个；可续跑：[37]
+→ 任务 37：running → failed，检查点 last_step_seq=1 与预算 cost_calls=3 **均保留**
+→ POST /api/scoring/tasks/37/resume → 新任务 38，resumed_from=37
+   已完成的步骤（续跑要跳过）: ['session:drill:1']，继承预算: {'cost_calls': 3}
+```
+
+**评估集方向性结果（⚠️ 非门禁、不可当质量结论）**：
+
+因为 expected 取的是 AI 自己的历史判定（`baseline_items`），这次跑分衡量的是
+**「v4 与改动前的 AI 自己有多一致」**，而不是"判得准不准"。它给出的有效信号是**变化幅度**：
+
+| 指标 | 值 | 怎么读 |
+|---|---|---|
+| rule_f1 | 0.8509 | 与旧版自身的重合度 |
+| precision / recall | 0.9417 / **0.776** | **漏检 28 项**（旧版命中、新版没命中）→ v4 判定更**保守** |
+| grade_acc | 0.5556 | **约 44% 的样本等级变了** → 提示词改动的影响是实质性的 |
+| item_exact_rate | 0.9794 | 命中项一旦命中，档位分值几乎都对 |
+| fp_case_rate | 0.1852 | 18.5% 样本出现"新版命中、旧版没命中" |
+
+**结论**：v4 的信任边界**确实改变了判定行为**（更保守、漏检更多）。
+在人工确认这 30 条标注之前，**无法判断这是"更严谨"还是"漏判变多"** ——
+所以第 1 关必须由人补标注才能过。**未把这次结果存为门禁基线**（用 AI 自评当基线等于自证清白）。
+
+### 11.3 Docker 化结果（2026-10-15）
+
+新增 `Dockerfile`（两阶段：Node 构建前端 → Python 运行时）、`.dockerignore`、
+重写的 `docker-compose.yml`（postgres + app + 可选 proxy/backup）、
+`deploy/Caddyfile`、`scripts/backup-loop.sh`、`scripts/restore.sh`、
+`scripts/purge-pii-history.ps1`、`DEPLOY.md`。
+
+实测：镜像构建成功 → 4 个容器 healthy → 容器内冒烟 9/9 通过（含前端托管、真实数据读取）
+→ 数据迁移后 **226 条评估 / 782014 条会话 / 27 张表与迁移前逐一致**。
+
+**两个必须留痕的踩坑**：
+1. **compose 的 healthcheck 会覆盖 Dockerfile 的同名声明** —— 我从镜像里去掉了 curl，
+   却漏改 compose，导致"应用健康但被判 unhealthy"。两处必须同步。
+2. **`docker kill` 不算崩溃**：它被 Docker 视为**手动停止**，restart 策略不会拉起容器
+   （真正的崩溃恢复靠"下次启动时的僵尸回收"兜底，这一点已用演练验证）。
+
+---
+
+### 11.4 代码复用收敛结果（2026-10-15 · 第三轮）
+
+依据 `AGENTS.md` 的 **Reuse Before Rewrite** 硬规则，按 `代码复用审计.md` 列的
+8 类重复逐条收敛（明细与证据见该文档 §10）：
+
+| 重复项 | 收敛到 | 新增/改动文件 |
+|---|---|---|
+| 聊天气泡渲染 3 套 | `frontend/src/components/ChatBubbles.vue` | 组件 + 3 个页面接入 |
+| 审计写入 15 处 + 3 个私有包装 | `backend/audit.record_action` | `backend/audit.py` |
+| 指数退避 4 套 | `backend/http_client.backoff_seconds` | `http_client.py`（新增 `backoff_cap`） |
+| JSONB 归一化 5 处 | `backend/db.as_list` / `as_dict_list` | `db.py` |
+| 分页 3 处 | **新增** `backend/api_common.paginate`（含单页上限 200） | `api_common.py` |
+| 6 处 `setInterval` | **新增** `frontend/src/composables/usePolling.js` | 6 个页面接入 |
+| `msgtype` 中文名映射 2 套 | 删前端那份，统一用接口 `type_name` | `api.js` 新增媒体分类助手 |
+| 等级→标签色 3 份 + 回写模式中文名 2 份 | `api.js` 的 `gradeTag` / `MODE_CN`（本轮补发现） | `api.js` + 3 个视图 |
+
+**两个顺带抓到的真 bug**（都不是重构引入的，是重构把隐藏的错暴露出来）：
+
+> 两者的语义都已钉进 `tests/test_dedup_semantics.py`（含 AST 全仓扫描
+> 「顶层定义覆盖已导入模块名」），避免复发。
+
+1. **`api_review.py` 的函数名覆盖模块名**：路由 `def audit(limit)` 覆盖了
+   `import audit` —— 内联 SQL 时代不引用 `audit` 所以看不出来，
+   改调 `audit.record_action` 后立刻 `AttributeError`（`test_batch234` 打出来的）。
+   改名 `audit_log`，HTTP 路径不变。
+2. **回写路径的重复扣分风险**：`add_customer_score` 的 `retries=2` 叠加默认
+   `inner_retries=2` = 最多 6 次 HTTP，而 `score/add` 是**累加**语义；
+   服务端已加分但响应超时时，每次重试都会再加一遍分。
+   调用方注释写的是「live：单次投递，重试交给 outbox」—— **代码与设计意图相反**。
+   已按注释改回单次投递。
+
+**读接口的重试预算（已拍板）**：`weiban` 读接口原先是「3 轮 × 每轮 3 次 = 最多 9 次」，
+第一轮只把它折成**一层**（次数与语义都不变）。用户随后拍板**降到 3 次**：
+现在是 `weiban.READ_ATTEMPTS = 3`（首次 + 2 次重试，退避 0.8s / 1.6s，
+最坏约 2.4 秒放弃），`request_retry` 的参数也改成直白的「总尝试次数」。
+理由：读的调用方（同步任务、排空循环）本身有重试节奏，在这里死磕 9 次只会让
+「微伴不可用」表现为**同步看起来卡住**，反倒掩盖故障。写操作不受影响，仍是**单次投递**。
+
+---
+
+### 11.5 第二轮复用收敛：后端 Python 与测试代码（2026-10-15 · 第四轮）
+
+用户指出「不只是前端，后端与测试代码的重复逻辑也必须复用」。这次不再靠眼睛看，
+而是写了量化扫描器（AST 抽函数体 → 抹标识符/字面量 → 两两算相似度，扫 581 个函数），
+清掉 **11 组真重复**（明细与「有意不合并」的清单见 `代码复用审计.md` §11）：
+
+| 项 | 收敛到 |
+|---|---|
+| `setting*` 四个读函数（87 处调用点，反向依赖评分服务） | `backend/db.py` 的设置段 |
+| `digest()` 两份逐字相同 | `backend/fingerprint.py` |
+| `scheduler` 间隔家族（3 读 + 8 重排 + 3 setter） | `_cfg_int` / `_reschedule_interval` / `_set_interval_minutes` |
+| `weiban` 翻页循环 ×4、标签增删、token 注入 ×7 | `_iter_paged` / `_customer_tag_op` / `_get` |
+| 队列回收 UPDATE（outbox + grade_tag） | `db.reclaim_stuck_sending` |
+| 「查询→int→失败当 0」×5 | `db.query_int` |
+| task 进度 JSONB 读写 | `_progress_snapshot` / `_write_progress` |
+| **两个跑批服务的骨架**（含已漂移的跨进程互斥判定） | `backend/job_service.py::JobService` |
+| **测试样板**（`check()` 30 份 / 路径引导 34 处 / 编码 28 份） | `tests/_harness.py` |
+
+三处**行为**随之统一（都写进 `代码复用审计.md` §11.2，避免以后被当成"偷偷改的"）：
+清理类定时任务补 `max_instances=1, coalesce=True`（防止叠跑重复清理）；
+读接口的重试预算统一为**总 3 次**（原先 3 次 / 9 次混着，且要按乘法才算得出来）；
+10 个测试文件的通过行打印格式统一（判定只看退出码）。
 
 ---
 

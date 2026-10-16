@@ -1,0 +1,33 @@
+# 构建上下文要**小且干净** —— 否则镜像构建慢，且可能把不该进镜像的东西打进去。
+
+# 虚拟环境 / 依赖
+.venv/
+frontend/node_modules/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+
+# ★ 凭据与登录态 —— **绝不能进镜像**（运行时用 volume 挂载）
+.cache/
+.env
+
+# 业务数据与产物（体积大、且属敏感数据）
+backups/
+导出/
+.workbuddy/
+analyze_result*.json
+聊天记录_*.md
+
+# 前端产物由构建阶段生成，不复制宿主机的（避免把本机旧构建带进去）
+frontend/dist/
+
+# 版本控制与编辑器
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# 文档（不进运行镜像）
+*.md
+docs/

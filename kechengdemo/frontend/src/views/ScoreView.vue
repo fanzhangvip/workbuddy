@@ -1,6 +1,10 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { api, fmtTime, fmtRelative } from '../api'
+import { ref, computed, onMounted } from 'vue'
+import { api, fmtTime, fmtRelative, gradeTag, MODE_CN } from '../api'
+import ChatBubbles from '../components/ChatBubbles.vue'
+import Pager from '../components/Pager.vue'
+import { useAsyncAction } from '../composables/useAsyncAction'
+import { usePolling } from '../composables/usePolling'
 
 const form = ref({ staff_id: '', max_sessions: 50, min_messages: 4, force: false })
 const staffs = ref([])
@@ -13,8 +17,12 @@ const settings = ref({ writeback_mode: 'dry_run' })
 const scInterval = ref(null)
 const filters = ref({ grade: '', q: '', review_status: '', page: 1, page_size: 15 })
 const detail = ref(null)
-const busy = ref(false)
-const error = ref('')
+// busy / error / msg 由 composable 提供（模板里的 `busy` / `error` / `msg` 用法不变）。
+// ⚠️ 这里把 `run` 重命名成 `act`：本文件已经有一个 `run`（当前任务的 computed），
+//    同名会直接构建失败 —— 变量命名冲突在复用时要显式躲开，别硬碰。
+// ⚠️ `msg` 原先**只被用、没被声明**（两个标签按钮里 `msg.value = ...` 会抛
+//    ReferenceError）；现在由 composable 提供，顺手修掉。
+const { busy, error, msg, run: act } = useAsyncAction()
 // 架构新增项（第 2–4 批）：运行时参数 + F2 早会/公开课复核名单
 const arch = ref({ llm_timeout_sec: 0, data_retention_days: 0, eval_gate_enabled: true,
                    morning_cron: '', public_class_grade_scope: 'S,A',
@@ -23,8 +31,6 @@ const arch = ref({ llm_timeout_sec: 0, data_retention_days: 0, eval_gate_enabled
 const saList = ref({ count: 0, items: [], scope: ['S', 'A'] })
 const gate = ref(null)
 const retention = ref(null)
-let timer = null
-
 async function refresh() {
   try {
     const [s, m, r, l, sc, st] = await Promise.all([
@@ -56,58 +62,51 @@ const grades = computed(() => {
 })
 const gradeMax = computed(() => Math.max(1, ...grades.value.map(g => g[1] || 0)))
 
-const WB_CN = { live: '真实写入', dry_run: '演练模式（不写入）', off: '已关闭' }
 // D2-1 等级标签：与上面的分数回写**完全独立**的一套开关与流水
 const gt = ref({ mode: 'off', tag_group: '意向等级', tag_ids: {}, outbox: [], ledger_rows: 0, errors: [] })
 const gtGroup = ref('意向等级')
-const TAG_CN = { live: '真实写入', dry_run: '演练模式（不写入）', off: '已关闭' }
 
 async function start() {
-  busy.value = true; error.value = ''
-  try {
+  await act(async () => {
     const r = await api.scoringStart({
       staff_ids: form.value.staff_id ? [form.value.staff_id] : null,
       max_sessions: Number(form.value.max_sessions) || 0,
       min_messages: Number(form.value.min_messages) || 0,
       force: form.value.force,
     })
-    if (!r.ok) error.value = r.reason || '启动失败'
-  } catch (e) { error.value = e.message }
-  busy.value = false; refresh()
+    if (!r.ok) { error.value = r.reason || '启动失败'; return }
+  })
+  refresh()
 }
 
 async function stop() {
-  busy.value = true
-  try { await api.scoringStop() } catch (e) { error.value = e.message }
-  busy.value = false; refresh()
+  await act(async () => { await api.scoringStop() })
+  refresh()
 }
 
 async function saveSchedule() {
-  try { schedule.value = await api.scoringSetSchedule(Number(scInterval.value) || 0) }
-  catch (e) { error.value = e.message }
+  await act(async () => {
+    schedule.value = await api.scoringSetSchedule(Number(scInterval.value) || 0)
+  })
 }
 
 // ---- 架构新增参数（第 2–4 批）----
 async function saveArch() {
-  busy.value = true; error.value = ''
-  try {
+  await act(async () => {
     const r = await api.scoringSetSettings({ ...arch.value })
-    if (!r.ok) error.value = r.reason || '保存失败'
-    else refresh()
-  } catch (e) { error.value = e.message }
-  busy.value = false
+    if (!r.ok) { error.value = r.reason || '保存失败'; return }
+    refresh()
+  })
 }
 
 // F2：早会/公开课复核 —— 点一下「增量刷新」S/A 名单，并展示刷新后的名单
 async function publicClassReview(mode) {
-  busy.value = true; error.value = ''
-  try {
+  await act(async () => {
     const r = await api.scoringPublicClassReview({ mode })
-    if (!r.ok) error.value = r.reason || '启动失败'
+    if (!r.ok) { error.value = r.reason || '启动失败'; return }
     if (r.name_list) saList.value = r.name_list
     refresh()
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 async function loadSaReview() {
@@ -132,53 +131,47 @@ async function loadGradeTags() {
 }
 
 async function setTagMode(mode) {
-  busy.value = true; error.value = ''
-  try {
+  await act(async () => {
     const r = await api.scoringSetSettings({ grade_tag_mode: mode })
-    if (!r.ok) error.value = r.reason || '保存失败'
-    else await loadGradeTags()
-  } catch (e) { error.value = e.message }
-  busy.value = false
+    if (!r.ok) { error.value = r.reason || '保存失败'; return }
+    await loadGradeTags()
+  })
 }
 
 async function syncGradeTags(createMissing) {
-  busy.value = true; error.value = ''; msg.value = ''
-  try {
+  await act(async () => {
     const r = await api.scoringGradeTagSync({ create_missing: !!createMissing, dry_run: !createMissing })
-    if (!r.ok) { error.value = r.reason || '同步失败'; busy.value = false; return }
+    if (!r.ok) { error.value = r.reason || '同步失败'; return }
     const found = Object.keys(r.found || {})
     msg.value = `标签同步：已找到 ${found.length} 个（${found.join('/') || '无'}）`
       + (r.missing?.length ? `；缺失 ${r.missing.join('/')}` : '')
       + (r.created?.length ? `；已创建 ${r.created.join('/')}` : '')
     await loadGradeTags()
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 async function alignGradeTags(removeAll) {
-  busy.value = true; error.value = ''; msg.value = ''
-  try {
+  await act(async () => {
     const r = await api.scoringGradeTagAlign({ limit: 200, dry_run: true, remove_all_others: !!removeAll })
     msg.value = r.ok
       ? `对齐预演：扫描 ${r.scanned} 位，待改 ${r.to_change} 位（未写微伴）`
       : (r.reason || '失败')
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 async function saveTagGroup() {
-  busy.value = true
-  try {
+  await act(async () => {
     const r = await api.scoringSetSettings({ grade_tag_group: gtGroup.value })
-    if (!r.ok) error.value = r.reason || '保存失败'
+    if (!r.ok) { error.value = r.reason || '保存失败'; return }
     await loadGradeTags()
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 async function setMode(mode) {
-  try { settings.value = await api.scoringSetSettings({ writeback_mode: mode }); refresh() }
-  catch (e) { error.value = e.message }
+  await act(async () => {
+    settings.value = await api.scoringSetSettings({ writeback_mode: mode })
+    refresh()
+  })
 }
 
 function search() { filters.value.page = 1; refresh() }
@@ -190,7 +183,6 @@ const STATUS_TAG = { success: 'green', running: 'blue', failed: 'red', stopped: 
 const STATUS_CN = { success: '成功', running: '运行中', failed: '失败', stopped: '已停止', partial: '部分完成' }
 // 部分完成的原因（架构 G3/G4）：让「为什么没跑完」一眼可见，而不是看到状态就慌
 const PARTIAL_CN = { deadline: '达到整轮超时上限', max_llm_calls: '达到大模型调用次数上限' }
-const GRADE_TAG = { S: 'red', A: 'orange', B: 'blue', C: 'green', D: '' }
 // 人工复核的触发原因（架构 第六章 E4：由规则判定，不再听模型自报）
 const REASON_CN = {
   has_negative: '有语义负分项',
@@ -203,10 +195,9 @@ const REASON_CN = {
 }
 
 onMounted(() => {
-  refresh(); loadStaffs(); loadSaReview(); loadGate(); loadRetention(); loadGradeTags()
-  timer = setInterval(refresh, 3000)
+  loadStaffs(); loadSaReview(); loadGate(); loadRetention(); loadGradeTags()
 })
-onUnmounted(() => clearInterval(timer))
+usePolling(refresh, 3000)
 </script>
 
 <template>
@@ -233,7 +224,7 @@ onUnmounted(() => clearInterval(timer))
                 <option v-for="s in staffs" :key="s.staff_id" :value="s.staff_id">{{ s.name }}</option>
               </select>
             </div>
-            <div class="two">
+            <div class="grid-2 loose">
               <div>
                 <label class="lbl">本次最多会话</label>
                 <input v-model="form.max_sessions" class="input" type="number" min="0" />
@@ -266,7 +257,7 @@ onUnmounted(() => clearInterval(timer))
               </button>
             </div>
             <div class="alert" :class="settings.writeback_mode === 'live' ? 'warn' : 'info'">
-              当前：{{ WB_CN[settings.writeback_mode] }}
+              当前：{{ MODE_CN[settings.writeback_mode] }}
               <template v-if="settings.writeback_mode === 'live'">
                 —— 会真实修改微伴客户评分。微伴为<b>累加</b>语义，系统已按
                 <b>差值累加</b>回写（D2-1），不会重复累加；水位见 writeback_ledger。
@@ -308,7 +299,7 @@ onUnmounted(() => clearInterval(timer))
               </button>
             </div>
             <div class="alert" :class="gt.mode === 'live' ? 'warn' : 'info'">
-              当前：<b>{{ TAG_CN[gt.mode] }}</b>
+              当前：<b>{{ MODE_CN[gt.mode] }}</b>
               <template v-if="gt.mode === 'off'">
                 —— 不会调用微伴标签接口（默认状态）。
               </template>
@@ -391,7 +382,7 @@ onUnmounted(() => clearInterval(timer))
                   <th style="text-align:left">复核</th></tr></thead>
                 <tbody>
                   <tr v-for="x in saList.items.slice(0, 50)" :key="x.assessment_id">
-                    <td><span class="tag" :class="GRADE_TAG[x.grade]">{{ x.grade }}</span></td>
+                    <td><span class="tag" :class="gradeTag(x.grade)">{{ x.grade }}</span></td>
                     <td>{{ x.target_name || x.target_id }}</td>
                     <td class="muted">{{ x.staff_name || '-' }}</td>
                     <td style="text-align:right">{{ x.raw_score }}</td>
@@ -502,7 +493,7 @@ onUnmounted(() => clearInterval(timer))
           <div class="card-head">等级分布</div>
           <div class="card-body" style="display:grid;gap:8px">
             <div v-for="g in grades" :key="g[0]" style="display:flex;align-items:center;gap:10px">
-              <span class="tag" :class="GRADE_TAG[g[0]]" style="width:30px;justify-content:center">{{ g[0] }}</span>
+              <span class="tag" :class="gradeTag(g[0])" style="width:30px;justify-content:center">{{ g[0] }}</span>
               <div class="progress" style="flex:1"><i :style="{ width: ((g[1] || 0) / gradeMax * 100) + '%' }"></i></div>
               <span class="mono" style="width:46px;text-align:right">{{ g[1] || 0 }}</span>
             </div>
@@ -536,7 +527,7 @@ onUnmounted(() => clearInterval(timer))
                     <td>{{ a.target_name || a.target_id }}</td>
                     <td class="muted">{{ (a.staff_name || '').slice(0, 12) }}</td>
                     <td class="mono">{{ a.raw_score }}</td>
-                    <td><span class="tag" :class="GRADE_TAG[a.grade]">{{ a.grade }}</span></td>
+                    <td><span class="tag" :class="gradeTag(a.grade)">{{ a.grade }}</span></td>
                     <td class="mono">+{{ a.positive_total }} / {{ a.negative_total }}</td>
                     <td><span class="tag" :class="a.writeback_status === 'ok' ? 'green' : a.writeback_status === 'failed' ? 'red' : 'blue'">{{ a.writeback_status }}</span></td>
                     <td><span class="tag" :class="a.review_status === 'pending' ? 'orange' : a.review_status === 'done' ? 'green' : ''">{{ a.review_status === 'na' ? '无需' : a.review_status === 'pending' ? '未打分' : a.review_status === 'done' ? '已完成' : '已忽略' }}</span></td>
@@ -546,11 +537,8 @@ onUnmounted(() => clearInterval(timer))
                 </tbody>
               </table>
             </div>
-            <div class="pager" v-if="list.total > filters.page_size">
-              <button class="btn sm" :disabled="filters.page <= 1" @click="goto(filters.page - 1)">上一页</button>
-              <span class="muted" style="font-size:12px">{{ filters.page }} / {{ Math.ceil(list.total / filters.page_size) }}（共 {{ list.total }}）</span>
-              <button class="btn sm" :disabled="filters.page >= Math.ceil(list.total / filters.page_size)" @click="goto(filters.page + 1)">下一页</button>
-            </div>
+            <Pager :page="filters.page" :page-size="filters.page_size"
+                   :total="list.total" show-total @go="goto" />
           </div>
         </div>
 
@@ -584,7 +572,7 @@ onUnmounted(() => clearInterval(timer))
       <div class="drawer">
         <div class="card-head">
           评分详情 · {{ detail.target_name }}
-          <span class="tag" :class="GRADE_TAG[detail.grade]" style="margin-left:8px">{{ detail.grade }}</span>
+          <span class="tag" :class="gradeTag(detail.grade)" style="margin-left:8px">{{ detail.grade }}</span>
           <button class="btn sm" style="margin-left:auto" @click="detail = null">关闭</button>
         </div>
         <div class="card-body" style="display:grid;gap:14px">
@@ -608,8 +596,9 @@ onUnmounted(() => clearInterval(timer))
             <div class="lbl">加分项</div>
             <div v-for="(i, k) in (detail.positive_items || [])" :key="k" class="item">
               <span class="tag green">+{{ i.score }}</span>
-              <div><b>{{ i.dimension }}</b><div class="muted" style="font-size:12px">{{ i.reason }}</div>
-                <div v-for="(ev, e) in (i.evidence || [])" :key="e" class="ev">证据：{{ ev }}</div>
+              <div><b>{{ i.dimension }}</b><div class="muted" style="font-size:12px;white-space:pre-wrap">{{ i.reason }}</div>
+                <!-- 证据行交给公共气泡组件（AGENTS.md: Reuse Before Rewrite） -->
+                <ChatBubbles compact :text="(i.evidence || []).join('\n')" />
               </div>
             </div>
             <div v-if="!(detail.positive_items || []).length" class="muted" style="font-size:12px">无</div>
@@ -618,19 +607,20 @@ onUnmounted(() => clearInterval(timer))
             <div class="lbl">扣分项（需人工复核）</div>
             <div v-for="(i, k) in (detail.negative_items || [])" :key="k" class="item">
               <span class="tag red">{{ i.score }}</span>
-              <div><b>{{ i.dimension }}</b><div class="muted" style="font-size:12px">{{ i.reason }}</div>
-                <div v-for="(ev, e) in (i.evidence || [])" :key="e" class="ev">证据：{{ ev }}</div>
+              <div><b>{{ i.dimension }}</b><div class="muted" style="font-size:12px;white-space:pre-wrap">{{ i.reason }}</div>
+                <!-- 证据行交给公共气泡组件（AGENTS.md: Reuse Before Rewrite） -->
+                <ChatBubbles compact :text="(i.evidence || []).join('\n')" />
               </div>
             </div>
             <div v-if="!(detail.negative_items || []).length" class="muted" style="font-size:12px">无</div>
           </div>
           <div>
             <div class="lbl">客户画像</div>
-            <div class="alert info">{{ detail.profile_summary || '-' }}</div>
+            <div class="alert info" style="white-space:pre-wrap">{{ detail.profile_summary || '-' }}</div>
           </div>
           <div>
             <div class="lbl">销售策略</div>
-            <div class="alert ok">{{ detail.sales_strategy || '-' }}</div>
+            <div class="alert ok" style="white-space:pre-wrap">{{ detail.sales_strategy || '-' }}</div>
           </div>
           <div v-if="detail.writeback" class="muted" style="font-size:12px">
             回写：{{ detail.writeback.status }}（{{ detail.writeback.mode }}，分值 {{ detail.writeback.score }}）
@@ -645,19 +635,9 @@ onUnmounted(() => clearInterval(timer))
 <style scoped>
 .layout { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; }
 @media (max-width: 1200px) { .layout { grid-template-columns: 1fr; } }
-.lbl { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 6px; font-weight: 500; }
-.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ck { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); }
-.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.seg button { text-align: left; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--border);
-  background: var(--panel); cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; color: var(--text); }
-.seg button small { display: block; font-weight: 400; font-size: 11px; color: var(--text-3); margin-top: 3px; }
-.seg button.on { border-color: var(--brand); background: var(--brand-weak); color: var(--brand); }
 .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-.pager { display: flex; align-items: center; gap: 12px; justify-content: center; }
-.item { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--border); }
-.item:last-child { border-bottom: none; }
-.ev { font-size: 12px; color: #1e4fa8; background: var(--brand-weak); border-radius: 6px; padding: 4px 8px; margin-top: 5px; }
+/* 证据行气泡样式已移入 components/ChatBubbles.vue（AGENTS.md: Reuse Before Rewrite） */
 .mask { position: fixed; inset: 0; background: rgba(16,24,40,.35); display: flex; justify-content: flex-end; z-index: 50; }
 .drawer { width: 560px; max-width: 92vw; height: 100%; background: var(--panel); overflow: auto; box-shadow: -8px 0 30px rgba(16,24,40,.14); }
 </style>

@@ -10,38 +10,25 @@
 
 跑法：``.venv\\Scripts\\python.exe tests/test_cc_memory_segments.py``
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import re
 import sys
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "backend"))
-sys.path.insert(0, BASE)
+from _harness import ROOT, check, delete_rows, summary  # noqa: E402
 
 import analyze                   # noqa: E402
 import db                        # noqa: E402
 import scoring_service as ss     # noqa: E402
 
-_TOTAL, _FAILED = 0, 0
 _REL = "CCTEST:cc-probe"          # 合成关系键：只用于提供「上次评估」，不碰真实客户
 _CODE = re.compile(r"^#\d{3,} ")
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 def _strip_time(lines):
@@ -73,7 +60,7 @@ def _readable_ids(S):
 def _mk_last(S, *, grade="B", raw=3, pos=None, neg=None,
              prof="客户是一名 Java 后端工程师，想转大模型方向。", strat="先约体验课。"):
     """造一条「上次评估」，只为让 ①② 有内容可读。"""
-    db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key = %s", (_REL,))
+    delete_rows("customer_intent_assessment", relationship_key=_REL)
     # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
     try: ss.repair_current_flags()
     except Exception: pass
@@ -92,11 +79,11 @@ def _mk_last(S, *, grade="B", raw=3, pos=None, neg=None,
 def _clear_settings(*keys):
     """只清设置项 —— 千万别顺手清评估，否则后续用例会「没有记忆可读」。"""
     for k in keys:
-        db.execute("DELETE FROM app_setting WHERE key = %s", (k,))
+        delete_rows("app_setting", key=k)
 
 
 def _clear_last():
-    db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key = %s", (_REL,))
+    delete_rows("customer_intent_assessment", relationship_key=_REL)
     # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
     try: ss.repair_current_flags()
     except Exception: pass
@@ -255,14 +242,17 @@ def main():
         # ── 10. 图路径与旧路径读同一份上下文 ───────────────────────────────
         print("\n--- 10. 图路径同源取数 ---")
         import graph_session         # noqa: E402
-        orig = graph_session.ss.build_context
+        # ⚠️ 打桩点必须是**真正的实现位置**：`build_context` 已从
+        # `scoring_service` 搬到中立模块 `scoring_context`（P3 拆环），
+        # 图编排就是直接调它的 —— 打桩在旧位置会静默失效（测试假绿）。
+        orig = graph_session.scoring_context.build_context
         seen = {}
 
         def spy(*a, **kw):
             seen.update(kw)
             return orig(*a, **kw)
 
-        graph_session.ss.build_context = spy
+        graph_session.scoring_context.build_context = spy
         try:
             stub = lambda *a, **kw: {          # noqa: E731
                 "positive_items": [], "negative_items": [], "invalid_items": [],
@@ -288,7 +278,7 @@ def main():
                 try: ss.repair_current_flags()
                 except Exception: pass
         finally:
-            graph_session.ss.build_context = orig
+            graph_session.scoring_context.build_context = orig
 
     finally:
         _clear_settings("ctx_memory", "ctx_tokens_max", "ctx_fallback_min")
@@ -300,9 +290,7 @@ def main():
                                 WHERE relationship_key LIKE %s""", ("CCTEST%",))["n"]
         print(f"\n清理完成，CCTEST 合成评估残留 = {left}")
 
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

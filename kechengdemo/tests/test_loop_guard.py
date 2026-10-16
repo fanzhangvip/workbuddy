@@ -13,30 +13,23 @@
 设计原则：**纯函数 + 不真跑 LLM**。护栏判定抽成 `guard_reason()` 便于穷举边界；
 `partial` 状态用「打桩 _score_cand 秒返回」的方式跑一次真实 `_run`，不产生模型调用。
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 import time
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import FAILED, PASSED, ROOT, check, delete_rows, purge_run  # noqa: E402
 
 import db                     # noqa: E402
+import audit                  # noqa: E402
 import scoring_service as ss  # noqa: E402
 
-PASSED, FAILED = [], []
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 def _set(key, val):
@@ -45,21 +38,14 @@ def _set(key, val):
 
 def _clear(*keys):
     for k in keys:
-        db.execute("DELETE FROM app_setting WHERE key = %s", (k,))
+        delete_rows("app_setting", key=k)
 
 
 def _cleanup_run(run_id):
-    for tbl in ("writeback_outbox", "score_writeback", "negative_review"):
-        db.execute(f"DELETE FROM {tbl} WHERE assessment_id IN "
-                   "(SELECT assessment_id FROM customer_intent_assessment WHERE source_run_id=%s)",
-                   (run_id,))
-    db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id=%s", (run_id,))
-    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
-    try: ss.repair_current_flags()
-    except Exception: pass
-    db.execute("DELETE FROM session_failure WHERE run_id=%s", (run_id,))
-    db.execute("DELETE FROM scoring_run WHERE id=%s", (run_id,))
-    db.execute("DELETE FROM audit_log WHERE target=%s", (f"run:{run_id}",))
+    purge_run(run_id)                       # 公共产物（见 _harness.purge_run）
+    # 本用例额外的产物：会话失败记录（按 run_id）与审计
+    delete_rows("session_failure", run_id=run_id)
+    delete_rows("audit_log", target=f"run:{run_id}")
 
 
 # ============================================================ 1. guard_reason 纯函数
@@ -98,6 +84,15 @@ def test_start_writes_guard_fields():
         ss.service._run = lambda *a, **kw: None
         try:
             out = ss.service.start(triggered_by="test")
+            # ⚠️ 不要直接 `out["run_id"]`：`start()` 会在**同步正在跑**时拒绝启动
+            # （互斥闸是设计使然，见 scoring_service.start 的注释）。直接下标会抛
+            # `KeyError: 'run_id'`，看起来像代码坏了，其实是环境里有个真同步在跑
+            # —— 「app 容器开着且 SYNC_INTERVAL_MINUTES > 0」时最容易踩到。
+            check("评分批量可以启动（无同步占用）", out.get("ok"), out)
+            if not out.get("ok"):
+                print("        ↳ 跑测试前请先停掉在跑的同步/评分："
+                      "把 app 容器的 SYNC_INTERVAL_MINUTES 设为 0，或 `docker compose stop app`")
+                return
             run_id = out["run_id"]
         finally:
             ss.service._run = orig
@@ -119,6 +114,9 @@ def test_start_writes_guard_fields():
         ss.service._run = lambda *a, **kw: None
         try:
             out2 = ss.service.start(triggered_by="test")
+            if not out2.get("ok"):
+                check("第二次评分批量可以启动", False, out2)
+                return
             rid2 = out2["run_id"]
         finally:
             ss.service._run = orig
@@ -263,10 +261,10 @@ def test_session_failed_and_audit():
 
         print("  · 单独验证 scoring_start / scoring_failed 两个节点")
         before = db.query_one("SELECT count(*) AS n FROM audit_log WHERE action='scoring_start'")["n"]
-        ss._audit("test", "scoring_start", "run:999900001", {"k": 1})
+        audit.record_action("test", "scoring_start", "run:999900001", {"k": 1})
         check("scoring_start 可写",
               db.query_one("SELECT count(*) AS n FROM audit_log WHERE target='run:999900001'")["n"] == 1)
-        ss._audit("system", "scoring_failed", "run:999900001", {"error": "x"})
+        audit.record_action("system", "scoring_failed", "run:999900001", {"error": "x"})
         check("scoring_failed 可写",
               db.query_one("SELECT count(*) AS n FROM audit_log WHERE target='run:999900001' AND action='scoring_failed'")["n"] == 1)
         db.execute("DELETE FROM audit_log WHERE target='run:999900001'")

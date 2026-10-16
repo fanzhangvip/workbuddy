@@ -30,6 +30,7 @@
 """
 import time
 
+import audit
 import db
 
 #: 单次重投的最大条数（防止一轮把后端占满）
@@ -41,7 +42,7 @@ BACKOFF_BASE_MINUTES = 15
 
 def _max_attempts() -> int:
     import scoring_service as ss
-    return max(1, ss.setting_int("session_max_failures", "SESSION_MAX_FAILURES", 3))
+    return max(1, db.setting_int("session_max_failures", "SESSION_MAX_FAILURES", 3))
 
 
 def ensure_columns() -> None:
@@ -152,12 +153,8 @@ def resolve_manually(failure_id: int, note: str = "", actor: str = "manual") -> 
                error_message = COALESCE(error_message,'') || %s
              WHERE failure_id=%s""",
         (f"\n[人工] {note}" if note else "", int(failure_id)))
-    try:
-        db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-                   (actor, "failure_resolve", f"session_failure:{failure_id}",
-                    db.as_json({"note": note})))
-    except Exception:                                   # noqa: BLE001
-        pass
+    audit.record_action(actor, "failure_resolve", f"session_failure:{failure_id}",
+                        {"note": note})
     return {"ok": bool(n), "updated": n}
 
 

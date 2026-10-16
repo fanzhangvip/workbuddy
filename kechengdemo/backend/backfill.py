@@ -56,6 +56,7 @@ for _p in (_ROOT, _HERE):
         sys.path.insert(0, _p)
 
 import confidence as cf            # noqa: E402
+import assessment_repo             # noqa: E402  评估结果表唯一写入口（P3）
 import db                          # noqa: E402
 import rules as rules_mod          # noqa: E402
 import scoring_service as ss       # noqa: E402
@@ -355,14 +356,13 @@ def run(apply: bool = False, limit: int = 0, only_missing: bool = True,
         chunk = plan[i:i + BATCH]
         with db.tx() as conn:
             for r, new, _d in chunk:
-                conn.execute(
-                    """UPDATE customer_intent_assessment
-                          SET session_confidence=%s, review_reasons=%s,
-                              needs_human_review=%s, positive_items=%s, negative_items=%s
-                        WHERE assessment_id=%s""",
-                    (new["session_confidence"], db.as_json(new["review_reasons"]),
-                     new["needs_human_review"], db.as_json(new["positive_items"]),
-                     db.as_json(new["negative_items"]), r["assessment_id"]))
+                assessment_repo.apply_backfill(
+                    conn, r["assessment_id"],
+                    session_confidence=new["session_confidence"],
+                    review_reasons=db.as_json(new["review_reasons"]),
+                    needs_human_review=new["needs_human_review"],
+                    positive_items=db.as_json(new["positive_items"]),
+                    negative_items=db.as_json(new["negative_items"]))
         result["applied"] += len(chunk)
         if verbose:
             print(f"  已回填 {result['applied']}/{len(plan)}")
@@ -371,12 +371,10 @@ def run(apply: bool = False, limit: int = 0, only_missing: bool = True,
     if flag_only:
         with db.tx() as conn:
             for r, fix in flag_only:
-                conn.execute(
-                    """UPDATE customer_intent_assessment
-                          SET needs_human_review=%s, review_reasons=%s
-                        WHERE assessment_id=%s""",
-                    (fix["needs_human_review"], db.as_json(fix["review_reasons"]),
-                     r["assessment_id"]))
+                assessment_repo.set_review_semantics(
+                    conn, r["assessment_id"],
+                    needs_human_review=fix["needs_human_review"],
+                    review_reasons=db.as_json(fix["review_reasons"]))
         if verbose:
             print(f"  已修复 {len(flag_only)} 行「需复核 / 原因」的自洽性问题")
 
@@ -396,16 +394,14 @@ def rollback(path: str, verbose: bool = True) -> dict:
         chunk = rows[i:i + BATCH]
         with db.tx() as conn:
             for r in chunk:
-                conn.execute(
-                    """UPDATE customer_intent_assessment
-                          SET session_confidence=%s, review_reasons=%s,
-                              needs_human_review=%s, positive_items=%s, negative_items=%s
-                        WHERE assessment_id=%s""",
-                    (r.get("session_confidence"),
-                     db.as_json(r.get("review_reasons")) if r.get("review_reasons") else None,
-                     bool(r.get("needs_human_review")),
-                     db.as_json(r.get("positive_items")), db.as_json(r.get("negative_items")),
-                     r["assessment_id"]))
+                assessment_repo.apply_backfill(
+                    conn, r["assessment_id"],
+                    session_confidence=r.get("session_confidence"),
+                    review_reasons=(db.as_json(r.get("review_reasons"))
+                                    if r.get("review_reasons") else None),
+                    needs_human_review=bool(r.get("needs_human_review")),
+                    positive_items=db.as_json(r.get("positive_items")),
+                    negative_items=db.as_json(r.get("negative_items")))
     if verbose:
         print(f"[backfill] 已回滚 {len(rows)} 行（来源 {path}）")
     return {"rolled_back": len(rows)}

@@ -6,7 +6,9 @@
 覆盖：
   · 凭据生成与持久化（API_PASSWORD 为空 → 自动生成强随机并写入 .env）
   · `verify()` 对 `Authorization: Basic` 头的各种形态（正确 / 错口令 / 畸形 / 缺失）
-  · 中间件行为：鉴权开启时无凭据 → 401 + `WWW-Authenticate`；带凭据 → 放行
+  · 中间件行为（ADR-015 后的契约）：`/api/*` 无凭据 → 401 **且不带 `WWW-Authenticate`**
+    （发了浏览器就弹原生登录框，而登录界面由前端页面接管）；带 Basic 凭据 → 放行；
+    **SPA 外壳（静态）放行**（否则登录页自己都加载不出来）
   · 健康检查免鉴权（探活用，不该要凭据）
   · `API_AUTH=off` → 全部放行
   · **审计主体由服务端推导**：客户端自报的 reviewer/annotator **不能**变成 `actor`
@@ -15,34 +17,21 @@
 ⚠️ 不真启动服务：直接用 ASGI 中间件做端到端请求（fastapi.testclient 依赖 httpx，
    本项目未装；这里手写最小 ASGI 调用，零新增依赖）。
 """
-# 统一输出编码（修 P2-2）
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t0"
+
 
 import base64
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import ROOT, check, summary  # noqa: E402
 
 import security                    # noqa: E402
 
-_TOTAL = 0
-_FAILED = 0
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 def basic(user, pwd) -> str:
@@ -201,7 +190,13 @@ def test_middleware():
     async def health(request):
         return PlainTextResponse('{"ok":true}')
 
-    inner = Starlette(routes=[Route("/", home), Route("/api/health", health)])
+    async def api_protected(request):
+        return PlainTextResponse('{"ok":true}')
+
+    # `/` 代表 **SPA 外壳**（静态资源），`/api/*` 才是**鉴权边界** —— ADR-015 之后
+    # 这个区分是有意的：外壳必须放行，否则登录页自己都加载不出来。
+    inner = Starlette(routes=[Route("/", home), Route("/api/health", health),
+                              Route("/api/scoring/settings", api_protected)])
     wrapped = BasicAuthMiddleware(inner)
 
     orig = os.environ.get("API_AUTH")
@@ -209,21 +204,25 @@ def test_middleware():
     try:
         # --- 鉴权开启 ---
         os.environ["API_AUTH"] = "on"
-        st, hd, body401 = asyncio.run(_call(wrapped, "/"))
-        check("无凭据 → 401", st == 401, str(st))
-        check("401 带 WWW-Authenticate（浏览器才会弹登录框）",
-              "www-authenticate" in hd and "Basic" in hd.get("www-authenticate", ""),
-              str(hd))
-        check("401 的 realm 正确",
-              security.REALM in hd.get("www-authenticate", ""), str(hd))
+        st_home, _, body_home = asyncio.run(_call(wrapped, "/"))
+        check("★ SPA 外壳（静态）对未登录**放行**（登录页才加载得出来）",
+              st_home == 200 and body_home == b"home", f"{st_home} {body_home!r}")
+
+        st, hd, body401 = asyncio.run(_call(wrapped, "/api/scoring/settings"))
+        check("未认证访问 /api/* → 401", st == 401, str(st))
+        check("★ 401 **不带** WWW-Authenticate（发了浏览器就弹原生登录框，"
+              "而登录界面由前端页面接管）",
+              "www-authenticate" not in {k.lower() for k in hd}, str(hd))
         check("401 响应体是 JSON（前端可解析原因）",
               b"ok" in body401 and "未认证".encode() in body401, str(body401[:80]))
 
-        st2, _, body2 = asyncio.run(_call(wrapped, "/", basic("alice", "s3cret")))
-        check("正确凭据 → 200 放行", st2 == 200 and body2 == b"home", f"{st2} {body2!r}")
+        st2, _, _ = asyncio.run(_call(wrapped, "/api/scoring/settings",
+                                      basic("alice", "s3cret")))
+        check("Basic 正确凭据 → 200 放行（脚本/curl 仍可用）", st2 == 200, str(st2))
 
-        st3, _, _ = asyncio.run(_call(wrapped, "/", basic("alice", "bad")))
-        check("错误口令 → 401", st3 == 401, str(st3))
+        st3, _, _ = asyncio.run(_call(wrapped, "/api/scoring/settings",
+                                      basic("alice", "bad")))
+        check("Basic 错误口令 → 401", st3 == 401, str(st3))
 
         st4, _, body4 = asyncio.run(_call(wrapped, "/api/health"))
         check("健康检查免鉴权（探活不该要凭据）", st4 == 200 and b"ok" in body4,
@@ -250,9 +249,7 @@ def main():
     test_enabled_flag()
     test_actor()
     test_middleware()
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

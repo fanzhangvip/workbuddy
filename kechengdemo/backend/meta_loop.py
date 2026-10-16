@@ -27,7 +27,10 @@
 """
 import time
 
+import audit
+import eval_case_repo
 import db
+import review_repo
 
 #: 误报率超过这个值就在报告里标红（业务阈值，可按需调）
 FP_ALERT_THRESHOLD = 0.3
@@ -37,17 +40,13 @@ MIN_SAMPLES = 3
 
 
 def _items_of(row, col) -> dict:
-    """把 items 列转成 ``{rule_id: |score|}``。"""
-    raw = row.get(col)
-    if isinstance(raw, str):
-        import json
-        try:
-            raw = json.loads(raw)
-        except Exception:                       # noqa: BLE001
-            raw = []
+    """把 items 列转成 ``{rule_id: |score|}``。
+
+    读 JSONB 的部分已收敛到 `db.as_dict_list()`（原先 5 处各写一遍）。
+    """
     out = {}
-    for it in (raw or []):
-        if isinstance(it, dict) and it.get("rule_id"):
+    for it in db.as_dict_list(row.get(col)):
+        if it.get("rule_id"):
             out[str(it["rule_id"])] = abs(int(it.get("score") or 0))
     return out
 
@@ -138,19 +137,14 @@ def backflow_reviews(limit: int = 100, kind: str = "regression",
                     WHERE staff_id=%s AND session_id=%s AND kind=%s""",
                 (r["staff_id"], r["session_id"], kind))
             if exists:
-                db.execute("UPDATE negative_review SET eval_case_id=%s WHERE id=%s",
-                           (exists["case_id"], r["id"]))
+                review_repo.link_eval_case(r["id"], exists["case_id"])
                 skipped.append({"review_id": r["id"], "reason": "样本已存在",
                                 "case_id": exists["case_id"]})
                 continue
             # 人工结论里只保留**负分**项（复核页只标负分），与 run_case 的合并口径一致
             items = []
-            raw = r["human_negative_items"]
-            if isinstance(raw, str):
-                import json
-                raw = json.loads(raw)
-            for it in (raw or []):
-                if isinstance(it, dict) and it.get("rule_id"):
+            for it in db.as_dict_list(r["human_negative_items"]):
+                if it.get("rule_id"):
                     items.append({"rule_id": it["rule_id"],
                                   "polarity": it.get("polarity") or "negative",
                                   "score": int(it.get("score") or 0),
@@ -159,31 +153,24 @@ def backflow_reviews(limit: int = 100, kind: str = "regression",
             rules = rules_mod.load_rules()
             score = rules_mod.compute_score([], items, rules)
             grade = rules_mod.grade_of(score["raw_score"], rules)["grade"]
-            case = db.query_one(
-                """INSERT INTO eval_case
-                     (kind, staff_id, session_id, target_id, staff_name, target_name,
-                      messages_hash, msg_count, last_msg_time,
-                      expected_items, expected_raw_score, expected_grade, source, active)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'review',true)
-                   RETURNING case_id""",
-                (kind, r["staff_id"], r["session_id"], r["target_id"], r["staff_name"],
-                 r["target_name"], h, 0, None,
-                 db.as_json(items), score["raw_score"], grade))
-            cid = case["case_id"]
-            db.execute("UPDATE negative_review SET eval_case_id=%s WHERE id=%s", (cid, r["id"]))
+            # 建样本 + 回填关联**在同一事务**：只建不关联会留下「复核不知道进了哪个样本」
+            with db.tx() as conn:
+                cid = eval_case_repo.insert_from_review(
+                    conn, kind=kind, staff_id=r["staff_id"], session_id=r["session_id"],
+                    target_id=r["target_id"], staff_name=r["staff_name"],
+                    target_name=r["target_name"], messages_hash=h, msg_count=0,
+                    last_msg_time=None, items=items, raw_score=score["raw_score"],
+                    grade=grade)
+                review_repo.link_eval_case(r["id"], cid)
             created.append({"review_id": r["id"], "case_id": cid,
                             "expected_raw_score": score["raw_score"], "expected_grade": grade})
         except Exception as e:                  # noqa: BLE001
             skipped.append({"review_id": r["id"], "reason": f"{type(e).__name__}: {e}"})
 
     if created:
-        try:
-            db.execute(
-                "INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-                (actor, "meta_backflow", f"eval_case:{kind}",
-                 db.as_json({"created": len(created), "case_ids": [c["case_id"] for c in created]})))
-        except Exception:                       # noqa: BLE001
-            pass
+        audit.record_action(actor, "meta_backflow", f"eval_case:{kind}",
+                            {"created": len(created),
+                             "case_ids": [c["case_id"] for c in created]})
     return {"created": len(created), "skipped": len(skipped),
             "cases": created, "skips": skipped[:10], "kind": kind}
 

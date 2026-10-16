@@ -17,20 +17,17 @@ G6 是什么
         · outbox 转 done
         · score_writeback 对该 assessment **恰好 1 行且 status=ok**
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import subprocess
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import (FAILED, PASSED, ROOT, check, delete_rows,  # noqa: E402
+                      pick_session_for_test)
 
 import analyze                # noqa: E402
 import db                     # noqa: E402
@@ -43,12 +40,8 @@ RUN_ID = 990000001
 _MODE_KEY = "score_writeback_mode"
 _ORIG_MODE = None
 _ORIG_DECIDE = None
-PASSED, FAILED = [], []
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 def stub_analyze(conversation, facts, rules, **kw):
@@ -66,29 +59,12 @@ def stub_analyze(conversation, facts, rules, **kw):
 
 
 def pick_unscored_candidate():
-    """挑一个能做 G6 实测的会话。
+    """挑一个能做 G6 实测的会话（**复用** `_harness.pick_session_for_test`）。
 
-    ⚠️ 选候选取必须**确定且前提成立**，不能依赖生产数据现状（踩过）：
-      · ``msg_count`` 有大量并列 → 只按它排序时 ``LIMIT 1`` 的结果**不稳定**，
-        每次可能挑到不同会话（实测同一批 59 条消息的会话里，有的 ``customer_msgs=0``）。
-      · 若挑到「客户一句话没说过」的会话，会被 B4 闸门（``min_customer_msgs``）
-        拦下 → ``_score_one`` 返回 ``skipped`` → 断言失败，但看起来像功能坏了。
-    故：① 补 ``session_id`` 作次序键（结果确定）；
-        ② 要求该会话**客户至少说过 1 句**（让闸门前提主动成立，而不是碰运气）。
+    原先这段 SQL 是本文件私有的，于是同一个坑（挑到"客户一句话没说"的会话 →
+    被 B4 闸门跳过 → 断言失败）在两个测试里各修一遍。现在收敛成一处。
     """
-    return db.query_one(
-        """SELECT c.staff_id, s.name AS staff_name, c.session_id, c.target_id,
-                  c.name AS target_name, c.msg_count, c.last_msg_time
-             FROM chat_session c LEFT JOIN staff s ON s.staff_id = c.staff_id
-            WHERE c.session_type = 'ext_user' AND c.target_id IS NOT NULL
-              AND c.msg_count >= 8
-              AND EXISTS (
-                  SELECT 1 FROM chat_message m
-                   WHERE m.session_id = c.session_id AND m.direction = 'receive')
-              AND NOT EXISTS (
-                  SELECT 1 FROM customer_intent_assessment a
-                   WHERE a.relationship_key = c.staff_id || ':' || c.target_id)
-            ORDER BY c.msg_count DESC, c.session_id LIMIT 1""")
+    return pick_session_for_test(min_messages=8, require_unscored=True)
 
 
 def cleanup(staff_id, session_id):
@@ -112,7 +88,7 @@ def cleanup(staff_id, session_id):
     db.execute("""DELETE FROM score_writeback WHERE assessment_id IN
                   (SELECT assessment_id FROM customer_intent_assessment
                     WHERE source_run_id = %s)""", (RUN_ID,))
-    db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id = %s", (RUN_ID,))
+    delete_rows("customer_intent_assessment", source_run_id=RUN_ID)
     # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
     try: ss.repair_current_flags()
     except Exception: pass
@@ -225,7 +201,7 @@ def main():
             import policy
             policy.decide = _ORIG_DECIDE
         if _ORIG_MODE is None:
-            db.execute("DELETE FROM app_setting WHERE key=%s", (_MODE_KEY,))
+            delete_rows("app_setting", key=_MODE_KEY)
         else:
             db.set_setting(_MODE_KEY, _ORIG_MODE)
         print("\n（已清理 G6 实测痕迹）")

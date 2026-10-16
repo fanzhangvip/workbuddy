@@ -54,12 +54,18 @@ BACKOFF_CAP_SECONDS = 30.0
 RETRY_AFTER_CAP_SECONDS = 30.0
 
 
-def backoff_seconds(attempt: int, base: float = 1.2) -> float:
+def backoff_seconds(attempt: int, base: float = 1.2, cap: float = None) -> float:
     """第 ``attempt`` 次（0 起）重试前应等多久：``base × 2^attempt`` + **±30% 抖动**，带上限。
 
-    纯函数、可注入随机源由调用方决定（这里直接用 `random`，测试断言区间即可）。
+    **这是全项目唯一的退避实现**（`AGENTS.md` 的 Reuse Before Rewrite 规则）：
+    `outbox` / `grade_tag` / `weiban` / HTTP 层都调它，差别只靠 `base` 与 `cap` 参数表达——
+    原先 outbox 与 grade_tag 各有一份**逐字相同**的实现，改一处必忘另一处。
+
+    :param cap: 上限秒数；``None`` → 用 `BACKOFF_CAP_SECONDS`（HTTP 层默认 30s）。
+                批处理侧的 outbox 传 3600（它允许多等一会儿，但不该无限等）。
     """
-    raw = min(float(base) * (2 ** max(0, int(attempt))), BACKOFF_CAP_SECONDS)
+    limit = float(BACKOFF_CAP_SECONDS if cap is None else cap)
+    raw = min(float(base) * (2 ** max(0, int(attempt))), limit)
     return max(0.0, raw * random.uniform(1.0 - JITTER_RATIO, 1.0 + JITTER_RATIO))
 
 
@@ -107,11 +113,13 @@ class HttpFailure(Exception):
 
 def request_json(method: str, url: str, *, params: dict = None, body: dict = None,
                  headers: dict = None, timeout: int = DEFAULT_TIMEOUT,
-                 retries: int = 2, backoff: float = 1.2,
+                 retries: int = 2, backoff: float = 1.2, backoff_cap: float = None,
                  expect_errcode: bool = False, label: str = "") -> dict:
     """发一次 JSON 请求，返回解析后的字典。
 
     :param retries: **额外**重试次数（``retries=2`` → 最多发 3 次）。只对可重试故障生效。
+    :param backoff_cap: 单次退避的等待上限（秒）；``None`` → :data:`BACKOFF_CAP_SECONDS`。
+        调用方需要「多试几次但每次少等一会儿」时调它（`weiban.request_retry` 就是这么用的）。
     :param expect_errcode: 为真时，响应里 ``errcode != 0`` 视为失败（微伴/企微的惯例）。
         这类失败**不重试**（业务错误重试无意义），直接抛 ``HttpFailure(retryable=False)``。
     :param label: 用于 metrics 的可读标签（如 ``"weiban.chat.session.list"``）。
@@ -166,7 +174,7 @@ def request_json(method: str, url: str, *, params: dict = None, body: dict = Non
         if i < attempts - 1:
             wait = getattr(last, "retry_after", None)
             if wait is None:
-                wait = backoff_seconds(i, backoff)
+                wait = backoff_seconds(i, backoff, backoff_cap)
             time.sleep(wait)
     _inc(f"fail.{tag}")
     raise last or HttpFailure("未知失败")

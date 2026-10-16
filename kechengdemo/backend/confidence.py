@@ -14,6 +14,7 @@
 """
 import re
 
+import db                         # 阈值读运行时设置（app_setting > .env > 常量默认）
 import rules as rules_mod       # 同 `_index` / `llm_rule_ids` 口径，避免第二份实现
 
 # ============================================================ 常量（口径集中，便于调参）
@@ -337,6 +338,32 @@ def review_triggers(conf: dict, score: dict, res: dict, rules: dict,
 
 
 # ============================================================ 对外主入口
+
+def thresholds() -> dict:
+    """置信度与复核触发的运行时阈值（app_setting > .env > 代码默认）。
+
+    全部**可配**：现在的默认值是按 52 条真实评估标定的（见本模块顶部的常量注释），
+    业务若觉得复核队列量不合适，可在此调，不必改代码。
+
+    ⚠️ 它原先住在 `scoring_service._confidence_thresholds()`，于是
+    `graph_session` / `backfill` 为了读阈值都得 `import scoring_service` ——
+    而阈值本来就是这个模块自己的常量。搬回来之后依赖方向才顺。
+    """
+    return {
+        "conf_min": db.setting_float("confidence_review_min", "CONFIDENCE_REVIEW_MIN",
+                                     REVIEW_CONF_MIN),
+        "boundary": db.setting_int("confidence_boundary_delta", "CONFIDENCE_BOUNDARY_DELTA",
+                                   GRADE_BOUNDARY_DELTA),
+        "flip_steps": db.setting_int("confidence_flip_steps", "CONFIDENCE_FLIP_STEPS",
+                                     GRADE_FLIP_STEPS),
+        "weak_weight": db.setting_int("confidence_weak_weight", "CONFIDENCE_WEAK_WEIGHT",
+                                      WEAK_EVIDENCE_WEIGHT),
+        # ⚠️ 默认 true = 保持改造前行为（不放松）。实测「仅引擎负分」占 69%，
+        # 关掉它可把复核率从 90% 降到 60%（见本模块 REVIEW_ENGINE_NEGATIVE 的说明）。
+        "engine_negative": db.setting_bool("review_engine_negative", "REVIEW_ENGINE_NEGATIVE",
+                                           REVIEW_ENGINE_NEGATIVE),
+    }
+
 
 def compute(pos_items: list, neg_items: list, res: dict, score: dict, grade: dict,
             rules: dict, last_grade: str = None, thresholds: dict = None) -> dict:

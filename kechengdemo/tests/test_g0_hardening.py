@@ -8,19 +8,15 @@
   · **H1**  互斥守卫：同步与评分不得同时跑（改造前 `_job` 只查同步自己）
   · **G1**  取标签不静默：`compute_facts` 取标签失败须留 `tool_failure` 并在事实文本标注降级
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
 
 import db                     # noqa: E402
 import scheduler              # noqa: E402
@@ -28,12 +24,8 @@ import scoring_service as ss  # noqa: E402
 import sync_service           # noqa: E402
 import weiban                 # noqa: E402
 
-PASSED, FAILED = [], []
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 def pick_session():
@@ -80,7 +72,7 @@ def test_force_full_scan():
               f"inc={len(inc_ids)} full={len(full_ids)}")
     finally:
         if aid:
-            db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (aid,))
+            delete_rows("customer_intent_assessment", assessment_id=aid)
             # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
             try: ss.repair_current_flags()
             except Exception: pass
@@ -91,17 +83,21 @@ def test_force_full_scan():
 
 def test_mutual_exclusion():
     print("\n--- H1. 互斥守卫 ---")
-    s_sync, s_score = scheduler.service, scheduler.scoring
-    o_sync, o_score = s_sync.is_running, s_score.is_running
+    # ⚠️ 别再用「打桩实例的 is_running」来模拟在跑的任务：P3 之后互斥判定统一走
+    # `job_service.running_kinds()`（**查库、跨进程可见**），打桩实例拦不到它 ——
+    # 那样测试会假绿/假红。这里改成**插一条真实的 running 行**，测的就是真实判据。
+    def _fake_running(table):
+        return db.query_one(
+            f"""INSERT INTO {table} (status, triggered_by, detail)
+                VALUES ('running', 'test-guard', '{{}}') RETURNING id""")["id"]
+
     try:
         # 都空闲
-        s_sync.is_running = lambda: False
-        s_score.is_running = lambda: False
         check("都空闲 → sync 可启动", scheduler.guard_can_start("sync") is True)
         check("都空闲 → scoring 可启动", scheduler.guard_can_start("scoring") is True)
 
-        # 评分在跑
-        s_score.is_running = lambda: True
+        # 评分在跑（真插一行 running，心跳随 now() 刷新）
+        rid = _fake_running("scoring_run")
         check("评分在跑 → 定时同步被拒（修 H1）",
               scheduler.guard_can_start("sync") is False)
         check("评分在跑 → 定时评分被拒",
@@ -109,10 +105,10 @@ def test_mutual_exclusion():
         r3 = sync_service.service.start()
         check("评分在跑 → 手动 sync.start 被拒且提示含「评分」",
               r3.get("ok") is False and "评分" in str(r3.get("reason")), str(r3))
+        delete_rows("scoring_run", id=rid)
 
         # 同步在跑
-        s_sync.is_running = lambda: True
-        s_score.is_running = lambda: False
+        jid = _fake_running("sync_job")
         check("同步在跑 → 定时评分被拒",
               scheduler.guard_can_start("scoring") is False)
         check("同步在跑 → 定时同步被拒",
@@ -120,8 +116,10 @@ def test_mutual_exclusion():
         r2 = ss.service.start()
         check("同步在跑 → 手动 scoring.start 被拒且提示含「同步」",
               r2.get("ok") is False and "同步" in str(r2.get("reason")), str(r2))
+        delete_rows("sync_job", id=jid)
     finally:
-        s_sync.is_running, s_score.is_running = o_sync, o_score
+        delete_rows("scoring_run", triggered_by="test-guard")
+        delete_rows("sync_job", triggered_by="test-guard")
 
 
 # ============================================================ G1

@@ -1,6 +1,8 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { api, fmtTime } from '../api'
+import { useAsyncAction } from '../composables/useAsyncAction'
+import { usePolling } from '../composables/usePolling'
 
 const form = ref({
   kind: 'incremental',
@@ -16,11 +18,17 @@ const jobs = ref([])
 const schedule = ref({ enabled: false, interval_minutes: 0, next_run_time: null })
 const keepalive = ref(null)
 const kaInterval = ref(null)
-const kaBusy = ref(false)
-const busy = ref(false)
-const error = ref('')
-
-let timer = null
+// busy / error 由 composable 提供（模板里仍写 `busy` / `ka.busy`，用法不变）
+const { busy, error, run } = useAsyncAction()
+// 保活按钮有自己的忙态，避免「启动同步」与「立即保活」互相禁用
+const ka = useAsyncAction({ errorPrefix: '保活失败：' })
+// 日常任务（需求 4.2）：主同步 + 分析 / 48 小时补偿同步 + 分析
+const daily = ref({
+  sync_main_cron: '20:00', sync_main_window_minutes: 20,
+  sync_compensate_cron: '03:30', sync_compensate_lookback_hours: 48,
+  daily_run_analysis: true,
+})
+let dailyLoaded = false
 
 async function refresh() {
   try {
@@ -34,6 +42,17 @@ async function refresh() {
     // 只在首次（或用户未改动时）回填保活间隔
     if (kaInterval.value === null && sc?.keepalive) {
       kaInterval.value = sc.keepalive.interval_minutes ?? 0
+    }
+    // 同上：日常任务只在首次回填，避免覆盖用户正在编辑的值
+    if (!dailyLoaded && sc?.daily) {
+      daily.value = {
+        sync_main_cron: sc.daily.main_cron ?? '',
+        sync_main_window_minutes: sc.daily.main_window_minutes ?? 0,
+        sync_compensate_cron: sc.daily.compensate_cron ?? '',
+        sync_compensate_lookback_hours: sc.daily.compensate_lookback_hours ?? 48,
+        daily_run_analysis: !!sc.daily.run_analysis,
+      }
+      dailyLoaded = true
     }
   } catch (e) { error.value = '后端未就绪：' + e.message }
 }
@@ -79,8 +98,7 @@ const kaLastText = computed(() => {
 })
 
 async function start() {
-  busy.value = true; error.value = ''
-  try {
+  await run(async () => {
     const payload = {
       kind: form.value.kind,
       staff_ids: form.value.staff_id ? [form.value.staff_id] : null,
@@ -89,37 +107,43 @@ async function start() {
       max_msgs_per_session: Number(form.value.max_msgs_per_session) || 0,
     }
     const r = await api.syncStart(payload)
-    if (!r.ok) error.value = r.reason || '启动失败'
-  } catch (e) { error.value = e.message }
-  busy.value = false
+    if (!r.ok) { error.value = r.reason || '启动失败'; return }
+  })
   refresh()
 }
 
 async function stop() {
-  busy.value = true
-  try { await api.syncStop() } catch (e) { error.value = e.message }
-  busy.value = false
+  await run(async () => { await api.syncStop() })
   refresh()
 }
 
 async function saveSchedule() {
-  try { schedule.value = await api.syncSetSchedule(Number(schedule.value.interval_minutes) || 0) }
-  catch (e) { error.value = e.message }
+  await run(async () => {
+    schedule.value = await api.syncSetSchedule(Number(schedule.value.interval_minutes) || 0)
+  })
+}
+
+async function saveDaily() {
+  await run(async () => {
+    const r = await api.syncSetDaily({ ...daily.value })
+    if (!r.ok) { error.value = r.reason || '保存失败'; return }
+    schedule.value = r
+    dailyLoaded = false          // 让下一次 refresh 用服务端值回填
+  })
 }
 
 async function saveKa() {
-  try { schedule.value = await api.syncSetKeepalive(Number(kaInterval.value) || 0) }
-  catch (e) { error.value = e.message }
+  await run(async () => {
+    schedule.value = await api.syncSetKeepalive(Number(kaInterval.value) || 0)
+  })
 }
 
 async function runKa() {
-  kaBusy.value = true; error.value = ''
-  try {
+  await ka.run(async () => {
     const r = await api.keepaliveRun(45)
-    if (!r.ok) error.value = '保活失败：' + (r.message || '未知原因')
+    if (!r.ok) { error.value = '保活失败：' + (r.message || '未知原因'); return }
     await refresh()
-  } catch (e) { error.value = '保活失败：' + e.message }
-  kaBusy.value = false
+  })
 }
 
 function toggleType(t) {
@@ -135,8 +159,8 @@ const STATUS_CN = {
   success: '成功', running: '运行中', failed: '失败', stopped: '已停止',
 }
 
-onMounted(() => { refresh(); loadStaffs(); timer = setInterval(refresh, 2500) })
-onUnmounted(() => clearInterval(timer))
+onMounted(loadStaffs)
+usePolling(refresh, 2500)
 </script>
 
 <template>
@@ -174,14 +198,14 @@ onUnmounted(() => clearInterval(timer))
 
             <div>
               <label class="lbl">会话类型</label>
-              <div class="chips">
+              <div class="chip-row">
                 <button v-for="t in [['ext_user','客户会话'],['room','群聊'],['other_staff','同事']]"
                         :key="t[0]" class="chip" :class="{ on: form.session_types.includes(t[0]) }"
                         @click="toggleType(t[0])">{{ t[1] }}</button>
               </div>
             </div>
 
-            <div class="two">
+            <div class="grid-2 loose">
               <div>
                 <label class="lbl">每员工最多会话数<span class="muted">（0=不限）</span></label>
                 <input v-model="form.max_sessions_per_staff" class="input" type="number" min="0" />
@@ -221,6 +245,75 @@ onUnmounted(() => clearInterval(timer))
           </div>
         </div>
 
+        <!-- 日常任务（需求 4.2）：什么时间同步、什么时候接着分析 -->
+        <div class="card">
+          <div class="card-head">
+            日常任务（同步 → 分析）
+            <span class="tag" style="margin-left:auto" :class="daily.sync_main_cron || daily.sync_compensate_cron ? 'blue' : ''">
+              {{ daily.sync_main_cron || daily.sync_compensate_cron ? '已配置' : '未配置' }}
+            </span>
+          </div>
+          <div class="card-body" style="display:grid;gap:12px">
+            <div class="muted" style="font-size:11.5px;line-height:1.6">
+              按需求 4.2：<b>每晚主增量同步 + 分析</b>覆盖 19:30 的销售主动发送及其后的客户互动；
+              <b>每日补偿同步 + 分析</b>修复接口入库延迟、网络失败、任务中断导致的漏处理。
+              同步跑完会<b>自动接着跑分析</b>；两项都留空 = 关闭日常任务。
+            </div>
+
+            <div class="grid-2 loose">
+              <div>
+                <label class="lbl">主同步 + 分析（HH:MM）</label>
+                <input v-model="daily.sync_main_cron" class="input" placeholder="20:00" />
+              </div>
+              <div>
+                <label class="lbl">执行窗口（分钟，0=不限）</label>
+                <input v-model="daily.sync_main_window_minutes" class="input" type="number" min="0" />
+              </div>
+            </div>
+
+            <div class="grid-2 loose">
+              <div>
+                <label class="lbl">补偿同步 + 分析（HH:MM）</label>
+                <input v-model="daily.sync_compensate_cron" class="input" placeholder="03:30" />
+              </div>
+              <div>
+                <label class="lbl">补偿回看（小时）</label>
+                <input v-model="daily.sync_compensate_lookback_hours" class="input" type="number" min="1" />
+              </div>
+            </div>
+
+            <label class="lbl" style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" v-model="daily.daily_run_analysis" />
+              同步跑完后自动跑分析（关掉则只同步、不评分）
+            </label>
+
+            <div style="display:flex;gap:10px;align-items:center">
+              <button class="btn primary" :disabled="busy" @click="saveDaily">
+                <i v-if="busy" class="spin"></i>保存日常任务
+              </button>
+              <span class="muted" style="font-size:11.5px">
+                时刻格式 HH:MM（例 20:00）；留空 = 关闭该项
+              </span>
+            </div>
+
+            <div class="alert" :class="(daily.sync_main_cron || daily.sync_compensate_cron) ? 'ok' : 'info'"
+                 style="font-size:12px;line-height:1.7">
+              <div v-if="schedule?.daily?.next_main_run?.next_run_time">
+                主任务下次：{{ new Date(schedule.daily.next_main_run.next_run_time).toLocaleString() }}
+              </div>
+              <div v-else>主任务：已关闭（或时刻留空）</div>
+              <div v-if="schedule?.daily?.next_compensate_run?.next_run_time">
+                补偿任务下次：{{ new Date(schedule.daily.next_compensate_run.next_run_time).toLocaleString() }}
+              </div>
+              <div v-else>补偿任务：已关闭（或时刻留空）</div>
+              <div v-if="schedule?.daily?.chain?.step">
+                当前链条：{{ schedule.daily.chain.step === 'sync' ? '同步进行中 → 待分析'
+                             : '分析进行中' }}（{{ schedule.daily.chain.phase === 'main' ? '主任务' : '补偿任务' }}）
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 凭据保活 -->
         <div class="card">
           <div class="card-head">
@@ -249,8 +342,8 @@ onUnmounted(() => clearInterval(timer))
 
             <div class="muted" style="font-size:12px">最近一次：{{ kaLastText }}</div>
 
-            <button class="btn primary" :disabled="kaBusy || running" @click="runKa">
-              <i v-if="kaBusy" class="spin"></i>{{ kaBusy ? '保活中…' : '立即保活' }}
+            <button class="btn primary" :disabled="ka.busy || running" @click="runKa">
+              <i v-if="ka.busy" class="spin"></i>{{ ka.busy ? '保活中…' : '立即保活' }}
             </button>
 
             <div class="muted" style="font-size:11.5px;line-height:1.6">
@@ -338,20 +431,8 @@ onUnmounted(() => clearInterval(timer))
 .layout { display: grid; grid-template-columns: 380px 1fr; gap: 16px; align-items: start; }
 @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
 
-.lbl { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 6px; font-weight: 500; }
-.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
-.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.seg button {
-  text-align: left; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--border);
-  background: var(--panel); cursor: pointer; font-family: inherit; font-size: 13px;
-  font-weight: 600; color: var(--text); transition: .15s; line-height: 1.4;
-}
-.seg button small { display: block; font-weight: 400; font-size: 11px; color: var(--text-3); margin-top: 3px; }
-.seg button.on { border-color: var(--brand); background: var(--brand-weak); color: var(--brand); }
-.seg button.on small { color: #5b7fbf; }
 
-.chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip {
   padding: 6px 14px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel);
   font-size: 12.5px; cursor: pointer; font-family: inherit; color: var(--text-2); transition: .15s;

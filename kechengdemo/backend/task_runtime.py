@@ -64,16 +64,6 @@ def _now():
     return db.query_one("SELECT now() AS t")["t"]
 
 
-def _audit(actor, action, target, detail=None):
-    """写业务动作审计。失败不影响主流程（审计是旁路）。"""
-    try:
-        db.execute(
-            "INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-            (actor, action, target,
-             json.dumps(detail, ensure_ascii=False) if detail else None))
-    except Exception as e:                      # noqa: BLE001
-        print(f"[task] 写 audit_log 失败（不影响任务）：{e}")
-
 
 def can_transition(frm: str, to: str) -> bool:
     """纯函数：``frm`` 能否迁到 ``to``。**终态不可迁出**（INV-5）。"""
@@ -150,7 +140,7 @@ def transition(task_id: int, to: str, *, reason: str = None, error=None) -> bool
         params.append(str(error)[:2000])
     params.append(task_id)
     db.execute(f"UPDATE task SET {', '.join(sets)} WHERE task_id = %s", tuple(params))
-    _audit(security.actor(), f"task_{to}", f"task:{task_id}",
+    audit.record_action(security.actor(), f"task_{to}", f"task:{task_id}",
            {"from": frm, "to": to, "reason": reason})
     return True
 
@@ -209,21 +199,37 @@ def heartbeat(task_id: int) -> None:
         pass
 
 
-def bump_progress(task_id: int, **deltas) -> dict:
-    """累加进度计数（存 `task.progress` JSONB）。返回累加后的快照。"""
+def _progress_snapshot(task_id: int) -> dict:
+    """读 `task.progress` 并归一成 dict。
+
+    JSONB 读回来可能是 `dict`、也可能是**字符串**（写入方传了字符串时），
+    这个知识原先在 `bump_progress` 与 `set_progress` 里各写了一遍 ——
+    于是「进度坏了怎么兜底」有两套实现，改一处必漏另一处。
+    """
     row = db.query_one("SELECT progress FROM task WHERE task_id=%s", (task_id,))
     cur = row.get("progress") if row else None
     if isinstance(cur, str):
         try:
             cur = json.loads(cur)
-        except Exception:
+        except Exception:                          # noqa: BLE001
             cur = {}
-    snap = dict(cur or {})
+    return dict(cur or {})
+
+
+def _write_progress(task_id: int, snap: dict) -> None:
+    """写回进度，并**顺手刷新心跳** —— 心跳靠的就是「进度在动」这件事。"""
+    db.execute("UPDATE task SET progress=%s::jsonb, heartbeat_at=now() WHERE task_id=%s",
+               (json.dumps(snap, ensure_ascii=False), task_id))
+
+
+def bump_progress(task_id: int, **deltas) -> dict:
+    """累加进度计数（存 `task.progress` JSONB）。返回累加后的快照。"""
+    snap = _progress_snapshot(task_id)
     for k, v in deltas.items():
         if v:
             snap[k] = snap.get(k, 0) + v
-    db.execute("UPDATE task SET progress=%s::jsonb, heartbeat_at=now() WHERE task_id=%s",
-               (json.dumps(snap, ensure_ascii=False), task_id))
+    _write_progress(task_id, snap)
+    return snap
 
 
 def completed_step_names(task_id: int) -> set:
@@ -307,7 +313,7 @@ def resume(src_task_id: int, *, actor_id: str | None = None,
         "WHERE task_id=%s",
         (int(src.get("cost_calls") or 0), int(src.get("cost_tokens") or 0),
          0, tid))
-    _audit(who, "task_resume", f"task:{tid}",
+    audit.record_action(who, "task_resume", f"task:{tid}",
            {"resumed_from": src_task_id, "reason": reason})
     return {"ok": True, "task_id": tid, "resumed_from": src_task_id,
             "done_steps": sorted(completed_step_names(src_task_id)),
@@ -365,7 +371,7 @@ def decide_approval(request_id: int, *, approve: bool, note: str = "") -> dict:
                    reason=f"审批 {'通过' if approve else '驳回'}：{note or ''}")
     except TransitionError as e:
         return {"ok": False, "reason": str(e)}
-    _audit(who, "approval_decide", f"approval:{request_id}",
+    audit.record_action(who, "approval_decide", f"approval:{request_id}",
            {"approve": bool(approve), "task_id": req["task_id"], "note": note})
     return {"ok": True, "request_id": request_id, "approved": bool(approve),
             "task_id": req["task_id"]}
@@ -399,14 +405,6 @@ def stats(days: int = 30) -> dict:
 
 def set_progress(task_id: int, **fields) -> None:
     """覆盖式写进度字段（如 ``stage`` / ``current_target``）。"""
-    row = db.query_one("SELECT progress FROM task WHERE task_id=%s", (task_id,))
-    cur = row.get("progress") if row else None
-    if isinstance(cur, str):
-        try:
-            cur = json.loads(cur)
-        except Exception:
-            cur = {}
-    snap = dict(cur or {})
+    snap = _progress_snapshot(task_id)
     snap.update(fields)
-    db.execute("UPDATE task SET progress=%s::jsonb, heartbeat_at=now() WHERE task_id=%s",
-               (json.dumps(snap, ensure_ascii=False), task_id))
+    _write_progress(task_id, snap)

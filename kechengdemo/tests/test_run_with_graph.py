@@ -12,20 +12,17 @@
 
 用确定性 stub 顶掉模型调用（无网络）；``mode="off"`` 不外写微伴；结束清理。
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 import time
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import (FAILED, PASSED, ROOT, check, delete_rows,  # noqa: E402
+                      pick_session_for_test, purge_run)
 
 import analyze                # noqa: E402
 import db                     # noqa: E402
@@ -35,12 +32,8 @@ import scoring_service as ss  # noqa: E402
 N = 4
 _MODE_KEY = "score_writeback_mode"
 _ORIG_MODE = None
-PASSED, FAILED = [], []
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 def ok_stub(conversation, facts, rules, **kw):
@@ -55,11 +48,17 @@ def ok_stub(conversation, facts, rules, **kw):
             "schema_version": "1", "contract_attempts": 1}
 
 
-def run_batch(use_graph, tag):
+def run_batch(use_graph, tag, staff_ids=None):
+    """跑一轮批量。
+
+    :param staff_ids: 限定员工 —— 让候选**前提成立**（否则可能挑到"客户一句话没说"
+        的会话被 B4 闸门跳过，断言「确实评了会话」失败，看着像功能坏了）。
+    """
     ss.service._progress = {}
     ss.service._stop = False
     db.set_setting("use_graph_session", "true" if use_graph else "false")
-    res = ss.service.start(max_sessions=N, min_messages=8, triggered_by=f"test-{tag}")
+    res = ss.service.start(staff_ids=staff_ids, max_sessions=N, min_messages=8,
+                           triggered_by=f"test-{tag}")
     if not res.get("ok"):
         return None, res
     run_id = res.get("run_id") or res.get("id")
@@ -72,20 +71,10 @@ def run_batch(use_graph, tag):
 
 def _purge_run(run_id):
     """清掉某个 run 的全部产物（评估 / 回写 / 审计 / run 行本身）。"""
-    for tbl in ("writeback_outbox", "negative_review", "score_writeback"):
-        db.execute(f"""DELETE FROM {tbl} WHERE assessment_id IN
-                       (SELECT assessment_id FROM customer_intent_assessment
-                         WHERE source_run_id=%s)""", (run_id,))
-    db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id=%s", (run_id,))
-    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
-    try:
-        ss.repair_current_flags()
-    except Exception:
-        pass
-    db.execute("DELETE FROM scoring_run WHERE id=%s", (run_id,))
+    purge_run(run_id)                       # 公共产物（见 _harness.purge_run）
     # ⚠️ Loop 护栏（H2）之后 `_run` 会写 `scoring_start` / `scoring_done` 审计 ——
     # 这是**新增的写副作用**，跑该链路的测试必须同步清理（测试卫生铁律第 1 条）。
-    db.execute("DELETE FROM audit_log WHERE target=%s", (f"run:{run_id}",))
+    delete_rows("audit_log", target=f"run:{run_id}")
 
 
 def cleanup(run_ids):
@@ -103,10 +92,15 @@ def cleanup_stale_test_runs():
     `is_current=true` 的评估** → 4 个真实客户被当成「已评分且 D 级」，从此不再进入候选集
     （静默漏评，从数字上完全看不出来）。
 
-    收口条件刻意很窄：只认 `triggered_by LIKE 'test-%'`，**绝不碰** `manual` / `schedule`。
+    收口条件刻意很窄：只认 `triggered_by LIKE 'test%'`，**绝不碰** `manual` / `schedule`。
+
+    ⚠️ 模式必须是 `test%` 而不是 `test-%`：本文件起的 run 叫 `test-graph` / `test-legacy`，
+    而 `test_loop_guard` 用的是 **`test`**（没有连字符）。写成 `test-%` 时，
+    被 kill 的 loop_guard run **够不着这条兜底** —— 实测踩到：一条 `triggered_by='test'`
+    的残留行让「开始评分」被拒（它的 `heartbeat_at` 是 NULL，只能等 4 小时的绝对超时兜底）。
     """
     ids = [r["id"] for r in db.query(
-        "SELECT id FROM scoring_run WHERE triggered_by LIKE %s", ("test-%",))]
+        "SELECT id FROM scoring_run WHERE triggered_by LIKE %s", ("test%",))]
     for rid in ids:
         _purge_run(rid)
     return ids
@@ -121,8 +115,19 @@ def main():
     rows_old, rows_new = None, None
     run_old = run_new = None
     try:
+        # 前提主动成立：挑一个「消息数够 + 客户至少说过 1 句」的会话所属员工，
+        # 且该员工名下**至少有 2N 条**合规会话 —— 两条路径各取前 N 条候选，
+        # 第一遍评完后第二遍仍有未评分的候补（否则第二遍全 skipped，计数对不上）。
+        cand = pick_session_for_test(min_messages=8, require_unscored=False,
+                                     ensure_pool=N * 2)
+        if not cand:
+            print("跳过：库里没有「客户说过话且消息数 ≥8」的会话，无法做批量路径对比。")
+            return 0
+        print(f"批量范围：staff={cand['staff_id'][:14]}… "
+              f"（{cand.get('staff_name') or '-'} / {cand.get('target_name') or '-'} "
+              f"msgs={cand['msg_count']}）")
         print("\n--- 旧路径（use_graph_session=false）---")
-        rows_old, res_old = run_batch(False, "old")
+        rows_old, res_old = run_batch(False, "old", staff_ids=[cand["staff_id"]])
         print(f"  start -> {res_old}")
         check("旧路径批量启动成功", rows_old is not None, str(res_old))
         if rows_old:
@@ -132,7 +137,7 @@ def main():
                   f"llm_failed={rows_old['llm_failed']}")
 
         print("\n--- 新图路径（use_graph_session=true）---")
-        rows_new, res_new = run_batch(True, "new")
+        rows_new, res_new = run_batch(True, "new", staff_ids=[cand["staff_id"]])
         print(f"  start -> {res_new}")
         check("图路径批量启动成功", rows_new is not None, str(res_new))
         if rows_new:
@@ -160,7 +165,7 @@ def main():
         cleanup_stale_test_runs()      # 兜底：连历史遗留一并收口（见该函数注释）
         db.execute("DELETE FROM app_setting WHERE key='use_graph_session'")
         if _ORIG_MODE is None:
-            db.execute("DELETE FROM app_setting WHERE key=%s", (_MODE_KEY,))
+            delete_rows("app_setting", key=_MODE_KEY)
         else:
             db.set_setting(_MODE_KEY, _ORIG_MODE)
         print("\n（已清理批量测试痕迹）")

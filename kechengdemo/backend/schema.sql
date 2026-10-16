@@ -337,6 +337,14 @@ CREATE INDEX IF NOT EXISTS ix_session_failure_manual ON session_failure (manual_
 ALTER TABLE sync_job    ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
 ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
 
+-- ---------------- 跨进程停止（修「点停止没反应」）----------------
+-- 为什么需要：`scoring_service.stop()` 会把停止请求写进 `scoring_run.stop_requested`，
+-- 于是**任何进程**（后端 / 调度器 / 脚本）里的那一轮都能看到并退出；而同步原先只设
+-- 进程内标志 `self._stop` —— 同步跑在调度器/别的进程时，UI 点「停止」会返回
+-- 「已发出停止信号」，但那个进程根本读不到，同步继续跑（而它在跑时评分被互斥挡住）。
+-- 实测踩到：一条 44 分钟前启动、进程已被重启杀掉的同步行，让「开始评分」被拒 15 分钟。
+ALTER TABLE sync_job ADD COLUMN IF NOT EXISTS stop_requested BOOLEAN NOT NULL DEFAULT false;
+
 -- ============================================================================
 -- 阶段 B：回写解耦（修 G6）+ 本地链路追踪
 --   · 全部 IF NOT EXISTS，init_db() 整文件幂等执行，无需迁移框架
@@ -491,6 +499,15 @@ ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS partial_reason TEXT;
 -- model_name：实际返回的模型名（非配置值）。与 prompt_version / schema_version
 --   一起构成「结果变更可归因」—— 换模型后分数变了，能立刻看出是谁换的。
 ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS model_name TEXT;
+
+-- P2（时间锚点）：这次判定用的是哪个"现在"（epoch 秒）。
+--   为什么必须落库：`negative_no_reply_2d` 这类引擎项按 `as_of - 最后消息时间` 算，
+--   不记录锚点就无法解释"当时为什么这么判"，也无法复现（时间一过结论就换）。
+--   与其同时：评估集用**固定锚点**（`eval_case.anchor_ts`）跑，指标才可比。
+ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS data_as_of BIGINT;
+
+-- P2：评估样本的时间锚点（取该样本 baseline 那次评估的时刻）。
+ALTER TABLE eval_case ADD COLUMN IF NOT EXISTS anchor_ts BIGINT;
 -- rule_checks：模型**逐维度原始表态**落库（此前只在契约内校验、不落库）。
 --   与 unchecked_rules 互补：后者只说「漏了哪些」，前者说「表了什么态、给了多少分」。
 ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS rule_checks JSONB;
@@ -745,3 +762,22 @@ ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS policy_action TE
 ALTER TABLE request_guard ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 -- 续跑：新任务指向它从哪个任务恢复（检查点来源）。历史数据为 NULL。
 ALTER TABLE task ADD COLUMN IF NOT EXISTS resumed_from BIGINT;
+
+-- ---------------- 登录会话（Cookie 会话，取代浏览器 Basic 弹框）----------------
+-- 为什么需要它：原先全站走 HTTP Basic，**首屏就弹浏览器原生登录框**（样式不可控、
+-- 无法「记住我」、无法显示当前用户、退出还得关浏览器）。改法不是废掉 Basic
+-- （脚本 / curl / 测试仍用它），而是在其之上加一层**服务端会话**：
+--   · 浏览器只存**不透明会话 id**（HttpOnly Cookie），口令不再落到前端存储；
+--   · 会话可撤销（退出 = 删行 + 清 Cookie）、可过期（勾选记住我 → 30 天；
+--     不勾 → 12 小时，且浏览器关闭即失效）；
+--   · `last_seen_at` 让运维能看出「谁在用、最后一次什么时候」。
+CREATE TABLE IF NOT EXISTS login_session (
+    sid          TEXT PRIMARY KEY,              -- 随机 token（32 字节 base64url）
+    username     TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,
+    user_agent   TEXT,
+    client_ip    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_login_session_exp ON login_session (expires_at);

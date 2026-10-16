@@ -152,5 +152,7 @@ onMounted(load)
 }
 .hit:hover { border-color: #c9d2e3; background: var(--panel-2); }
 .hit-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.hit-body { font-size: 13px; line-height: 1.65; color: var(--text-2); }
+/* 消息正文可能自带换行（如多行的直播宣传文案）→ 必须保留换行，
+   否则会糊成一整段、看不出原本的分行结构 */
+.hit-body { font-size: 13px; line-height: 1.65; color: var(--text-2); white-space: pre-wrap; }
 </style>

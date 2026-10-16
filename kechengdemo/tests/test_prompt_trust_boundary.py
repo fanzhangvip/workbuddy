@@ -14,22 +14,20 @@
 
 关键约定：区块标记为 ``analyze.UNTRUSTED_OPEN`` / ``analyze.UNTRUSTED_CLOSE``。
 """
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t0"
+
 import os
 import sys
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "backend"))
-sys.path.insert(0, BASE)
+from _harness import FAILED, PASSED, ROOT, check  # noqa: E402
 
 import analyze          # noqa: E402
 import rules as rules_mod  # noqa: E402
 
-PASSED, FAILED = [], []
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 def _count(text: str, needle: str) -> int:

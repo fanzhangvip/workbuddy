@@ -28,7 +28,14 @@
 """
 from datetime import datetime, timedelta
 
+import json
+import re
+import time
+
+import audit
 import config
+import db
+import job_service            # 互斥判定（running_kinds）与跑批骨架的唯一来源
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from scoring_service import service as scoring
@@ -46,31 +53,46 @@ REAP_JOB_ID = "idempotency-reap"
 
 OUTBOX_INTERVAL_SECONDS = 30
 
+# ---------------- 日常任务（需求 4.2）----------------
+#: 「每晚 20:00–20:20 主增量同步 + 分析」「每日 03:30 48 小时补偿同步 + 分析」。
+#: 三个 id：主任务 / 补偿任务 / 看门狗（推进「同步 → 分析」链条）。
+DAILY_MAIN_JOB_ID = "daily-main"
+DAILY_COMPENSATE_JOB_ID = "daily-compensate"
+DAILY_WATCH_JOB_ID = "daily-watch"
+EVAL_REGRESSION_JOB_ID = "eval-regression"
+#: 看门狗节拍（秒）。链条推进要「同步一结束就起分析」，所以查得勤一点。
+DAILY_WATCH_SECONDS = 30
+#: 链条状态存在 app_setting（跨进程可见、重启后仍在）——**不放在内存里**，
+#: 否则后端重启会让「同步跑完了，但没人去起分析」这件事无声发生。
+DAILY_STATE_KEY = "daily_run_state"
+
 _scheduler: BackgroundScheduler | None = None
-_interval: int = 0
-_ka_interval: int = 0
-_sc_interval: int = 0
+
+#: 三个「按分钟间隔」任务的当前值（分钟，0 = 关闭）。
+#: 改造前是 `_interval` / `_ka_interval` / `_sc_interval` 三个平行全局变量，
+#: 外加三份**逐字相同**的 `_read_*_interval()` 与三份一模一样的 `set_*_interval()`
+#: —— 「换个来源读配置」要改三处，漏一处就是三档间隔行为不一致。
+_intervals: dict = {"sync": 0, "keepalive": 0, "scoring": 0}
+
+#: 三个间隔的读取来源（配置键 → 默认值）。取值只在这张表里定义。
+INTERVAL_SPECS: dict = {
+    "sync": ("SYNC_INTERVAL_MINUTES", 0),
+    "keepalive": ("KEEPALIVE_INTERVAL_MINUTES", 360),
+    "scoring": ("SCORING_INTERVAL_MINUTES", 0),
+}
 
 
-def _read_interval() -> int:
+def _cfg_int(key: str, default: int) -> int:
+    """读一个整数配置；**缺失或非法都用 default**（配置写错不该让调度器起不来）。"""
     try:
-        return int(config.get("SYNC_INTERVAL_MINUTES") or 0)
-    except Exception:
-        return 0
+        return int(config.get(key) or default)
+    except Exception:                              # noqa: BLE001
+        return default
 
 
-def _read_ka_interval() -> int:
-    try:
-        return int(config.get("KEEPALIVE_INTERVAL_MINUTES") or 360)
-    except Exception:
-        return 360
-
-
-def _read_scoring_interval() -> int:
-    try:
-        return int(config.get("SCORING_INTERVAL_MINUTES") or 0)
-    except Exception:
-        return 0
+def interval_minutes(kind: str) -> int:
+    """某个定时任务的当前间隔（分钟，0 = 关闭）。"""
+    return int(_intervals.get(kind) or 0)
 
 
 def guard_can_start(owner: str) -> bool:
@@ -85,8 +107,11 @@ def guard_can_start(owner: str) -> bool:
 
     返回 True = 可以启动；False = 应跳过（原因已打印）。
     """
-    busy_sync = service.is_running()
-    busy_scoring = scoring.is_running()
+    # 判定统一走 `job_service.running_kinds()`（**查库、跨进程可见**）：
+    # 改造前这里直接调两个服务的 `is_running()`，与两个 `start()` 内的互斥判定
+    # 是**三处各写一遍**的同一不变量，口径还略有出入。
+    busy = set(job_service.running_kinds())
+    busy_sync, busy_scoring = "sync" in busy, "scoring" in busy
     if owner == "sync":
         if busy_sync:
             print("[scheduler] 已有同步在跑，本次跳过")
@@ -193,7 +218,7 @@ def _morning_job():
     """
     try:
         import scoring_service as ss
-        scope = ss.setting("public_class_grade_scope", "PUBLIC_CLASS_GRADE_SCOPE", "S,A")
+        scope = db.setting("public_class_grade_scope", "PUBLIC_CLASS_GRADE_SCOPE", "S,A")
         grades = [g.strip().upper() for g in str(scope).split(",") if g.strip()]
         if not guard_can_start("scoring"):
             print("[scheduler] 早会复核跳过：已有任务在运行")
@@ -239,12 +264,11 @@ def _grade_tag_job():
 
 
 def start():
-    global _scheduler, _interval, _ka_interval, _sc_interval
+    global _scheduler
     _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
     _scheduler.start()
-    _interval = _read_interval()
-    _ka_interval = _read_ka_interval()
-    _sc_interval = _read_scoring_interval()
+    for kind, (key, default) in INTERVAL_SPECS.items():
+        _intervals[kind] = _cfg_int(key, default)
     _reschedule()
     _reschedule_keepalive()
     _reschedule_scoring()
@@ -254,15 +278,17 @@ def start():
     _reschedule_morning()
     _reschedule_grade_tag()
     _reschedule_reap()
+    _reschedule_daily()
+    _reschedule_eval_regression()
     try:
         import scoring_service as _ss
-        _mo = _ss.setting('scoring_morning_cron', 'SCORING_MORNING_CRON', '') or '关闭'
-        _rt = _ss.setting_int('data_retention_days', 'DATA_RETENTION_DAYS', 0)
+        _mo = db.setting('scoring_morning_cron', 'SCORING_MORNING_CRON', '') or '关闭'
+        _rt = db.setting_int('data_retention_days', 'DATA_RETENTION_DAYS', 0)
     except Exception:
         _mo, _rt = '关闭', 0
-    print(f"[scheduler] 已启动｜同步 {_interval or '关闭'} 分"
-          f"｜保活 {_ka_interval or '关闭'} 分"
-          f"｜评分 {_sc_interval or '关闭'} 分"
+    print(f"[scheduler] 已启动｜同步 {interval_minutes('sync') or '关闭'} 分"
+          f"｜保活 {interval_minutes('keepalive') or '关闭'} 分"
+          f"｜评分 {interval_minutes('scoring') or '关闭'} 分"
           f"｜回写 outbox {OUTBOX_INTERVAL_SECONDS} 秒"
           f"｜失败重投 {int(config.get('FAILURE_RETRY_INTERVAL_MINUTES') or 15)} 分"
           f"｜保留期 {('关闭' if _rt <= 0 else str(_rt) + ' 天')}"
@@ -279,24 +305,239 @@ def start():
         pass
 
 
+def _reschedule_interval(job_id: str, fn, *, minutes: int = 0, seconds: int = 0,
+                         first_run_after=None) -> None:
+    """注册 / 重排一个 interval 任务：**先摘旧的再挂新的**（幂等）。
+
+    `minutes` 与 `seconds` 都 <= 0 → 只摘不挂，等于关闭该任务。
+
+    ⚠️ 统一带 `max_instances=1, coalesce=True`：同一任务不并发、错过的那次不补跑。
+    改造前只有同步 / 评分 / 保活带了这两个参数，清理类任务（reap、保留期、
+    失败重投、标签排空）没带 —— 一旦某次跑得比间隔还久就会**叠起来**，
+    对同一个库重复做清理。同一个不变量只该写一次。
+    """
+    if _scheduler.get_job(job_id):
+        _scheduler.remove_job(job_id)
+    mins, secs = int(minutes or 0), int(seconds or 0)
+    if mins <= 0 and secs <= 0:
+        return
+    kw = {"minutes": mins} if mins > 0 else {"seconds": secs}
+    if first_run_after is not None:
+        kw["next_run_time"] = first_run_after
+    _scheduler.add_job(fn, "interval", id=job_id, replace_existing=True,
+                       max_instances=1, coalesce=True, **kw)
+
+
 def _reschedule_reap():
-    """注册幂等记录清理任务（默认 60 分钟一次；0 = 关闭）。"""
-    if _scheduler.get_job(REAP_JOB_ID):
-        _scheduler.remove_job(REAP_JOB_ID)
-    minutes = int(config.get("REAP_INTERVAL_MINUTES") or 60)
-    if minutes > 0:
-        _scheduler.add_job(_reap_job, "interval", minutes=minutes,
-                           id=REAP_JOB_ID, replace_existing=True)
+    """幂等记录清理任务（默认 60 分钟一次；0 = 关闭）。"""
+    _reschedule_interval(REAP_JOB_ID, _reap_job,
+                         minutes=_cfg_int("REAP_INTERVAL_MINUTES", 60))
 
 
 def _reschedule_grade_tag():
-    """按 `GRADE_TAG_INTERVAL_SECONDS`（默认 30s）注册标签排空任务；0 = 关闭。"""
-    if _scheduler.get_job(GRADE_TAG_JOB_ID):
-        _scheduler.remove_job(GRADE_TAG_JOB_ID)
-    secs = int(config.get("GRADE_TAG_INTERVAL_SECONDS") or 30)
-    if secs > 0:
-        _scheduler.add_job(_grade_tag_job, "interval", seconds=secs,
-                           id=GRADE_TAG_JOB_ID, replace_existing=True)
+    """标签排空任务（`GRADE_TAG_INTERVAL_SECONDS`，默认 30s；0 = 关闭）。"""
+    _reschedule_interval(GRADE_TAG_JOB_ID, _grade_tag_job,
+                         seconds=_cfg_int("GRADE_TAG_INTERVAL_SECONDS", 30))
+
+
+# ============================================================ 日常任务（需求 4.2）
+
+def _daily_settings() -> dict:
+    """日常任务的运行时配置（app_setting > .env > 默认）。**改完立即生效**，不必重启。"""
+    return {
+        "main_cron": str(db.setting("sync_main_cron", "SYNC_MAIN_CRON", "20:00") or "").strip(),
+        "window": db.setting_int("sync_main_window_minutes", "SYNC_MAIN_WINDOW_MINUTES", 20),
+        "comp_cron": str(db.setting("sync_compensate_cron", "SYNC_COMPENSATE_CRON",
+                                    "03:30") or "").strip(),
+        "lookback": db.setting_int("sync_compensate_lookback_hours",
+                                   "SYNC_COMPENSATE_LOOKBACK_HOURS", 48),
+        "analysis": db.setting_bool("daily_run_analysis", "DAILY_RUN_ANALYSIS", True),
+    }
+
+
+def _parse_hhmm(text: str):
+    """`"20:00"` → (20, 0)；空串或不合法 → None（= 关闭该任务）。"""
+    m = re.match(r"^(\d{1,2}):(\d{2})$", (text or "").strip())
+    if not m:
+        return None
+    hh, mm = int(m.group(1)), int(m.group(2))
+    return (hh, mm) if 0 <= hh <= 23 and 0 <= mm <= 59 else None
+
+
+def _daily_state() -> dict:
+    """读链条状态（app_setting 里的 JSON）。坏数据按「没有」处理。"""
+    raw = db.get_setting(DAILY_STATE_KEY)
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw) if isinstance(raw, str) else dict(raw)
+    except Exception:                              # noqa: BLE001
+        return {}
+
+
+def _set_daily_state(state: dict) -> None:
+    db.set_setting(DAILY_STATE_KEY, json.dumps(state or {}, ensure_ascii=False) if state else "")
+
+
+def request_stop(table: str, row_id: int = None) -> None:
+    """请求停止某个跑批任务（**写 DB 标志，跨进程生效** —— 与人工点「停止」同一条路）。
+
+    日常任务的窗口收尾就用它：到点后不再新起会话，跑完当前这个就退出，
+    然后把控制权交给链条的下一步（分析）。
+    """
+    if row_id:
+        db.execute(f"UPDATE {table} SET stop_requested=true"
+                   f" WHERE id=%s AND status='running'", (row_id,))
+    else:
+        db.execute(f"UPDATE {table} SET stop_requested=true"
+                   f" WHERE id = (SELECT id FROM {table} WHERE status='running'"
+                   f" ORDER BY id DESC LIMIT 1)")
+
+
+def _start_daily(phase: str, *, lookback_hours: int = None, window_minutes: int = None) -> None:
+    """日常任务的第一步：起同步，并把「下一步该起分析」写进状态。"""
+    if not guard_can_start("sync"):
+        return                                          # 原因已由 guard 打印
+    r = service.start(kind="incremental", triggered_by=f"schedule-{phase}",
+                      lookback_hours=lookback_hours)
+    if not r.get("ok"):
+        print(f"[scheduler] 日常任务（{phase}）启动被拒：{r.get('reason')}")
+        return
+    _set_daily_state({"phase": phase, "step": "sync", "job_id": r["job_id"],
+                      "started_at": time.time(),
+                      "window_minutes": int(window_minutes or 0),
+                      "lookback_hours": lookback_hours})
+    print(f"[scheduler] 日常任务（{phase}）已启动：同步 job={r['job_id']}"
+          + (f"｜窗口 {window_minutes} 分钟" if window_minutes else "")
+          + (f"｜回看 {lookback_hours} 小时" if lookback_hours else ""))
+
+
+def _daily_main_job():
+    """每日主任务（默认 20:00）：主增量同步 → 分析（需求 4.2 第一行）。"""
+    cfg = _daily_settings()
+    _start_daily("main", window_minutes=cfg["window"])
+
+
+def _daily_compensate_job():
+    """每日补偿任务（默认 03:30）：回看 48 小时重拉 + 分析（需求 4.2 第二行）。"""
+    cfg = _daily_settings()
+    _start_daily("compensate", lookback_hours=cfg["lookback"])
+
+
+def _daily_watch_job():
+    """链条看门狗（每 30 秒）：推进「同步 → 分析」，并守住执行窗口。
+
+    为什么需要它：同步与评分是**同一条链**（先同步拿到最新消息，再基于它评分），
+    而两者又必须互斥。这里把「同步跑完再起评分」做成显式的状态机，状态存
+    `app_setting`（跨进程可见、重启后仍在）—— 后端重启不会让链条半路失踪。
+    """
+    state = _daily_state()
+    if not state:
+        return
+    # 超时兜底：状态挂了超过 12 小时一律清掉，避免残留状态把后续判断带偏
+    if time.time() - float(state.get("started_at") or 0) > 12 * 3600:
+        print("[scheduler] 日常任务状态过期（>12 小时），已清理")
+        _set_daily_state({})
+        return
+
+    step = state.get("step")
+    if step == "sync":
+        # 窗口到点 → 请求停止（同步会在当前会话结束后优雅退出，状态落 stopped）
+        win = int(state.get("window_minutes") or 0)
+        if win and (time.time() - float(state.get("started_at") or 0)) > win * 60:
+            request_stop("sync_job", state.get("job_id"))
+            state["stop_requested_at"] = time.time()
+            _set_daily_state(state)
+            return
+        if service.is_running():
+            return
+        if not _daily_settings()["analysis"]:
+            print("[scheduler] 日常任务：同步结束（未开启自动分析，链条到此为止）")
+            _set_daily_state({})
+            return
+        r = scoring.start(triggered_by=f"schedule-{state.get('phase')}")
+        if not r.get("ok"):
+            print(f"[scheduler] 日常任务：分析启动被拒：{r.get('reason')}")
+            _set_daily_state({})
+            return
+        state.update({"step": "scoring", "scoring_run_id": r.get("run_id"),
+                      "scoring_started_at": time.time()})
+        _set_daily_state(state)
+        print(f"[scheduler] 日常任务（{state.get('phase')}）：同步结束 → 已启动分析 "
+              f"run={r.get('run_id')}")
+    elif step == "scoring":
+        if scoring.is_running():
+            return
+        print(f"[scheduler] 日常任务（{state.get('phase')}）完成：同步 + 分析都已结束")
+        _set_daily_state({})
+
+
+def _reschedule_daily():
+    """按配置注册/更新两个日常任务 + 看门狗（时刻改了立即生效，不必重启）。"""
+    cfg = _daily_settings()
+    from apscheduler.triggers.cron import CronTrigger
+    for job_id, cron_text, fn in ((DAILY_MAIN_JOB_ID, cfg["main_cron"], _daily_main_job),
+                                  (DAILY_COMPENSATE_JOB_ID, cfg["comp_cron"],
+                                   _daily_compensate_job)):
+        if _scheduler.get_job(job_id):
+            _scheduler.remove_job(job_id)
+        hm = _parse_hhmm(cron_text)
+        if not hm:
+            continue
+        _scheduler.add_job(fn, CronTrigger(hour=hm[0], minute=hm[1], timezone="Asia/Shanghai"),
+                           id=job_id, replace_existing=True, max_instances=1, coalesce=True)
+    _reschedule_interval(DAILY_WATCH_JOB_ID, _daily_watch_job, seconds=DAILY_WATCH_SECONDS)
+
+
+def _eval_regression_job():
+    """每周一次的评估集回归（修 P8）—— 门禁之外的第二道体检。
+
+    ## 为什么必须有它
+
+    门禁只在"发布规则"那一个动作上触发。而模型侧会**静默漂移**（供应商换版本、
+    参数默认值变化），数据分布也会变 —— 这些都跟"你改没改规则"无关，
+    没有定期回归就永远发现不了（实测：正文通道断 3 天、同步空转两天，都是没人看见）。
+
+    ## 两条纪律
+
+    1. **先查互斥**：评估要读 `chat_message`，与同步/评分并发会读到半截会话
+       （与评分必须互斥同一个理由）。`eval_run` 没有心跳列，所以**不注册成第三种
+       kind**，改为启动前查 `running_kinds()`，非空就跳过（下次再说）。
+    2. **越界即告警**：指标回退时写 `eval_regression_failed` 审计 ——
+       `/api/eval/alerts` 也会把它读出来（那才是给人看的出口）。
+    """
+    if job_service.running_kinds():
+        print(f"[scheduler] 评估回归：有批量在跑（{job_service.running_kinds()}），本轮跳过")
+        return
+    try:
+        import eval_runner
+        limit = db.setting_int("eval_regression_limit", "EVAL_REGRESSION_LIMIT", 0)
+        res = eval_runner.run_sync(limit=limit, check_drift=True)
+        if res.get("gate_passed") is False:
+            audit.record_action("system", "eval_regression_failed", f"run:{res.get('run_id')}",
+                                {"diffs": res.get("gate_diffs"), "tol": res.get("tol")})
+            print(f"[scheduler] 评估回归：指标回退（run={res.get('run_id')}）")
+        else:
+            print(f"[scheduler] 评估回归完成：run={res.get('run_id')} "
+                  f"case_ok={res.get('case_ok')}/{res.get('case_total')}")
+    except Exception as e:                      # noqa: BLE001  定时任务不该把调度器带崩
+        print(f"[scheduler] 评估回归异常：{type(e).__name__}: {e}")
+
+
+def _reschedule_eval_regression():
+    """按 `eval_regression_cron`（HH:MM，**每周一**）注册回归任务。空 = 关闭。"""
+    if _scheduler.get_job(EVAL_REGRESSION_JOB_ID):
+        _scheduler.remove_job(EVAL_REGRESSION_JOB_ID)
+    hhmm = str(db.setting("eval_regression_cron", "EVAL_REGRESSION_CRON", "09:00") or "").strip()
+    hm = _parse_hhmm(hhmm)
+    if not hm:
+        return
+    from apscheduler.triggers.cron import CronTrigger
+    _scheduler.add_job(_eval_regression_job,
+                       CronTrigger(day_of_week="mon", hour=hm[0], minute=hm[1],
+                                   timezone="Asia/Shanghai"),
+                       id=EVAL_REGRESSION_JOB_ID, replace_existing=True,
+                       max_instances=1, coalesce=True)
 
 
 def _reschedule_morning():
@@ -306,7 +547,7 @@ def _reschedule_morning():
     hhmm = str(config.get("SCORING_MORNING_CRON") or "").strip()
     try:
         import scoring_service as ss
-        hhmm = str(ss.setting("scoring_morning_cron", "SCORING_MORNING_CRON", "") or "").strip()
+        hhmm = str(db.setting("scoring_morning_cron", "SCORING_MORNING_CRON", "") or "").strip()
     except Exception:
         pass
     if not hhmm or ":" not in hhmm:
@@ -323,68 +564,50 @@ def _reschedule_morning():
 
 
 def _reschedule_failure():
-    if _scheduler.get_job(FAILURE_JOB_ID):
-        _scheduler.remove_job(FAILURE_JOB_ID)
-    minutes = int(config.get("FAILURE_RETRY_INTERVAL_MINUTES") or 15)
-    if minutes > 0:
-        _scheduler.add_job(_failure_job, "interval", minutes=minutes,
-                           id=FAILURE_JOB_ID, replace_existing=True)
+    """失败重投（默认 15 分钟；0 = 关闭）。"""
+    _reschedule_interval(FAILURE_JOB_ID, _failure_job,
+                         minutes=_cfg_int("FAILURE_RETRY_INTERVAL_MINUTES", 15))
 
 
 def _reschedule_retention():
-    if _scheduler.get_job(RETENTION_JOB_ID):
-        _scheduler.remove_job(RETENTION_JOB_ID)
-    minutes = int(config.get("RETENTION_INTERVAL_MINUTES") or 720)
-    if minutes > 0:
-        _scheduler.add_job(_retention_job, "interval", minutes=minutes,
-                           id=RETENTION_JOB_ID, replace_existing=True)
+    """保留期清理（默认 720 分钟；0 = 关闭）。"""
+    _reschedule_interval(RETENTION_JOB_ID, _retention_job,
+                         minutes=_cfg_int("RETENTION_INTERVAL_MINUTES", 720))
 
 
 def _reschedule_outbox():
-    if _scheduler.get_job(OUTBOX_JOB_ID):
-        _scheduler.remove_job(OUTBOX_JOB_ID)
-    _scheduler.add_job(
-        _outbox_job, "interval", seconds=OUTBOX_INTERVAL_SECONDS, id=OUTBOX_JOB_ID,
-        max_instances=1, coalesce=True,
-        # 启动 15 秒后先跑一次，尽快清掉上次进程遗留的待回写任务
-        next_run_time=datetime.now() + timedelta(seconds=15),
-    )
+    # 启动 15 秒后先跑一次，尽快清掉上次进程遗留的待回写任务
+    _reschedule_interval(OUTBOX_JOB_ID, _outbox_job, seconds=OUTBOX_INTERVAL_SECONDS,
+                         first_run_after=datetime.now() + timedelta(seconds=15))
 
 
 def _reschedule():
-    if _scheduler.get_job(SYNC_JOB_ID):
-        _scheduler.remove_job(SYNC_JOB_ID)
-    if _interval > 0:
-        _scheduler.add_job(_job, "interval", minutes=_interval, id=SYNC_JOB_ID,
-                           max_instances=1, coalesce=True)
+    _reschedule_interval(SYNC_JOB_ID, _job, minutes=interval_minutes("sync"))
 
 
 def _reschedule_keepalive():
-    if _scheduler.get_job(KEEPALIVE_JOB_ID):
-        _scheduler.remove_job(KEEPALIVE_JOB_ID)
-    if _ka_interval > 0:
-        _scheduler.add_job(
-            _keepalive_job, "interval", minutes=_ka_interval, id=KEEPALIVE_JOB_ID,
-            max_instances=1, coalesce=True,
-            # 启动 1 分钟后先跑一次，避免刚启动时凭据就处于过期边缘
-            next_run_time=datetime.now() + timedelta(minutes=1),
-        )
+    # 启动 1 分钟后先跑一次，避免刚启动时凭据就处于过期边缘
+    _reschedule_interval(KEEPALIVE_JOB_ID, _keepalive_job,
+                         minutes=interval_minutes("keepalive"),
+                         first_run_after=datetime.now() + timedelta(minutes=1))
+
+
+def _reschedule_scoring():
+    _reschedule_interval(SCORING_JOB_ID, _scoring_job,
+                         minutes=interval_minutes("scoring"))
+
+
+def _set_interval_minutes(kind: str, minutes: int) -> int:
+    """把间隔夹到 >= 0 并记下（三个 `set_*_interval` 的唯一差异就在这里）。"""
+    _intervals[kind] = max(0, int(minutes or 0))
+    return _intervals[kind]
 
 
 def set_interval(minutes: int) -> dict:
     """调整定时同步间隔（分钟，0=关闭）。"""
-    global _interval
-    _interval = max(0, int(minutes or 0))
+    _set_interval_minutes("sync", minutes)
     _reschedule()
     return schedule_info()
-
-
-def _reschedule_scoring():
-    if _scheduler.get_job(SCORING_JOB_ID):
-        _scheduler.remove_job(SCORING_JOB_ID)
-    if _sc_interval > 0:
-        _scheduler.add_job(_scoring_job, "interval", minutes=_sc_interval,
-                           id=SCORING_JOB_ID, max_instances=1, coalesce=True)
 
 
 def reschedule_all() -> dict:
@@ -392,21 +615,21 @@ def reschedule_all() -> dict:
     _reschedule_morning()
     _reschedule_retention()
     _reschedule_failure()
+    _reschedule_daily()          # 日常任务时刻也是设置项 → 改了立即生效
+    _reschedule_eval_regression()
     return schedule_info()
 
 
 def set_scoring_interval(minutes: int) -> dict:
     """调整定时评分间隔（分钟，0=关闭）。"""
-    global _sc_interval
-    _sc_interval = max(0, int(minutes or 0))
+    _set_interval_minutes("scoring", minutes)
     _reschedule_scoring()
     return schedule_info()
 
 
 def set_keepalive_interval(minutes: int) -> dict:
     """调整保活间隔（分钟，0=关闭）。"""
-    global _ka_interval
-    _ka_interval = max(0, int(minutes or 0))
+    _set_interval_minutes("keepalive", minutes)
     _reschedule_keepalive()
     return schedule_info()
 
@@ -424,11 +647,32 @@ def schedule_info() -> dict:
     ka_job = _scheduler.get_job(KEEPALIVE_JOB_ID) if _scheduler else None
     sc_job = _scheduler.get_job(SCORING_JOB_ID) if _scheduler else None
     ka = _job_info(ka_job)
-    ka["interval_minutes"] = _ka_interval
+    ka["interval_minutes"] = interval_minutes("keepalive")
     sc = _job_info(sc_job)
-    sc["interval_minutes"] = _sc_interval
+    sc["interval_minutes"] = interval_minutes("scoring")
     info = _job_info(sync_job)
-    info["interval_minutes"] = _interval
+    info["interval_minutes"] = interval_minutes("sync")
     info["keepalive"] = ka
     info["scoring"] = sc
+    # 日常任务（需求 4.2）：把「几点同步、几点补偿、跑完会不会自动分析」直接给前端，
+    # 让运维一眼看到「系统什么时候动、动完会不会自动评分」。
+    cfg = _daily_settings()
+    info["daily"] = {
+        "main_cron": cfg["main_cron"],
+        "main_window_minutes": cfg["window"],
+        "compensate_cron": cfg["comp_cron"],
+        "compensate_lookback_hours": cfg["lookback"],
+        "run_analysis": cfg["analysis"],
+        "next_main_run": _job_info(_scheduler.get_job(DAILY_MAIN_JOB_ID) if _scheduler else None),
+        "next_compensate_run": _job_info(
+            _scheduler.get_job(DAILY_COMPENSATE_JOB_ID) if _scheduler else None),
+        "chain": _daily_state(),
+    }
+    # 评估回归（P8）：每周一一次的体检 —— 让人一眼看到"下次什么时候跑"
+    info["eval_regression"] = {
+        "cron": str(db.setting("eval_regression_cron", "EVAL_REGRESSION_CRON", "09:00") or ""),
+        "note": "每周一执行（空 = 关闭）",
+        "limit": db.setting_int("eval_regression_limit", "EVAL_REGRESSION_LIMIT", 0),
+        "next_run": _job_info(_scheduler.get_job(EVAL_REGRESSION_JOB_ID) if _scheduler else None),
+    }
     return info

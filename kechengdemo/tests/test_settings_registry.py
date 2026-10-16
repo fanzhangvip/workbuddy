@@ -4,7 +4,7 @@
     .venv/Scripts/python.exe tests/test_settings_registry.py
 
 背景
-    改造前配置清单**存在两处**：读侧 62 行手工 `setting_int(...)`、写侧 46 项白名单元组。
+    改造前配置清单**存在两处**：读侧 62 行手工 `db.setting_int(...)`、写侧 46 项白名单元组。
     新增配置只改一侧 → 「改了不生效」或「改完看不见」。
 
 覆盖
@@ -14,24 +14,19 @@
   · **无漂移**：读侧返回的键 ⊇ 写侧可写键（否则配置「能写读不到」）
   · 写入生效 + 审计留痕（含 old→new）
 """
-# 统一输出编码（修 P2-2）
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import ROOT, check, summary  # noqa: E402
 
 import db                        # noqa: E402
 import settings_registry as reg  # noqa: E402
 
-_TOTAL = 0
-_FAILED = 0
 _AUDIT_MAX = 0
 #: 改造前写在 `api_scoring._apply_settings` 里的白名单元组（**原文照抄**）
 _OLD_WHITELIST = (
@@ -101,14 +96,6 @@ _OLD_DEFAULTS = {
 }
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 def _cleanup():
@@ -155,6 +142,29 @@ def test_writable_equivalence():
         # 长任务心跳（修「进程被杀 → 卡死的锁把系统阻塞 4 小时」）
         ("job_heartbeat_stale_minutes", "job_heartbeat_stale_minutes"),
         ("scoring_stale_minutes", "scoring_stale_minutes"),
+        # 日常任务（需求 4.2）：什么时间同步、什么时候接着分析 —— 必须能在后台配，
+        # 否则「改成 20:00 / 03:30」就得改代码重启（见 ARCHITECTURE ADR-014）。
+        ("sync_main_cron", "sync_main_cron"),
+        ("sync_main_window_minutes", "sync_main_window_minutes"),
+        ("sync_compensate_cron", "sync_compensate_cron"),
+        ("sync_compensate_lookback_hours", "sync_compensate_lookback_hours"),
+        ("daily_run_analysis", "daily_run_analysis"),
+        # 增量同步的重叠回看窗口（需求 4.3：start_time = 水位 − 15 分钟）
+        ("sync_overlap_minutes", "sync_overlap_minutes"),
+        # 评估侧告警阈值（修 P8）：复核积压与凭据新鲜度 —— 这两个信号以前
+        # 只写日志/审计、没有出口，2026-10-13 正文通道断了 3 天没人发现。
+        ("eval_alert_review_backlog", "eval_alert_review_backlog"),
+        ("eval_alert_credential_hours", "eval_alert_credential_hours"),
+        # 「48 小时未回复」的上窗（P2/D2）：业务口径，必须能在设置页调，
+        # 否则「14 天改成 7 天」要改代码重启。
+        ("no_reply_window_days", "no_reply_window_days"),
+        # 门禁可用化（P4）与定期回归（P5）：发布两步化开关、跑分新鲜度、
+        # 覆盖率提示阈值、回归时刻与条数 —— 都是运维需要现场调的。
+        ("eval_publish_requires_run", "eval_publish_requires_run"),
+        ("eval_gate_fresh_minutes", "eval_gate_fresh_minutes"),
+        ("eval_min_cases_per_rule", "eval_min_cases_per_rule"),
+        ("eval_regression_cron", "eval_regression_cron"),
+        ("eval_regression_limit", "eval_regression_limit"),
     }
     added = new - old
     check("白名单只比改造前多出**显式声明**的新增项",
@@ -173,8 +183,8 @@ def test_writable_equivalence():
 def test_read_equivalence():
     print("\n--- 3. 读侧与改造前默认值等价 ---")
     import scoring_service as ss
-    fn = {reg.INT: ss.setting_int, reg.BOOL: ss.setting_bool,
-          reg.FLOAT: ss.setting_float, reg.STR: ss.setting}
+    fn = {reg.INT: db.setting_int, reg.BOOL: db.setting_bool,
+          reg.FLOAT: db.setting_float, reg.STR: db.setting}
     got = {s.api_key: reg.typed_get(s, fn[s.type]) for s in reg.SETTINGS}
 
     # 只对比「默认值」本身：本用例不写 app_setting，故 setting_* 会自然回落到默认
@@ -271,9 +281,7 @@ def main():
         test_write_path()
     finally:
         _cleanup()
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

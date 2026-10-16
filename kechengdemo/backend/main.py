@@ -33,20 +33,48 @@ import scheduler                     # noqa: E402
 import security                      # noqa: E402
 
 DIST = ROOT / "frontend" / "dist"
+
+
+def _cookie_value(cookie_header: str | None, name: str = None) -> str | None:
+    """从 `Cookie` 头里取某个 cookie 的值（只取需要的那个，不做完整解析器）。
+
+    `SimpleCookie` 会解析整串、遇到畸形值可能抛；这里按 `;` 切分、`=` 前二分，
+    取不到就返回 None —— 认证路径上**宁可当作没带**，也不要因为畸形头 500。
+    """
+    import security as _sec
+
+    want = name or _sec.COOKIE_NAME
+    for part in (cookie_header or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == want and v:
+            return v
+    return None
 #: 免鉴权路径：健康检查是探活用的，不应要求凭据
-OPEN_PATHS = ("/api/health",)
+OPEN_PATHS = (
+    "/api/health",
+    # 登录 / 登出 / 当前身份：必须免鉴权，否则「登录页自己要被登录才能用」。
+    "/api/auth/session",
+    "/api/auth/me",
+)
 
 
 class BasicAuthMiddleware:
-    """纯 ASGI 中间件：应用层 HTTP Basic Auth + 主体注入（评审 P0-2）。
+    """纯 ASGI 中间件：应用层鉴权（**Basic 或 Cookie 会话**）+ 主体注入（评审 P0-2）。
 
     为什么不用 ``@app.middleware("http")``（BaseHTTPMiddleware）：
     它在独立 task 里调用下游 app，**在中间件里 set 的 contextvar 传不到路由函数**
     （审计取主体会拿到 None）。纯 ASGI 中间件与下游同一 context，contextvar 正常透传。
 
-    为什么连静态资源也一起保护：Basic 的浏览器登录框**只在顶层导航的 401 上弹出**，
-    XHR/fetch 的 401 不会弹。若只保护 `/api/*`，SPA 页面能加载但所有接口都 401，
-    用户既拿不到凭据也没法登录 → 必须让**首次页面加载**触发认证。
+    两种凭据（并存，互不影响）：
+
+      · **Cookie 会话**（浏览器走这条）：`POST /api/auth/session` 登录成功后拿到
+        `HttpOnly` 的 sid；之后同源请求自动带上。**不再发 `WWW-Authenticate`**，
+        所以浏览器不会弹原生登录框 —— 登录界面由前端页面接管（可样式化、可记住我）。
+      · **HTTP Basic**（脚本 / curl / 测试走这条）：带上 `Authorization` 头即可，
+        不必先登录拿 Cookie。
+
+    静态资源（SPA 外壳）**放行**：登录页本身得先能加载出来。
+    真正的边界在 `/api/*` —— 未认证一律 401 JSON（前端据此跳登录页）。
     """
 
     def __init__(self, app):
@@ -69,19 +97,31 @@ class BasicAuthMiddleware:
                 security.reset_principal(token)
             return
 
+        # 身份来源：优先 Basic（脚本/测试显式带凭据），否则查 Cookie 会话
         who = security.verify(headers.get("authorization"))
         if who is None:
-            body = ('{"ok":false,"reason":"未认证：请使用 HTTP Basic 凭据",'
-                    '"hint":"用户名见 .env API_USER；口令见 .env API_PASSWORD '
-                    '或后端启动日志"}').encode("utf-8")
+            who = security.resolve_session(_cookie_value(headers.get("cookie")))
+        if who is None:
+            if not path.startswith("/api/"):
+                # SPA 外壳放行（前端会跳到 /login）；登录页自己不需要凭据
+                token = security.set_principal(None)
+                try:
+                    await self.app(scope, receive, send)
+                finally:
+                    security.reset_principal(token)
+                return
+            body = ('{"ok":false,"reason":"未认证：请先登录",'
+                    '"hint":"打开首页登录，或用 HTTP Basic 凭据（脚本/curl）"}'
+                    ).encode("utf-8")
             await send({
                 "type": "http.response.start",
                 "status": 401,
                 "headers": [
                     (b"content-type", b"application/json; charset=utf-8"),
                     (b"content-length", str(len(body)).encode()),
-                    (b"www-authenticate",
-                     f'Basic realm="{security.REALM}"'.encode("latin-1")),
+                    # ⚠️ 刻意**不发 `WWW-Authenticate`**：发了浏览器就弹原生登录框，
+                    #    而我们要的是「前端自己的登录页」。Basic 仍然可用 ——
+                    #    脚本直接带 Authorization 头即可，不依赖这个挑战头。
                 ],
             })
             await send({"type": "http.response.body", "body": body})

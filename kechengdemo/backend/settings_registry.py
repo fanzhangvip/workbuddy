@@ -4,7 +4,7 @@
 ## 解决什么问题（代码评审 P2-10）
 
 改造前同一份配置清单**存在两处**：
-  · **读侧**：`api_scoring.get_settings()` 里逐个人工地 `ss.setting_int("ctx_window_size",
+  · **读侧**：`api_scoring.get_settings()` 里逐个人工地 `db.setting_int("ctx_window_size",
     "CTX_WINDOW_SIZE", 60)` —— 62 行手写；
   · **写侧**：`api_scoring._apply_settings()` 里的白名单元组 —— 46 项手写 `(key, setting_key)`。
 两侧靠「约定」保持一致，**新增一个配置极容易只改一侧**：
@@ -15,7 +15,7 @@
 
 ## 与既有 API 的关系
 
-`scoring_service.setting_int/setting_bool/setting_float/setting` 的语义是
+`db.setting_int/setting_bool/setting_float/setting` 的语义是
 **「app_setting 优先，其次 .env，最后默认值」**。本表只是把「默认值」与「.env 键名」
 声明出来，取值仍走同一套函数 → **行为逐字不变**（`tests/test_settings_registry.py` 对
 逐键做「改造前 vs 改造后」等值对比）。
@@ -25,6 +25,8 @@
 `group` 只用于前端/文档的组织与排障检索，不参与逻辑。
 """
 from dataclasses import dataclass, field
+
+import db
 
 #: 类型标识（与 scoring_service 的四个取值函数一一对应）
 INT, BOOL, FLOAT, STR = "int", "bool", "float", "str"
@@ -71,6 +73,24 @@ SETTINGS: tuple = (
             "候选会话是否按优先级排序（先评高分/活跃客户）", api="priority_order"),
     Setting("scoring_morning_cron", "SCORING_MORNING_CRON", STR, "", "scoring",
             "早会复核触发时刻 HH:MM（**空 = 关闭**，决策 D3）", api="morning_cron"),
+    # ---------------- 日常任务（需求 4.2：什么时间同步、什么时候接着分析） ----------------
+    Setting("sync_main_cron", "SYNC_MAIN_CRON", STR, "20:00", "schedule",
+            "主增量同步 + 分析：每日触发时刻 HH:MM（**空 = 关闭**）。"
+            "需求 4.2 要求覆盖 19:30 的销售主动发送及其后的客户互动"),
+    Setting("sync_main_window_minutes", "SYNC_MAIN_WINDOW_MINUTES", INT, 20, "schedule",
+            "主任务的执行窗口（分钟）：窗口内跑同步，到点优雅收尾（0 = 不限）"),
+    Setting("sync_compensate_cron", "SYNC_COMPENSATE_CRON", STR, "03:30", "schedule",
+            "48 小时补偿同步 + 分析：每日触发时刻 HH:MM（**空 = 关闭**）。"
+            "修复接口入库延迟 / 网络失败 / 任务中断导致的漏处理"),
+    Setting("sync_compensate_lookback_hours", "SYNC_COMPENSATE_LOOKBACK_HOURS", INT, 48,
+            "schedule",
+            "补偿任务的回看窗口（小时）：**抛开水位**重拉最近 N 小时，"
+            "兜住「消息迟到入库 → msg_time 小于水位 → 增量永远取不到」"),
+    Setting("daily_run_analysis", "DAILY_RUN_ANALYSIS", BOOL, True, "schedule",
+            "日常任务：同步跑完后**自动接着跑分析**（关掉则只同步）"),
+    Setting("sync_overlap_minutes", "SYNC_OVERLAP_MINUTES", INT, 15, "schedule",
+            "增量同步的重叠回看窗口（分钟，需求 4.3）："
+            "`start_time = 水位 − 该值`，兜住乱序/迟到入库的消息（重复由唯一键幂等吸收）"),
     Setting("public_class_grade_scope", "PUBLIC_CLASS_GRADE_SCOPE", STR, "S,A", "scoring",
             "公开课复核覆盖的等级范围（逗号分隔）"),
 
@@ -162,6 +182,24 @@ SETTINGS: tuple = (
             "改规则前是否强制跑评估集门禁（闸6）"),
     Setting("eval_baseline_path", "EVAL_BASELINE_PATH", STR, "", "eval",
             "评估基线文件路径（空 = 用评估集库内基线）"),
+    Setting("eval_alert_review_backlog", "EVAL_ALERT_REVIEW_BACKLOG", INT, 50, "eval",
+            "待复核超过这个条数时在 /api/eval/alerts 告警（**0 = 不告警**）"),
+    Setting("eval_alert_credential_hours", "EVAL_ALERT_CREDENTIAL_HOURS", INT, 36, "eval",
+            "凭据超过这个小时数未刷新时告警（**0 = 不告警**；正文通道断过 3 天的先例）"),
+    Setting("no_reply_window_days", "NO_REPLY_WINDOW_DAYS", INT, 14, "eval",
+            "「连续 48 小时未回复」的上窗（天）：只判「48 小时 ~ 该窗口」之间的中断，"
+            "超过视为线索已冷；**0 = 不设上限**（退回改造前语义）"),
+    Setting("eval_publish_requires_run", "EVAL_PUBLISH_REQUIRES_RUN", BOOL, False, "eval",
+            "发布规则前必须先跑一轮评估集（两步发布）。**默认关** = 与改造前一致："
+            "发布时同步现跑（十几分钟的长请求）"),
+    Setting("eval_gate_fresh_minutes", "EVAL_GATE_FRESH_MINUTES", INT, 30, "eval",
+            "跑分结果超过这个分钟数就不复用于门禁（防「拿改规则之前的指标比基线」）"),
+    Setting("eval_min_cases_per_rule", "EVAL_MIN_CASES_PER_RULE", INT, 3, "eval",
+            "每条规则在评估集里至少应有几条样本（低于它就提示「改坏了也测不出来」；0 = 不提示）"),
+    Setting("eval_regression_cron", "EVAL_REGRESSION_CRON", STR, "09:00", "eval",
+            "定期回归的时刻（**每周一**执行，格式 HH:MM；空 = 关闭）"),
+    Setting("eval_regression_limit", "EVAL_REGRESSION_LIMIT", INT, 0, "eval",
+            "定期回归每轮跑多少条样本（0 = 全部有效样本）"),
 
     # ---------------- 阶段B 灰度与观测 ----------------
     Setting("use_graph_session", "USE_GRAPH_SESSION", BOOL, False, "pipeline",

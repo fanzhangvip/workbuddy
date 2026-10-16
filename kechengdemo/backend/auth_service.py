@@ -58,6 +58,10 @@ def credential_status() -> dict:
         "age_hours": None,
         "expired": True,
         "login": st,
+        # 浏览器能力（唯一判定在 wb_bootstrap.browser_env）：
+        # 容器部署时这里会是 available=False —— 前端据此把「扫码登录」换成
+        # 「去宿主机执行 xxx」，而不是让用户点一个必然失败的按钮。
+        "browser": wb_bootstrap.browser_env(),
     }
     if BOOTSTRAP_FILE.exists():
         try:
@@ -99,6 +103,12 @@ def _worker(staff_id: str = None, session_id: str = None, wait_sec: int = 300):
         _set("launching", "正在启动 Chrome…")
         CACHE_DIR.mkdir(exist_ok=True)
 
+        # 二次兜底（start_login 已挡一次）：万一环境在流程中被改坏，
+        # 也要落到"可执行的操作指引"上，而不是 FileNotFoundError。
+        env = wb_bootstrap.browser_env()
+        if not env["available"]:
+            raise wb_bootstrap.BrowserUnavailable(env)
+
         # 清掉本项目**自己**残留的 Chrome，避免 profile 被占用（不影响用户其他 Chrome 窗口）
         wb_bootstrap.kill_own_chrome(wait_sec=1)
 
@@ -114,6 +124,9 @@ def _worker(staff_id: str = None, session_id: str = None, wait_sec: int = 300):
             raise RuntimeError("未取到 open_sid，请确认页面已加载出会话内容")
         _save_credential(data)
         _set("done", "登录成功，凭据已保存（后续同步无需浏览器）")
+    except wb_bootstrap.BrowserUnavailable as e:
+        # 环境能力问题（容器内 / 未装 Chrome）：报"该怎么办"，不报裸系统错误
+        _set("unavailable", e.reason, error=e.hint)
     except Exception as e:
         _set("failed", f"抓取失败：{e}", error=str(e))
     finally:
@@ -124,7 +137,18 @@ def _worker(staff_id: str = None, session_id: str = None, wait_sec: int = 300):
 
 def start_login(staff_id: str = None, session_id: str = None,
                 wait_sec: int = 300) -> dict:
-    """触发扫码登录（幂等：已在跑则直接返回当前状态）。"""
+    """触发扫码登录（幂等：已在跑则直接返回当前状态）。
+
+    **前置体检**：没有浏览器（容器部署、未装 Chrome、显式关闭）时**不启动**流程 ——
+    否则线程会在 1 秒内失败，把状态打成 `failed` 并在页面上留下一条
+    `[Errno 2] No such file or directory: 'C:\\Program Files\\...\\chrome.exe'`。
+    现在直接返回 ``ok=False`` + 原因 + **该在宿主机执行的命令**。
+    """
+    env = wb_bootstrap.browser_env()
+    if not env["available"]:
+        return {"ok": False, "reason": env["reason"], "hint": env["hint"],
+                "browser": env}
+
     with _lock:
         if _state["running"]:
             return {"ok": False, "reason": "登录流程已在运行中", "state": dict(_state)}
@@ -139,35 +163,22 @@ def start_login(staff_id: str = None, session_id: str = None,
 # ------------------------------------------------------------ 凭据校验
 
 def verify() -> dict:
-    """真调一次企微接口，确认凭据 + 登录态是否仍然有效。"""
+    """真调一次企微接口，确认凭据 **+ 正文通道** 是否仍然有效。
+
+    自检口径（签名 → 开会话 → 取样解密）**只在 `ww_chatdata.check_channel` 一处实现**：
+    保活收尾用它、本端点用它，避免"一个入口说通、另一个入口报错"。
+    """
     try:
         import ww_chatdata
-        import weiban
-    except Exception as e:
+    except Exception as e:                                # noqa: BLE001
         return {"ok": False, "error": f"模块导入失败：{e}"}
 
+    res = ww_chatdata.check_channel()
     try:
-        ww = ww_chatdata.WecomChatData(verbose=False)
-        sid = ww.new_session()                    # ① 微伴签名 + ② 企微开会话
-        staff = next(iter(weiban.iter_all_staff()), None)
-        if not staff:
-            return {"ok": True, "message": "凭据有效（未取到员工）", "sid_tail": sid[-8:]}
-        res = weiban.list_sessions(staff["id"], "ext_user", limit=1, offset=0,
-                                   order_by="last_updated_desc")
-        sess = (res.get("session_list") or [None])[0]
-        if not sess:
-            return {"ok": True, "message": "凭据有效（未取到会话）", "sid_tail": sid[-8:]}
-        msgs = weiban.list_messages(staff["id"], sess["id"], limit=3).get("message_list") or []
-        hit = 0
-        if msgs:
-            plain = ww.decrypt(msgs)              # ③ 解密正文
-            hit = len(plain)
         db.execute(
-            "UPDATE credential SET status='ok', message='校验通过', updated_at=now() WHERE id=1")
-        return {"ok": True, "sid_tail": sid[-8:], "sample_msgs": len(msgs),
-                "decrypted": hit, "message": "凭据有效，正文通道正常"}
-    except Exception as e:
-        db.execute(
-            "UPDATE credential SET status='expired', message=%s, updated_at=now() WHERE id=1",
-            (str(e)[:500],))
-        return {"ok": False, "error": str(e)}
+            "UPDATE credential SET status=%s, message=%s, updated_at=now() WHERE id=1",
+            ("ok" if res.get("ok") else "expired",
+             (res.get("message") or res.get("error") or "")[:500]))
+    except Exception:                                     # noqa: BLE001
+        pass                                              # 台账写失败不影响本次校验结论
+    return res

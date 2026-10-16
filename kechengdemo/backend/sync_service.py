@@ -13,17 +13,40 @@
       - 会话的 ``last_msg_time`` 不高于水位 → 直接跳过（一次请求都不发）
       - 拉消息时带 ``start_time`` 只取水位之后的部分
 """
-import threading
 import time
 import traceback
 
 import db
+import job_service            # noqa: E402  批量任务骨架（与 ScoringService 共用）
 
 import weiban                # noqa: E402  根目录既有模块
 import ww_chatdata           # noqa: E402
 
 PAGE = 100                   # 微伴接口单页条数
 SESSION_TYPES = ("ext_user", "room", "other_staff")
+
+
+def sync_window(watermark: int, round_start: int, overlap_seconds: int) -> tuple:
+    """需求 4.3 的取数窗口 → `(start_time, end_time)`。
+
+    ```
+    start_time = 上次成功水位 - 15 分钟
+    end_time   = 本轮任务开始时间 - 1 分钟
+    ```
+
+    **两条的原因都不一样，别只改一条**：
+
+    · `start_time` 往回重叠：微伴的消息可能**乱序/迟到**入库（或上一次同步正好在
+      某条消息落库前失败）—— 不重叠就会把它永久跳过（水位已经越过它了）。
+      重叠窗口内重复取到的消息由 `PRIMARY KEY(staff_id, session_id, message_id)`
+      的 upsert 幂等吸收，代价只是少量重复请求。
+    · `end_time`：本轮**固定上界**。接口是「按消息时间逆序 + offset 分页」，
+      不固定上界时翻页途中新到的消息会把整页往后挤 → 边界那条被跳过。
+
+    水位为 0（首次同步）→ `start_time` 返回 None（不限，取全量）。
+    """
+    start = max(0, int(watermark) - int(overlap_seconds)) if watermark else None
+    return start, int(round_start) - 60
 
 
 # ---------------------------------------------------------------- SQL
@@ -77,74 +100,24 @@ RETURNING (xmax = 0) AS inserted
 
 # ---------------------------------------------------------------- 服务
 
-class SyncService:
+class SyncService(job_service.JobService):
+    """同步批量任务。
+
+    运行状态（本进程线程 / 跨进程 DB 行 / 心跳僵尸 / 绝对超时）与进度累加
+    都在基类 `job_service.JobService` —— 与 `ScoringService` **共用一份实现**。
+    改造前两边各写一遍，且已经漂移（本服务在锁内读线程状态，评分那边没加锁）；
+    而这段逻辑决定「会不会两个批量同时跑」—— 评分读到半截会话就不可复现了。
+    """
+
+    TABLE = "sync_job"
+
     def __init__(self):
-        self._lock = threading.Lock()
-        self._thread = None
-        self._stop = False
+        super().__init__()
         self._job_id = None
-        self._progress = {}
 
     # ---------------- 对外接口 ----------------
 
-    def is_running(self) -> bool:
-        """是否正在同步。**含跨进程检测**（修 P1-4：与 `scoring_service.is_running` 对称）。
-
-        `self._thread` 只反映**本进程**；后端 / 调度器 / 手工脚本跑在不同进程时互相看不见
-        → 会出现「同步与评分同时跑」，评分读到正在变化的 ``msg_count`` / ``last_msg_time``
-        （半截会话，结论不可复现）。故再查一次 DB：``sync_job`` 里有 ``status='running'``
-        即算在跑。
-
-        僵尸处理（两级）：
-          ① **心跳**：`_bump` 每次进度更新会刷新 `heartbeat_at`（默认每会话一次）。
-             心跳停超过 `job_heartbeat_stale_minutes`（默认 15 分钟）→ 进程已死 → 标 failed 放行。
-             为什么必须加这一级：进程被 kill 时来不及改状态，记录会**永久停在 running**；
-             只靠 started_at 的 240 分钟超时，等于**把系统锁死 4 小时**（实测踩到）。
-          ② **绝对超时**：仍超过 `scoring_stale_minutes`（默认 240 分钟）的，一律视为僵尸
-             （兼容没有心跳的老行，以及心跳本身卡住的极端情况）。
-        DB 不可用时**宁可放行也不误拦**。
-        """
-        with self._lock:
-            if self._thread is not None and self._thread.is_alive():
-                return True
-        try:
-            row = db.query_one(
-                """SELECT id,
-                          EXTRACT(EPOCH FROM (now() - started_at))   AS el,
-                          EXTRACT(EPOCH FROM (now() - heartbeat_at)) AS hb
-                     FROM sync_job WHERE status='running' ORDER BY id DESC LIMIT 1""")
-        except Exception:
-            return False
-        if not row:
-            return False
-        try:
-            import scoring_service as _ss
-            stale = _ss.setting_int("scoring_stale_minutes", "SCORING_STALE_MINUTES",
-                                    _ss.STALE_MINUTES) * 60
-            hb_stale = _ss.setting_int("job_heartbeat_stale_minutes",
-                                       "JOB_HEARTBEAT_STALE_MINUTES",
-                                       _ss.HEARTBEAT_STALE_MINUTES) * 60
-        except Exception:
-            stale, hb_stale = 240 * 60, 15 * 60
-
-        # ① 心跳判死（心跳为 NULL = 老行/刚开始，退回用 started_at 判）
-        hb = row.get("hb")
-        if hb is not None and float(hb) > hb_stale:
-            db.execute(
-                """UPDATE sync_job SET status='failed', finished_at=now(),
-                          error=COALESCE(error, %s) WHERE id=%s AND status='running'""",
-                (f"进程异常退出：心跳已停 {int(float(hb) // 60)} 分钟"
-                 f"（阈值 {hb_stale // 60} 分钟），自动标记为失败", row["id"]))
-            return False
-        # ② 绝对超时兜底
-        if row.get("el") is not None and float(row["el"]) > stale:
-            db.execute(
-                """UPDATE sync_job SET status='failed', finished_at=now(),
-                          error=COALESCE(error, %s) WHERE id=%s AND status='running'""",
-                (f"进程异常退出：超过 {stale // 60} 分钟仍为 running，自动标记为失败",
-                 row["id"]))
-            return False
-        return True
+    # `is_running()` 继承自 `job_service.JobService`（跨进程 + 僵尸两级判定）
 
     def status(self) -> dict:
         with self._lock:
@@ -157,20 +130,51 @@ class SyncService:
                 "progress": dict(self._progress)}
 
     def stop(self) -> dict:
+        """发出停止信号。**含跨进程**：同时写 `sync_job.stop_requested`。
+
+        改造前这里**只设进程内标志** `self._stop` —— 而同步绝大多数时候跑在
+        调度器或另一个进程里（`triggered_by=schedule`），那个进程读不到这个标志，
+        于是 UI 点「停止」会得到「已发出停止信号」但**什么都不会停**；而同步在跑时
+        评分被互斥闸挡住（用户侧表现就是「同步任务进行中，无法评分」）。
+        `scoring_service.stop()` 的注释恰好警告过这个坑（「只设进程内标志的话，
+        后端点『停止』停不掉脚本/调度器里的批量」），这里补齐成同一套做法。
+        """
         if not self.is_running():
             return {"ok": False, "reason": "当前没有正在运行的同步任务"}
         self._stop = True
+        with self._lock:
+            jid = self._job_id
+        if jid:
+            db.execute("UPDATE sync_job SET stop_requested=true WHERE id=%s", (jid,))
+        else:
+            db.execute("""UPDATE sync_job SET stop_requested=true
+                           WHERE id = (SELECT id FROM sync_job WHERE status='running'
+                                        ORDER BY id DESC LIMIT 1)""")
         return {"ok": True, "message": "已发出停止信号，将在当前会话处理完后退出"}
 
     def start(self, kind: str = "incremental", staff_ids: list = None,
               session_types: list = None, max_sessions_per_staff: int = 200,
               max_msgs_per_session: int = 0, triggered_by: str = "manual",
-              ignore_cursor: bool = False) -> dict:
+              ignore_cursor: bool = False, lookback_hours: int = None) -> dict:
+        """启动一次同步。
+
+        :param lookback_hours: **回看窗口**（小时）。给了它就**不看水位**，
+        改为「最近 N 小时内的消息全部重拉一遍」—— 这是需求 4.2 的
+        「48 小时补偿同步」要解决的问题：
+
+            水位是按 `last_msg_time` 往前推的，而微伴的消息有时**迟到入库**
+            （接口延迟、网络失败、任务中断）→ 到的时候 `msg_time` 已经**小于水位**，
+            增量同步永远不会再取它 → 这条消息**永久丢失**。
+
+        重拉是**幂等**的：`_persist` 对 `chat_message` 是 upsert，
+        已存在的行不会重复插入；水位也只前进不后退（`GREATEST`）。
+        """
         if self.is_running():
             return {"ok": False, "reason": "已有同步任务在运行，请先停止或等待完成"}
         # 互斥（修 H1）：评分正在跑时不得启动同步 —— 否则评分读到的是「半截会话」
-        import scoring_service
-        if scoring_service.service.is_running():
+        # 互斥（修 H1）：评分正在跑时不得启动同步（同一不变量、同一判定入口）。
+        # 见 scoring_service.start() 的说明：判定查库，服务之间不再互相 import。
+        if "scoring" in job_service.running_kinds(exclude="sync"):
             return {"ok": False, "reason": "评分任务进行中，请先等待评分完成再同步（避免评分读到半截数据）"}
 
         types = [t for t in (session_types or ["ext_user"]) if t in SESSION_TYPES]
@@ -178,7 +182,8 @@ class SyncService:
             types = ["ext_user"]
 
         detail = db.as_json({"staff_ids": staff_ids, "session_types": types,
-                             "max_sessions_per_staff": max_sessions_per_staff})
+                             "max_sessions_per_staff": max_sessions_per_staff,
+                             "lookback_hours": lookback_hours})
         job_id = db.query_one(
             """INSERT INTO sync_job (kind, status, triggered_by, detail)
                VALUES (%s, 'running', %s, %s) RETURNING id""",
@@ -190,12 +195,10 @@ class SyncService:
         self._progress = {"stage": "启动中", "current_staff": None, "current_session": None,
                           "session_total": 0, "session_done": 0, "msg_total": 0,
                           "msg_decrypted": 0, "msg_new": 0}
-        self._thread = threading.Thread(
-            target=self._run,
-            args=(job_id, kind, staff_ids, types, max_sessions_per_staff,
-                  max_msgs_per_session, ignore_cursor),
-            daemon=True, name=f"sync-{job_id}")
-        self._thread.start()
+        self._spawn(self._run,
+                    (job_id, kind, staff_ids, types, max_sessions_per_staff,
+                     max_msgs_per_session, ignore_cursor, lookback_hours),
+                    name=f"sync-{job_id}")
         return {"ok": True, "job_id": job_id}
 
     # ---------------- 内部实现 ----------------
@@ -210,6 +213,25 @@ class SyncService:
         db.execute(f"UPDATE sync_job SET {keys} WHERE id = %s",
                    (*fields.values(), job_id))
 
+    def _should_stop(self, job_id) -> bool:
+        """是否该停：**进程内标志 + 跨进程 DB 标志**（与评分同一套语义）。
+
+        每轮查一次库，和 `scoring_service._run` 一样（那边每轮取
+        `stop_requested`，顺带取护栏字段）。命中后把进程内标志也置上，
+        后续轮次不再查库；**查库失败按「不停」处理**（宁可多跑一轮，
+        也不要因为一次查询抖动把用户的同步掐掉）。
+        """
+        if self._stop:
+            return True
+        try:
+            row = db.query_one("SELECT stop_requested FROM sync_job WHERE id=%s", (job_id,))
+        except Exception:                                  # noqa: BLE001
+            return False
+        if row and row.get("stop_requested"):
+            self._stop = True
+            return True
+        return False
+
     def _finish_job(self, job_id, status: str, error: str = None):
         db.execute(
             "UPDATE sync_job SET status = %s, error = %s, finished_at = now() WHERE id = %s",
@@ -217,14 +239,10 @@ class SyncService:
 
     def _bump(self, job_id, *, sessions=None, msgs=None, decrypted=None, new=None,
               detail=None):
-        with self._lock:
-            for k, v in (("session_done", sessions), ("msg_total", msgs),
-                         ("msg_decrypted", decrypted), ("msg_new", new)):
-                if v:
-                    self._progress[k] = self._progress.get(k, 0) + v
-            if detail:
-                self._progress.update(detail)
-            snapshot = dict(self._progress)
+        # 累加部分与 ScoringService 共用基类实现；这里只保留「本表有哪些列」。
+        snapshot = self._accumulate({"session_done": sessions, "msg_total": msgs,
+                                     "msg_decrypted": decrypted, "msg_new": new},
+                                    detail)
         self._patch_job(
             job_id,
             session_done=snapshot.get("session_done", 0),
@@ -293,11 +311,21 @@ class SyncService:
         return out
 
     # ---- 单会话消息 ----
-    def _messages_of(self, staff_id, session_id, since: int, cap: int) -> list:
+    def _messages_of(self, staff_id, session_id, since: int, cap: int,
+                     end: int = None) -> list:
+        """逐页取消息（返回按时间升序的完整列表）。
+
+        :param since: `start_time` —— 取数下界（**已含重叠回看**，见 `sync_window`）
+        :param end:   `end_time` —— 取数上界。**本轮全程传同一个值**：
+            需求 4.3 要求「每轮任务开始时固定 `end_time`，分页中不得改变，避免新增消息
+            造成分页漂移」。微伴这个接口是**按消息时间逆序 + offset 分页**，
+            不固定上界时，翻页途中新到的消息会把整页往后挤 —— 边界上的那条会被**跳过**
+            （而它恰恰是最新、最该入库的一条）。
+        """
         msgs, offset = [], 0
         while True:
             res = weiban.list_messages(staff_id, session_id, limit=PAGE, offset=offset,
-                                       start_time=since or None)
+                                       start_time=since or None, end_time=end)
             batch = res.get("message_list") or []
             msgs.extend(batch)
             offset += PAGE
@@ -370,8 +398,18 @@ class SyncService:
 
     # ---- 主流程 ----
     def _run(self, job_id, kind, staff_ids, session_types, max_sessions, max_msgs,
-             ignore_cursor):
+             ignore_cursor, lookback_hours=None):
         t0 = time.time()
+        # 补偿窗口（需求 4.2）：给了回看小时数就**抛开水位**，改为「最近 N 小时全重拉」，
+        # 用来兜住「消息迟到入库 → msg_time 小于水位 → 增量永远取不到」的漏处理。
+        since = (int(time.time()) - int(lookback_hours) * 3600) if lookback_hours else None
+        # 需求 4.3：取数窗口在本轮开始时**一次性定死**（分页过程中绝不改变）。
+        #   · 上界 = 本轮开始 - 60 秒 → 防「翻页途中新消息把整页往后挤」造成漏取；
+        #   · 下界 = 水位 - 15 分钟（可配 `sync_overlap_minutes`）→ 兜住乱序/迟到的消息。
+        round_start = int(time.time())
+        overlap_seconds = db.setting_int("sync_overlap_minutes", "SYNC_OVERLAP_MINUTES",
+                                         15) * 60
+        round_end = round_start - 60
         try:
             db.init_db()
 
@@ -399,7 +437,7 @@ class SyncService:
 
             todo = []      # (staff_id, session_dict)
             for i, sid in enumerate(targets, 1):
-                if self._stop:
+                if self._should_stop(job_id):
                     break
                 self._bump(job_id, detail={"stage": f"读取会话列表 ({i}/{len(targets)})",
                                            "current_staff": sid})
@@ -420,14 +458,29 @@ class SyncService:
 
             # ---------- 第二遍：逐会话拉消息 + 解密 + 落库 ----------
             for _idx, (sid, s) in enumerate(todo, 1):
-                if self._stop:
+                if self._should_stop(job_id):
                     break
                 sess_id = s["id"]
                 sname = s.get("name") or "无备注"
                 watermark = 0 if ignore_cursor else cur_map.get((sid, sess_id), 0)
 
-                # 增量快路径：会话最后消息没超过水位 → 跳过
-                if s.get("last_msg_time") and s["last_msg_time"] <= watermark:
+                # 取数下界：
+                #   · 补偿模式 → 回看窗口起点（抛开水位，重拉最近 N 小时）
+                #   · 常规模式 → 水位 - 重叠回看（需求 4.3：`start_time` 往回 15 分钟）
+                since_ts = since if since is not None else watermark
+                last = s.get("last_msg_time") or 0
+                if since is not None:
+                    # 补偿模式只扫「窗口内还有动静」的会话，避免把 78 万会话全重拉一遍
+                    if last and last < since:
+                        self._bump(job_id, sessions=1,
+                                   detail={"stage": "补偿同步", "skipped": True,
+                                           "current_session": sname})
+                        continue
+                # 增量快路径：会话在**重叠窗口内**确实没有动静 → 跳过。
+                # ⚠️ 判据不能用 `last <= watermark`：最后一条正好等于水位时会被跳过，
+                # 而重叠窗口要救的恰恰是那种会话（迟到消息的 msg_time 早于水位）。
+                # 正确判据是「连重叠窗口都没覆盖到」= `last < 水位 - 重叠`。
+                elif last and last < (watermark - overlap_seconds):
                     self._bump(job_id, sessions=1,
                                detail={"stage": "拉取消息与正文", "skipped": True,
                                        "current_session": sname})
@@ -438,7 +491,8 @@ class SyncService:
                                            "current_staff": sid,
                                            "session_total": len(todo)})
                 try:
-                    msgs = self._messages_of(sid, sess_id, watermark, max_msgs)
+                    start_ts, end_ts = sync_window(since_ts, round_start, overlap_seconds)
+                    msgs = self._messages_of(sid, sess_id, start_ts, max_msgs, end=end_ts)
                 except Exception as e:
                     print(f"[sync] 会话 {sess_id} 消息拉取失败：{e}")
                     self._bump(job_id, sessions=1)

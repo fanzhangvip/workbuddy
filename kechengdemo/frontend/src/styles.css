@@ -158,3 +158,50 @@ table.tbl tbody tr:hover { background: var(--panel-2); }
 .alert.warn { background: #fff8ed; color: #a15c07; border: 1px solid #ffe6c2; }
 .alert.err { background: #fef3f2; color: #b42318; border: 1px solid #fdd8d4; }
 .alert.ok { background: #ecfdf3; color: #067647; border: 1px solid #c6efdb; }
+
+/* ---------------- 跨视图通用原语（改一次全站生效） ----------------
+   原先这些声明块在多个视图的 <style scoped> 里各写一份（用
+   .workbuddy/tmp/clone_scan_fe.py 可复现）：`.lbl` 4 份、`.two/.seg` 4 份、
+   `.pager` 3 份、`.tabs*` 2 份…于是「标签的间距」这种小事要改 4 个文件。 */
+
+.lbl { display: block; font-size: 12px; font-weight: 500; color: var(--text-2); margin-bottom: 6px; }
+.inline-row { display: flex; align-items: center; gap: 8px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.grid-2.loose { gap: 12px; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.split-2col { display: grid; grid-template-columns: 420px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 1200px) { .split-2col { grid-template-columns: 1fr; } }
+
+/* 分段控件（两列按钮组，带一行说明） */
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.seg > button {
+  text-align: left; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--panel); cursor: pointer; font-family: inherit; font-size: 13px;
+  font-weight: 600; color: var(--text); transition: .15s; line-height: 1.4;
+}
+.seg > button small { display: block; font-weight: 400; font-size: 11px; color: var(--text-3); margin-top: 3px; }
+.seg > button.on { border-color: var(--brand); background: var(--brand-weak); color: var(--brand); }
+.seg > button.on small { color: #5b7fbf; }
+
+/* 过滤标签页（带计数徽标） */
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs > button {
+  padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel);
+  font-size: 12.5px; cursor: pointer; font-family: inherit; color: var(--text-2);
+  display: inline-flex; gap: 6px; align-items: center;
+}
+.tabs > button.on { border-color: var(--brand); background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.tabs > button.on .cnt { background: #fff; border-color: #d3e1ff; }
+.cnt { background: var(--panel-2); border-radius: 99px; padding: 0 6px; font-size: 11px; border: 1px solid var(--border); }
+
+/* 分页器（配合 components/Pager.vue） */
+.pager { display: flex; align-items: center; gap: 12px; justify-content: center; }
+
+/* 虚线分隔的列表行 */
+.item { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.item:last-child { border-bottom: none; }
+
+/* 汇总行（左标签 + 右值，两端对齐）。
+   ⚠️ 原名是 `.row`，但 ChatView 的**消息行**也叫 `.row` —— 冒然提到全局会让
+   消息行套上汇总行的样式。改名后两者彻底分开，复用也不必牺牲语义。 */
+.kv-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 5px 0; }

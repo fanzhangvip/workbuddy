@@ -1,14 +1,18 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { api, fmtRelative } from '../api'
+import { ref, computed, onMounted } from 'vue'
+import { api, fmtRelative, gradeTag } from '../api'
+import ChatBubbles from '../components/ChatBubbles.vue'
+import Pager from '../components/Pager.vue'
+import { useAsyncAction } from '../composables/useAsyncAction'
+import { usePolling } from '../composables/usePolling'
 
 // 评估集：回答「判得准不准」。标注口径 = 只标「命中了哪些 rule_id + 档位」，不标总分。
 const TABS = [
   { key: '', label: '全部' },
   { key: 'unlabeled', label: '待标注' },
-  { key: 'prefilled', label: '待复核' },
+  { key: 'prefilled', label: 'AI 草稿' },
   { key: 'confirmed', label: '已确认' },
-  { key: 'frozen', label: '已冻结' },
+  { key: 'frozen', label: '已锁定' },
   { key: 'disputed', label: '有争议' },
 ]
 const KINDS = [
@@ -31,11 +35,8 @@ const current = ref(null)
 const rows = ref([])
 const note = ref('')
 const annotator = ref(localStorage.getItem('annotator') || '复核员')
-const busy = ref(false)
-const error = ref('')
-const msg = ref('')
-let timer = null
-
+// busy / error / msg 由 composable 提供（模板里的 `busy` / `error` / `msg` 用法不变）
+const { busy, error, msg, run } = useAsyncAction()
 const RULE_INFO = ref({ items: [], rule_version: '' })
 const THRESHOLDS = ref([])
 
@@ -83,6 +84,7 @@ function buildRows(caseObj, ruleItems) {
     }
   })
   note.value = caseObj.note || ''
+  markClean()          // 刚载入 / 刚保存完 → 视为「干净」
 }
 
 async function open(r) {
@@ -102,85 +104,131 @@ const expectedGrade = computed(() => {
   for (const t of ts) if (expectedScore.value >= t.min) return t.grade
   return '-'
 })
-const convLines = computed(() => {
-  const txt = current.value?.conversation || ''
-  return txt.split('\n').filter(Boolean).map(l => {
-    const i = l.indexOf(':')
-    return { who: l.slice(0, i), text: l.slice(i + 1).trim(), side: l.startsWith('销售') ? 'right' : 'left' }
-  })
+// 会话消息数超过本次展示上限 → 更早的消息没显示。必须显式告知：否则「引用回复」
+// 里引用的原话看不到出处，会被误判成归属错误（实测被反馈过）。
+const truncated = computed(() =>
+  (current.value?.case?.msg_count || 0) > (current.value?.msg_limit || 0))
+
+// ---------------- 未保存改动检测 + 状态机 ----------------
+// 坑：「锁定」只翻 frozen 标志、**不落标注**。用户改完勾选直接点锁定，改动静默丢失、
+// 锁上的是旧内容。所以先能判断"脏没脏"，再据此**禁用锁定**。
+const _snap = ref('')
+
+/** 把「会被保存的东西」压成签名：勾选项 + 分值 + 备注。 */
+function signature() {
+  const parts = rows.value.filter((r) => r.checked)
+    .map((r) => [r.rule_id, r.score]).sort()
+  parts.push(['__note__', note.value || ''])
+  return JSON.stringify(parts)
+}
+
+const dirty = computed(() => signature() !== _snap.value)
+function markClean() { _snap.value = signature() }
+
+/** 当前样本状态：草稿 / 已确认 / 有争议 / 已锁定。四个标志独立，
+ *  但用户只需要看懂「我在哪一档、下一步点哪个」。 */
+const caseState = computed(() => {
+  const c = current.value?.case
+  if (!c) return null
+  if (c.frozen) {
+    return { key: 'frozen', text: '已锁定', cls: 'st-frozen',
+             hint: '金标准已定稿，除仲裁外不可修改。要改请先解锁。' }
+  }
+  if (c.disputed) {
+    return { key: 'disputed', text: '有争议', cls: 'st-disputed',
+             hint: '已标记「AI 判定有误」。请修正命中项后点「保存修改」。' }
+  }
+  if (c.prefilled) {
+    return { key: 'draft', text: 'AI 草稿', cls: 'st-draft',
+             hint: '尚未人工确认，不计入指标 —— 点「判对」或「保存修改」后才算数。' }
+  }
+  return { key: 'confirmed', text: '已确认', cls: 'st-ok',
+           hint: '已计入指标。核对无误后可「锁定」防止以后被改动。' }
 })
+
+/** 「我只判对错」的入口：
+ *  判对 → save()：把 AI 草稿落成金标准（prefilled 转 false → 才计入指标）。
+ *  判错 → dispute()：**只打争议标记、不动标注内容**，该条继续被排除在指标外。
+ *        不直接 save 一个"错标注"：错误内容一旦以 prefilled=false 落库就会被当成
+ *        金标准计入指标，比不标更糟（指标被污染且看不出来）。 */
+async function judge(ok) {
+  if (!current.value || busy.value) return
+  if (ok) return save(false)
+  await run(async () => {
+    const res = await api.evalDispute({ case_id: current.value.case.case_id, note: note.value })
+    msg.value = res.ok
+      ? '已标记「AI 判定有误」——标注保持草稿态，不计入指标；改正命中项后再保存'
+      : (res.reason || '标记失败')
+    await refresh(); await open({ case_id: current.value.case.case_id })
+  })
+}
 const posRows = computed(() => rows.value.filter(r => r.polarity === 'positive'))
 const negRows = computed(() => rows.value.filter(r => r.polarity === 'negative'))
 
 async function save(alsoFreeze = false) {
   if (!current.value) return
-  busy.value = true; error.value = ''; msg.value = ''
-  try {
+  await run(async () => {
     localStorage.setItem('annotator', annotator.value)
     const items = rows.value.filter(r => r.checked)
       .map(r => ({ rule_id: r.rule_id, score: r.score, reason: r.reason || r.dimension }))
     const res = await api.evalSave({
       case_id: current.value.case.case_id, items, note: note.value, annotator: annotator.value,
     })
-    if (!res.ok) { error.value = res.reason || '保存失败'; busy.value = false; return }
+    if (!res.ok) { error.value = res.reason || '保存失败'; return }
     if (alsoFreeze) await api.evalFreeze({ case_id: current.value.case.case_id, frozen: true, annotator: annotator.value })
     msg.value = `已保存：${res.expected_raw_score} 分 · ${res.expected_grade} 级`
       + (res.invalid_items?.length ? `（${res.invalid_items.length} 项被丢弃）` : '')
     await refresh(); await open({ case_id: current.value.case.case_id })
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 async function toggleFreeze() {
   if (!current.value) return
-  busy.value = true
-  try {
+  // 防御性：即使按钮被绕过，也不允许「带着未保存改动去锁定」——
+  // 那会把旧内容锁住、用户的改动静默消失（最容易被踩的坑）。
+  if (!current.value.case.frozen && dirty.value) {
+    error.value = '有未保存的改动 —— 请先点「保存修改」，否则锁定的是旧内容'
+    return
+  }
+  await run(async () => {
     const res = await api.evalFreeze({ case_id: current.value.case.case_id, frozen: !current.value.case.frozen })
     await refresh(); await open({ case_id: current.value.case.case_id })
     msg.value = res.frozen ? '已冻结（除仲裁外不可修改）' : '已解冻'
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 async function doSample() {
-  busy.value = true; error.value = ''; msg.value = ''
-  try {
+  await run(async () => {
     const res = await api.evalSample({ kind: kind.value, limit: sampleN.value, min_messages: 5 })
     msg.value = `抽样完成：候选 ${res.candidates} → 新增 ${res.created} 条`
       + (res.distribution ? `｜分布 ${Object.keys(res.distribution).length} 层` : '')
     const dist = res.distribution || {}
     msg.value += '｜' + Object.entries(dist).map(([k, v]) => `${k}×${v}`).join(' ')
     await refresh()
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 async function doRun() {
-  busy.value = true; error.value = ''; msg.value = ''
-  try {
+  await run(async () => {
     const res = await api.evalStart({ kind: kind.value })
-    if (!res.ok) { error.value = res.reason || '启动失败'; busy.value = false; return }
+    if (!res.ok) { error.value = res.reason || '启动失败'; return }
     msg.value = '评估已在后台开跑（每条一次模型调用，请稍候）'
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 async function setBaseline() {
-  busy.value = true
-  try {
+  await run(async () => {
     const res = await api.evalSetBaseline({})
     msg.value = res.ok ? '已把最近一次跑分设为基线' : (res.reason || '失败')
     await refresh()
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 function reset() { current.value = null; error.value = ''; msg.value = '' }
 
 // AI 预标注：把 AI 当时的判定填成草稿 → 人工从「改草稿」开始，而不是「从零列清单」
 async function doPrefill() {
-  busy.value = true; error.value = ''; msg.value = ''
-  try {
+  await run(async () => {
     const res = await api.evalPrefill({ kind: kind.value })
     msg.value = `已预填 ${res.filled} 条草稿`
       + (res.skipped_no_baseline ? `｜${res.skipped_no_baseline} 条无 AI 判定可参考，需全手标` : '')
@@ -191,11 +239,9 @@ async function doPrefill() {
     }
     tab.value = 'prefilled'
     await refresh()
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
-const GTAG = { S: 'red', A: 'orange', B: 'blue', C: 'green', D: '' }
 const pct = (v) => (v === null || v === undefined) ? '-' : (v * 100).toFixed(1) + '%'
 const fmtMetric = (k, v) => (v === null || v === undefined) ? '-' : (k === 'rule_f1' || k === 'precision' || k === 'recall' || k === 'grade_acc' || k === 'fp_case_rate' ? pct(v) : v)
 
@@ -204,17 +250,15 @@ async function loadMetaLoop() {
 }
 
 async function runBackflow() {
-  busy.value = true; msg.value = ''
-  try {
+  await run(async () => {
     const r = await api.evalBackflow({ limit: 100 })
     msg.value = `回流完成：新增 ${r.created} 条，跳过 ${r.skipped} 条（人工判断已进入回归集）`
     loadMetaLoop()
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
-onMounted(() => { refresh(); loadRules(); loadMetaLoop(); timer = setInterval(() => { refresh() }, 8000) })
-onUnmounted(() => clearInterval(timer))
+onMounted(() => { loadRules(); loadMetaLoop() })
+usePolling(refresh, 8000)
 </script>
 
 <template>
@@ -309,7 +353,7 @@ onUnmounted(() => clearInterval(timer))
       </div>
     </div>
 
-    <div class="layout">
+    <div class="split-2col">
       <!-- 左：样本列表 -->
       <div class="card">
         <div class="card-head">样本</div>
@@ -321,11 +365,11 @@ onUnmounted(() => clearInterval(timer))
             </button>
           </div>
           <div style="display:grid;gap:8px">
-            <div class="two">
+            <div class="grid-2">
               <select v-model="kind" class="select" @change="switchKind">
                 <option v-for="k in KINDS" :key="k.key" :value="k.key">{{ k.label }}</option>
               </select>
-              <div class="row-inline">
+              <div class="inline-row">
                 <input v-model.number="sampleN" class="input" type="number" min="1" max="200" style="width:70px" />
                 <button class="btn sm" :disabled="busy" @click="doSample">抽样</button>
                 <button class="btn sm" :disabled="busy" title="把 AI 当时的判定填成草稿，人工只复核" @click="doPrefill">
@@ -334,7 +378,7 @@ onUnmounted(() => clearInterval(timer))
               </div>
             </div>
             <input v-model="filters.q" class="input" placeholder="客户 / 员工 / 会话 id" @keyup.enter="search" />
-            <div class="row-inline">
+            <div class="inline-row">
               <button class="btn" @click="search">查询</button>
               <button class="btn primary" :disabled="busy || evStatus.running" @click="doRun">
                 <i v-if="busy" class="spin"></i>跑评估
@@ -354,13 +398,13 @@ onUnmounted(() => clearInterval(timer))
                   </td>
                   <td class="mono">{{ r.msg_count }}</td>
                   <td>
-                    <span v-if="r.expected_grade" class="tag" :class="GTAG[r.expected_grade]">{{ r.expected_grade }}</span>
+                    <span v-if="r.expected_grade" class="tag" :class="gradeTag(r.expected_grade)">{{ r.expected_grade }}</span>
                     <span v-else class="muted" style="font-size:12px">—</span>
                     <span v-if="r.prefilled" class="tag orange" style="margin-left:4px"
                           title="AI 预标注草稿 —— 复核并保存后才算「已确认」">预</span>
                   </td>
                   <td>
-                    <span v-if="r.baseline_grade" class="tag" :class="GTAG[r.baseline_grade]">{{ r.baseline_grade }}</span>
+                    <span v-if="r.baseline_grade" class="tag" :class="gradeTag(r.baseline_grade)">{{ r.baseline_grade }}</span>
                     <span v-else class="muted" style="font-size:12px">—</span>
                     <span v-if="r.diff_from_baseline?.grade_changed" class="tag red" style="margin-left:4px">≠</span>
                   </td>
@@ -373,11 +417,8 @@ onUnmounted(() => clearInterval(timer))
               </tbody>
             </table>
           </div>
-          <div class="pager" v-if="list.total > filters.page_size">
-            <button class="btn sm" :disabled="filters.page <= 1" @click="goto(filters.page - 1)">上一页</button>
-            <span class="muted" style="font-size:12px">{{ filters.page }} / {{ Math.ceil(list.total / filters.page_size) }}</span>
-            <button class="btn sm" :disabled="filters.page >= Math.ceil(list.total / filters.page_size)" @click="goto(filters.page + 1)">下一页</button>
-          </div>
+        <Pager :page="filters.page" :page-size="filters.page_size"
+               :total="list.total" @go="goto" />
         </div>
       </div>
 
@@ -398,11 +439,18 @@ onUnmounted(() => clearInterval(timer))
             </div>
             <div>
               <div class="lbl">聊天记录（最多 {{ current.msg_limit }} 条）</div>
+              <div v-if="truncated" class="trunc-note">
+                会话共 <b>{{ current.case.msg_count }}</b> 条，这里只显示最近
+                <b>{{ current.msg_limit }}</b> 条 —— 更早的
+                {{ current.case.msg_count - current.msg_limit }} 条未显示。
+                <span class="muted">（所以「引用回复」里引用的原话可能找不到原消息，属正常）</span>
+                <button class="btn sm" style="margin-left:8px" :disabled="busy"
+                        @click="open({ case_id: current.case.case_id }, 5000)">加载全部</button>
+              </div>
               <div class="conv">
-                <div v-for="(l, k) in convLines" :key="k" class="bubble" :class="l.side">
-                  <span class="who">{{ l.who }}</span>{{ l.text }}
-                </div>
-                <div v-if="!convLines.length" class="muted" style="font-size:12px">无聊天记录</div>
+                <!-- 气泡渲染统一走公共组件（AGENTS.md: Reuse Before Rewrite） -->
+                <ChatBubbles :messages="current.messages || []" :text="current.conversation"
+                             empty="无聊天记录" />
               </div>
             </div>
           </div>
@@ -411,9 +459,14 @@ onUnmounted(() => clearInterval(timer))
         <div class="card">
           <div class="card-head">命中项标注（正 {{ posRows.filter(r => r.checked).length }} / 负 {{ negRows.filter(r => r.checked).length }}）</div>
           <div class="card-body" style="display:grid;gap:16px">
+            <div class="judge-bar" :class="caseState.cls">
+              <span class="st-chip">{{ caseState.text }}</span>
+              <span class="st-hint">{{ caseState.hint }}</span>
+              <span v-if="dirty" class="st-dirty">⚠️ 有未保存的改动</span>
+            </div>
             <div>
               <div class="lbl">加分项</div>
-              <div v-for="r in posRows" :key="r.rule_id" class="row">
+              <div v-for="r in posRows" :key="r.rule_id" class="kv-row">
                 <label class="ck">
                   <input type="checkbox" v-model="r.checked" :disabled="current.case.frozen && !current.case.disputed" />
                   <span>{{ r.dimension }}</span>
@@ -427,7 +480,7 @@ onUnmounted(() => clearInterval(timer))
             </div>
             <div>
               <div class="lbl">扣分项</div>
-              <div v-for="r in negRows" :key="r.rule_id" class="row">
+              <div v-for="r in negRows" :key="r.rule_id" class="kv-row">
                 <label class="ck">
                   <input type="checkbox" v-model="r.checked" :disabled="current.case.frozen && !current.case.disputed" />
                   <span>{{ r.dimension }}</span>
@@ -455,9 +508,23 @@ onUnmounted(() => clearInterval(timer))
               </span>
             </div>
             <div style="display:flex;gap:10px;flex-wrap:wrap">
-              <button class="btn primary" :disabled="busy" @click="save(false)"><i v-if="busy" class="spin"></i>保存标注</button>
-              <button class="btn" :disabled="busy" @click="save(true)">保存并冻结</button>
-              <button class="btn" :disabled="busy" @click="toggleFreeze">{{ current.case.frozen ? '解冻' : '冻结' }}</button>
+              <!-- 按钮按**状态**出现，而不是永远摆同一排 —— 少一半的犹豫 -->
+              <template v-if="!current.case.frozen">
+                <button class="btn primary" :disabled="busy" @click="judge(true)"
+                        title="把 AI 的这份判定直接存为金标准（从此计入指标）">✓ 判对</button>
+                <button class="btn" :disabled="busy" @click="judge(false)"
+                        title="只打争议标记，不动标注内容；仍不计入指标，等修正后再保存">✗ 判错</button>
+                <span class="vsep"></span>
+                <button class="btn sm" :disabled="busy || !dirty" @click="save(false)"
+                        title="保存你改动过的命中项">{{ dirty ? '保存修改 ●' : '保存修改' }}</button>
+                <button class="btn sm" :disabled="busy || dirty" @click="save(true)"
+                        :title="dirty ? '有未保存的改动 —— 先点「保存修改」才能锁定'
+                                      : '存为金标准并锁定：此后除仲裁外不可修改'">🔒 锁定</button>
+              </template>
+              <template v-else>
+                <button class="btn sm" :disabled="busy" @click="toggleFreeze"
+                        title="解锁后才能修改标注">🔓 解锁后修改</button>
+              </template>
             </div>
             <div v-if="current.case.annotator" class="muted" style="font-size:12px">
               最近标注：{{ current.case.annotator }} · {{ fmtRelative(Date.parse(current.case.updated_at) / 1000) }}
@@ -480,28 +547,27 @@ onUnmounted(() => clearInterval(timer))
 </template>
 
 <style scoped>
-.layout { display: grid; grid-template-columns: 420px 1fr; gap: 16px; align-items: start; }
-@media (max-width: 1200px) { .layout { grid-template-columns: 1fr; } }
-.lbl { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 6px; font-weight: 500; }
-.two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.row-inline { display: flex; gap: 8px; align-items: center; }
-.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-.tabs button {
-  padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel);
-  font-size: 12.5px; cursor: pointer; font-family: inherit; color: var(--text-2); display: inline-flex; gap: 6px; align-items: center;
-}
-.tabs button.on { border-color: var(--brand); background: var(--brand-weak); color: var(--brand); font-weight: 600; }
-.cnt { background: var(--panel-2); border-radius: 99px; padding: 0 6px; font-size: 11px; border: 1px solid var(--border); }
 tr.sel { background: var(--brand-weak) !important; }
-.pager { display: flex; align-items: center; gap: 12px; justify-content: center; }
-.row { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 5px 0; }
 .ck { display: flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; flex-wrap: wrap; }
 .conv { max-height: 380px; overflow: auto; background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
-.bubble { font-size: 12.5px; line-height: 1.6; max-width: 84%; padding: 7px 10px; border-radius: 10px;
-  background: var(--panel); border: 1px solid var(--border); word-break: break-all; }
-.bubble.right { margin-left: auto; background: var(--brand-weak); border-color: #d3e1ff; }
-.bubble .who { display: block; font-size: 10.5px; color: var(--text-3); margin-bottom: 2px; }
+/* 气泡样式已移入 components/ChatBubbles.vue（AGENTS.md: Reuse Before Rewrite）——
+   这里不再重复定义，避免改一处忘另一处。 */
+.trunc-note { font-size: 12px; line-height: 1.7; color: #8a5a00;
+              background: #fff8e8; border: 1px solid #f0d79a;
+              border-radius: 7px; padding: 7px 10px; margin-bottom: 8px; }
+.judge-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+             border-radius: 8px; padding: 9px 12px;
+             background: var(--brand-weak); border: 1px solid #d3e1ff; }
+.judge-bar.st-draft { background: #fff8e8; border-color: #f0d79a; }
+.judge-bar.st-disputed { background: #fff1ec; border-color: #f3c3b3; }
+.judge-bar.st-ok { background: #eef9f1; border-color: #b7e0c4; }
+.judge-bar.st-frozen { background: #eef2f7; border-color: #c8d5e4; }
+.st-chip { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 10px;
+           background: rgba(255, 255, 255, .75); border: 1px solid rgba(0, 0, 0, .08); }
+.st-hint { font-size: 12.5px; color: var(--text-2); }
+.st-dirty { margin-left: auto; font-size: 12px; color: #b45309; font-weight: 600; }
+.vsep { width: 1px; align-self: stretch; background: var(--border); margin: 0 2px; }
 .metrics { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; }
 .metrics .m { text-align: center; min-width: 74px; }
 .metrics .mv { font-size: 21px; font-weight: 700; line-height: 1.15; }

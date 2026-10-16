@@ -14,33 +14,25 @@
 
 ⚠️ 全部用**合成数据 / 打桩**，不真调 LLM；跑完清理，断言不依赖生产现状。
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 import time
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
 
 import analyze                   # noqa: E402
 import api_scoring               # noqa: E402
 import db                        # noqa: E402
 import scoring_service as ss     # noqa: E402
 
-PASSED, FAILED = [], []
 _REL = "OBSTEST:subject"
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 def _cleanup():
@@ -56,11 +48,11 @@ def _cleanup():
     db.execute("DELETE FROM negative_review WHERE relationship_key LIKE %s", (like,))
     db.execute("DELETE FROM audit_log WHERE action='set_setting'")
     db.execute("DELETE FROM audit_log WHERE actor='obs-test'")
-    db.execute("DELETE FROM app_setting WHERE key = %s", ("llm_timeout_sec",))
-    db.execute("DELETE FROM app_setting WHERE key = %s", ("scoring_max_sessions",))
+    delete_rows("app_setting", key="llm_timeout_sec")
+    delete_rows("app_setting", key="scoring_max_sessions")
     # ⚠️ `writeback_mode` 分支会写 app_setting（即使值没变也写）——
     # 测完必须清掉，否则会在生产配置里留下一个本不存在的键（踩到过）。
-    db.execute("DELETE FROM app_setting WHERE key = %s", ("score_writeback_mode",))
+    delete_rows("app_setting", key="score_writeback_mode")
 
 
 def _pick_session(min_msgs=4):
@@ -133,10 +125,10 @@ def test_llm_timeout_config():
     try:
         check("get_settings 暴露 llm_timeout_sec", "llm_timeout_sec" in api_scoring.get_settings())
         db.set_setting("llm_timeout_sec", "45")
-        check("写入后可读回", ss.setting_int("llm_timeout_sec", "LLM_TIMEOUT_SEC", 0) == 45)
+        check("写入后可读回", db.setting_int("llm_timeout_sec", "LLM_TIMEOUT_SEC", 0) == 45)
         db.execute("DELETE FROM app_setting WHERE key='llm_timeout_sec'")
         check("默认 0（回退 llm.TIMEOUT）",
-              ss.setting_int("llm_timeout_sec", "LLM_TIMEOUT_SEC", 0) == 0)
+              db.setting_int("llm_timeout_sec", "LLM_TIMEOUT_SEC", 0) == 0)
 
         # 透传验证：打桩 analyze.analyze 捕获 kwargs
         captured = {}
@@ -284,8 +276,8 @@ def test_session_secs():
               f'{d.get("session_secs_p50")} / {d.get("session_secs_p95")} / {d.get("session_secs_max")}')
     finally:
         if run_id:
-            db.execute("DELETE FROM scoring_run WHERE id=%s", (run_id,))
-            db.execute("DELETE FROM audit_log WHERE target=%s", (f"run:{run_id}",))
+            delete_rows("scoring_run", id=run_id)
+            delete_rows("audit_log", target=f"run:{run_id}")
 
 
 # ============================================================ 8. 观测汇总仍在
@@ -317,8 +309,8 @@ def test_observability_regression():
               str(sorted(k for k in d if k.startswith(("hook", "session", "tool")))))
     finally:
         if run_id:
-            db.execute("DELETE FROM scoring_run WHERE id=%s", (run_id,))
-            db.execute("DELETE FROM audit_log WHERE target=%s", (f"run:{run_id}",))
+            delete_rows("scoring_run", id=run_id)
+            delete_rows("audit_log", target=f"run:{run_id}")
 
 
 # ============================================================

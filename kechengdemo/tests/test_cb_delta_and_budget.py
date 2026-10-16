@@ -10,37 +10,25 @@
 
 跑法：``.venv\\Scripts\\python.exe tests/test_cb_delta_and_budget.py``
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import re
 import sys
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "backend"))
-sys.path.insert(0, BASE)
+from _harness import ROOT, check, delete_rows, summary  # noqa: E402
 
 import db                        # noqa: E402
+import scoring_context as sctx   # noqa: E402  水位/增量取数的实现位置（P3 后）
 import scoring_service as ss     # noqa: E402
 
-_TOTAL, _FAILED = 0, 0
 _REL = "CBTEST:delta-probe"      # 合成关系键：水位只认它，不碰任何真实客户
 _CODE = re.compile(r"^#\d{3,} ")
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 def _strip_time(lines):
@@ -69,7 +57,7 @@ def _readable(sid):
 
 def _mk_watermark(staff_id, wm):
     """给合成关系键插一条评估，只为了提供水位（不产生任何真实业务痕迹）。"""
-    db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key = %s", (_REL,))
+    delete_rows("customer_intent_assessment", relationship_key=_REL)
     # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
     try: ss.repair_current_flags()
     except Exception: pass
@@ -80,7 +68,7 @@ def _mk_watermark(staff_id, wm):
 
 
 def _clear_watermark():
-    db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key = %s", (_REL,))
+    delete_rows("customer_intent_assessment", relationship_key=_REL)
     # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
     try: ss.repair_current_flags()
     except Exception: pass
@@ -92,7 +80,7 @@ def _set(key, val):
 
 def _clear(*keys):
     for k in keys:
-        db.execute("DELETE FROM app_setting WHERE key = %s", (k,))
+        delete_rows("app_setting", key=k)
 
 
 def main():
@@ -114,23 +102,31 @@ def main():
         print("\n--- 1. ③ 增量取数（水位过滤 / 软上限）---")
         mid = times[len(times) // 2 - 1]
         _mk_watermark(S["staff_id"], mid)
-        wm = ss._watermark(_REL)
+        # 水位 / 增量取数已随 `build_context` 一起搬到中立模块 `scoring_context`
+        # （P3 拆环）；这里按新位置引用（白盒断言的就是那段逻辑本身）。
+        wm = sctx._watermark(_REL)
         check("水位读回（来自 last_msg_time）", wm == int(mid), f"{wm} vs {mid}")
-        d = ss._delta_rows(S["staff_id"], S["session_id"], wm, 200)
+        d = sctx._delta_rows(S["staff_id"], S["session_id"], wm, 200)
         check("③ 只含水位之后的消息",
               all(int(r["msg_time"]) > int(mid) for r in d), f"n={len(d)}")
-        check("③ 恰好等于水位之后的总数",
-              len(d) == sum(1 for t in times if t > int(mid)), f"{len(d)}")
+        # ⚠️ 必须带上**软上限**：本测试借的是真实库里"消息最多"的会话，它一旦超过
+        #    400 条，中位数之后就会多于 200 —— 按原写法（只比总数）必然失败。
+        #    实测踩到：2026-10-16 全量重拉把样本会话从 ~400 条涨到 693 条，
+        #    中位数之后 347 条 > 200 → 这条断言按构造不可能成立。
+        #    软上限本身由下面那句（水位为空 → 截断到 200）单独守着。
+        _after = sum(1 for t in times if t > int(mid))
+        check("③ = 水位之后的消息数（受 200 软上限约束）",
+              len(d) == min(200, _after), f"{len(d)} vs min(200, {_after})")
 
-        d_all = ss._delta_rows(S["staff_id"], S["session_id"], None, 200)
+        d_all = sctx._delta_rows(S["staff_id"], S["session_id"], None, 200)
         check("水位为空 → 增量 = 全量（受软上限截断到 200）", len(d_all) == 200, str(len(d_all)))
         check("超上限时保留的是**最新的**那批",
               [r["message_id"] for r in d_all] == ids[-200:], "取的不是最新 200 条")
 
         _clear_watermark()
         _set("ctx_delta_max", 50)
-        d50 = ss._delta_rows(S["staff_id"], S["session_id"], None,
-                             ss.setting_int("ctx_delta_max", "CTX_DELTA_MAX", 200))
+        d50 = sctx._delta_rows(S["staff_id"], S["session_id"], None,
+                             db.setting_int("ctx_delta_max", "CTX_DELTA_MAX", 200))
         check("ctx_delta_max 生效（软上限 50）", len(d50) == 50, str(len(d50)))
         _clear("ctx_delta_max")
 
@@ -172,11 +168,24 @@ def main():
                 _clear("ctx_fallback_min")
 
             # ── 4. V4 预算：⑤ 第一个被砍，③ 次之 ─────────────────────────
-            # 把阈值设回 60，让 ⑤ 存在，才验证得了「先砍 ⑤」这一步
+            # 把阈值设回 60，让 ⑤ 存在，才验证得了「先砍 ⑤」这一步。
+            #
+            # ⚠️ ③ 的规模必须**由本测试自己定**（`ctx_delta_max`），不能依赖
+            #    "借来的会话正好不大"：⑤（兜底窗口）只在 `kept < ctx_fallback_min`
+            #    时才补，而 ③ 越大越不需要兜底。实测踩到：样本会话涨到 693 条后
+            #    ③ 恒被 200 软上限撑满 → ⑤ 再不出现 → 这几条断言必然失败
+            #    （trim 为空、seg_fallback 恒为 55）。固定 ③=30 条后，条件成立且与数据无关。
             print("\n--- 4. V4 预算与裁剪顺序 ---")
+            _set("ctx_delta_max", 30)
             _set("ctx_fallback_min", 60)
             try:
-                _set("ctx_tokens_max", 2500)
+                # 阈值由**实测**推导，而不是写死 2500（写死就等于把"样本会话恰好多大"编进断言）：
+                # 先不限预算量一次，再压到它的 70% → 必然超限，且砍掉 ⑤ 后必然达标。
+                _clear("ctx_tokens_max")
+                _base = ss.build_context(S["staff_id"], S["session_id"],
+                                         rel_key=_REL, session_meta=meta)["stats"]
+                _cap = max(300, int(_base["tokens"] * 0.7))
+                _set("ctx_tokens_max", _cap)
                 try:
                     c3 = ss.build_context(S["staff_id"], S["session_id"], rel_key=_REL, session_meta=meta)
                     s3 = c3["stats"]
@@ -203,7 +212,7 @@ def main():
                 finally:
                     _clear("ctx_tokens_max")
             finally:
-                _clear("ctx_fallback_min")
+                _clear("ctx_fallback_min", "ctx_delta_max")
 
             # ── 5. V3 确定性（③⑤ 合并后仍可复现）─────────────────────────
             print("\n--- 5. V3 确定性 ---")
@@ -261,14 +270,15 @@ def main():
         # ── 10. 评分链路两条路径装配口径一致（图 / 旧）────────────────────────
         print("\n--- 10. 图路径与旧路径同源取数 ---")
         import graph_session           # noqa: E402
-        orig_pin = graph_session.ss.build_context
+        # ⚠️ 打桩点必须是真正的实现位置（见 test_cc_memory_segments 的说明）
+        orig_pin = graph_session.scoring_context.build_context
         seen = {}
 
         def spy(*a, **kw):
             seen.update(kw)
             return orig_pin(*a, **kw)
 
-        graph_session.ss.build_context = spy
+        graph_session.scoring_context.build_context = spy
         try:
             import analyze             # noqa: E402
 
@@ -299,15 +309,13 @@ def main():
                 try: ss.repair_current_flags()
                 except Exception: pass
         finally:
-            graph_session.ss.build_context = orig_pin
+            graph_session.scoring_context.build_context = orig_pin
 
     finally:
         _clear_watermark()
         _clear("ctx_delta_max", "ctx_tokens_max", "ctx_key_history", "ctx_fallback_min")
 
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

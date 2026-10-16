@@ -33,10 +33,10 @@
 **旧任务后到会把标签写回旧等级**。故 drain 时：
 **同一 `relationship_key` 只处理 `outbox_id` 最大的那条**，更早的标 `superseded`。
 """
-import random
 import time
 
 import db
+import http_client                  # 全项目唯一的退避实现（Reuse Before Rewrite）
 
 #: 标签组名（级别标签都挂在这个组下；可用设置覆盖）
 DEFAULT_TAG_GROUP = "意向等级"
@@ -58,14 +58,14 @@ OFF_DEFER_SECONDS = 600
 
 def tag_group() -> str:
     import scoring_service as ss
-    return (ss.setting("grade_tag_group", "GRADE_TAG_GROUP", DEFAULT_TAG_GROUP)
+    return (db.setting("grade_tag_group", "GRADE_TAG_GROUP", DEFAULT_TAG_GROUP)
             or DEFAULT_TAG_GROUP).strip()
 
 
 def mode() -> str:
     """实时读开关（`off` / `dry_run` / `live`）。**与分数回写开关无关。**"""
     import scoring_service as ss
-    m = str(ss.setting("grade_tag_mode", "GRADE_TAG_MODE", "off") or "off").strip().lower()
+    m = str(db.setting("grade_tag_mode", "GRADE_TAG_MODE", "off") or "off").strip().lower()
     return m if m in ("off", "dry_run", "live") else "off"
 
 
@@ -232,13 +232,13 @@ def enqueue(conn, assessment_id, relationship_key, staff_id, external_user_id,
 # ============================================================ 排空（drain worker）
 
 def _delay(attempts: int) -> int:
-    """指数退避 + 上限 + **±30% 抖动**（与 `outbox._delay` 同一口径）。
+    """第 attempts 次失败后的等待秒数 —— 统一走 `http_client.backoff_seconds()`。
 
-    等级标签与分数回写走的是**同一条微伴通道**，两边都抖动才有意义 ——
-    只抖一边，另一边的重试尖峰照样会打到微伴。
+    原先本函数与 `outbox._delay()` 是**逐字相同的两份**；等级标签与分数回写走的是
+    **同一条微伴通道**，两边口径必须一致（只抖一边，另一边的重试尖峰照样打到微伴）。
     """
-    raw = min(BACKOFF_BASE * (2 ** max(0, attempts - 1)), BACKOFF_CAP)
-    return max(1, int(raw * random.uniform(0.70, 1.30)))
+    return max(1, int(http_client.backoff_seconds(
+        attempts - 1, BACKOFF_BASE, cap=BACKOFF_CAP)))
 
 
 def _claim(conn, limit: int) -> tuple:
@@ -249,13 +249,8 @@ def _claim(conn, limit: int) -> tuple:
        —— 否则乱序投递会把标签写回旧等级（A→S→A 的经典竞态）
     ③ 标记 sending
     """
-    conn.execute(
-        """UPDATE grade_tag_outbox
-              SET status='failed', next_attempt_at=now(), updated_at=now(),
-                  last_errmsg = COALESCE(last_errmsg,'') || ' [投递中断，已回收]'
-            WHERE status='sending'
-              AND updated_at < now() - make_interval(secs => %s)""",
-        (STUCK_SECONDS,))
+    db.reclaim_stuck_sending(conn, "grade_tag_outbox", STUCK_SECONDS,
+                             " [投递中断，已回收]")
     cur = conn.execute(
         """UPDATE grade_tag_outbox o
               SET status='superseded', updated_at=now(),

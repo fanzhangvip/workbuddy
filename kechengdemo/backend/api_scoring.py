@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """客户意向评分接口（评分中心：可观测 / 可评估）。"""
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Depends, Query
 
 import config
 import db
@@ -11,6 +11,8 @@ import scheduler
 import scoring_service as ss
 import security
 import settings_registry
+import api_common
+import api_guard
 import audit
 import policy
 import task_runtime
@@ -142,10 +144,8 @@ def assessments(grade: str = "", staff_id: str = "", min_score: int = None,
     if date_to:
         cond.append("a.analyzed_at < (%(date_to)s::date + 1)"); params["date_to"] = date_to
 
-    where = " AND ".join(cond)
-    params["limit"] = page_size
-    params["offset"] = (max(1, page) - 1) * page_size
-    items = db.query(f"""
+    return api_common.paginate(
+        """
         SELECT a.assessment_id, a.relationship_key, a.staff_id, a.staff_name,
                a.target_id, a.target_name, a.session_id, a.raw_score, a.positive_total,
                a.negative_total, a.grade, a.model_confidence, a.session_confidence,
@@ -153,15 +153,12 @@ def assessments(grade: str = "", staff_id: str = "", min_score: int = None,
                a.rule_version, a.writeback_status, a.review_status, a.analyzed_at,
                a.last_msg_time,
                (SELECT count(*) FROM chat_message m
-                 WHERE m.staff_id = a.staff_id AND m.session_id = a.session_id) AS session_msg_count
-          FROM customer_intent_assessment a
-         WHERE {where}
-         ORDER BY a.assessment_id DESC
-         LIMIT %(limit)s OFFSET %(offset)s""", params)
-    total = db.query_one(
-        f"SELECT count(*) AS n FROM customer_intent_assessment a WHERE {where}",
-        {k: v for k, v in params.items() if k not in ("limit", "offset")})
-    return {"items": items, "total": (total or {}).get("n", 0), "page": page, "page_size": page_size}
+                 WHERE m.staff_id = a.staff_id AND m.session_id = a.session_id)
+                 AS session_msg_count
+          FROM customer_intent_assessment a""",
+        "SELECT count(*) AS n FROM customer_intent_assessment a",
+        " AND ".join(cond), params, order_by="a.assessment_id DESC",
+        page=page, page_size=page_size)
 
 
 @router.get("/assessment")
@@ -178,7 +175,7 @@ def assessment_detail(assessment_id: int):
     return a
 
 
-@router.post("/session")
+@router.post("/session", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def score_session(payload: dict = Body(default={})):
     """对单个会话立即评分（「重新评分」按钮）。"""
     return service.score_session(payload.get("staff_id"), payload.get("session_id"))
@@ -203,7 +200,7 @@ def get_schedule():
     return scheduler.schedule_info()
 
 
-@router.post("/schedule")
+@router.post("/schedule", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def set_schedule(payload: dict = Body(default={})):
     return scheduler.set_scoring_interval(int(payload.get("interval_minutes") or 0))
 
@@ -245,7 +242,7 @@ def grade_tags_status():
     return grade_tag.stats()
 
 
-@router.post("/grade-tags/sync")
+@router.post("/grade-tags/sync", dependencies=[Depends(api_guard.require("admin"))])
 def grade_tags_sync(payload: dict = Body(default={})):
     """扫描微伴标签库，找出「意向等级」组下的 S/A/B/C/D 并缓存 `tag_id`。
 
@@ -257,7 +254,7 @@ def grade_tags_sync(payload: dict = Body(default={})):
                                dry_run=bool(payload.get("dry_run", True)))
 
 
-@router.post("/grade-tags/align")
+@router.post("/grade-tags/align", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def grade_tags_align(payload: dict = Body(default={})):
     """**人工触发**：把当前等级对齐到微伴标签（补历史 / 修正漂移）。
 
@@ -295,27 +292,40 @@ def rules_gate(kind: str = "", limit: int = 0):
     return eval_runner.gate_decision(kind=kind, limit=limit, run_if_possible=False)
 
 
-@router.post("/rules/publish")
+@router.post("/rules/publish", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def rules_publish(payload: dict = Body(default={})):
     """发布规则（闸6 硬拦截）：**先跑评估集，指标不降才允许生效**。
 
     - `force=true` 可强行发布（会写审计留痕，便于事后追责）
     - 无基线 / 无标注样本时返回 `decidable=false` 并放行，但**明确告知没有门禁保护**
+    - `eval_run_id`（两步发布）：把 `POST /api/eval/start` 跑出来的 `run_id` 传进来，
+      直接用它的指标比基线 —— **不再在发布请求里同步跑 16 分钟评估**
+      （前端 `axios` 超时 120 秒，改造前会"浏览器报失败、后端其实还在跑"）。
+      受开关 `eval_publish_requires_run` 控制（**默认关**，行为与改造前一致）。
     """
     import eval_runner
     key = payload.get("request_key")
     force = bool(payload.get("force"))
+    eval_run_id = payload.get("eval_run_id")
+    require_run = db.setting_bool("eval_publish_requires_run", "EVAL_PUBLISH_REQUIRES_RUN", False)
 
     def _do():
+        if require_run and not eval_run_id and not force:
+            return {"ok": False,
+                    "reason": "已开启「发布前必须先跑评估集」（eval_publish_requires_run）："
+                              "请先 POST /api/eval/start 跑一轮（后台，约十几分钟），"
+                              "轮询 /api/eval/status 拿到 run_id，再带 eval_run_id 发布；"
+                              "或显式 force=true（会留痕）。"}
         dec = eval_runner.gate_decision(kind=payload.get("kind") or "",
                                         limit=int(payload.get("limit") or 0),
-                                        run_if_possible=True)
+                                        run_if_possible=not require_run,
+                                        eval_run_id=eval_run_id)
         if dec.get("blocked") and not force:
-            ss._audit(security.actor(), "rule_publish_blocked", f"rv:{ss.current_rule_version()}",
+            audit.record_action(security.actor(), "rule_publish_blocked", f"rv:{ss.current_rule_version()}",
                       {"diffs": dec.get("diffs")})
             return {"ok": False, "reason": dec.get("reason"), "gate": dec}
         res = ss.sync_rules()
-        ss._audit(security.actor(), "rule_publish", f"rv:{res.get('rule_version')}",
+        audit.record_action(security.actor(), "rule_publish", f"rv:{res.get('rule_version')}",
                   {"gate": {k: dec.get(k) for k in ("enabled", "has_baseline",
                                                     "decidable", "gate_passed", "blocked")},
                    "forced": force, "rules": res.get("rules")})
@@ -332,7 +342,7 @@ def sa_review(scope: str = ""):
     返回「当前有效」的 S/A 客户 + 他们的待复核状态 —— 早会要的是**一份名单**，
     而不是一个启动按钮。默认等级范围取 `public_class_grade_scope`（S,A）。
     """
-    grades = [g.strip().upper() for g in (scope or ss.setting(
+    grades = [g.strip().upper() for g in (scope or db.setting(
         "public_class_grade_scope", "PUBLIC_CLASS_GRADE_SCOPE", "S,A")).split(",") if g.strip()]
     items = db.query(
         """SELECT a.assessment_id, a.staff_id, a.staff_name, a.target_id, a.target_name,
@@ -345,7 +355,7 @@ def sa_review(scope: str = ""):
     return {"scope": grades, "count": len(items), "items": items}
 
 
-@router.post("/public-class-review")
+@router.post("/public-class-review", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def public_class_review(payload: dict = Body(default={})):
     """公开课复核（架构 §2.1 F2，D3：**不定期 → 手动按钮**）。
 
@@ -360,7 +370,7 @@ def public_class_review(payload: dict = Body(default={})):
     if mode not in ("before", "after"):
         return {"ok": False, "reason": "mode 只能是 before / after"}
     grades = [g.strip().upper() for g in str(
-        payload.get("scope") or ss.setting("public_class_grade_scope",
+        payload.get("scope") or db.setting("public_class_grade_scope",
                                            "PUBLIC_CLASS_GRADE_SCOPE", "S,A")).split(",")
         if g.strip()]
     key = payload.get("request_key")
@@ -371,7 +381,7 @@ def public_class_review(payload: dict = Body(default={})):
                             min_messages=int(payload.get("min_messages") or 0),
                             force=False,                    # 增量刷新（D3）
                             triggered_by="public_class", grades=grades)
-        ss._audit(security.actor(), "public_class_review", f"mode:{mode}",
+        audit.record_action(security.actor(), "public_class_review", f"mode:{mode}",
                   {"mode": mode, "grades": grades, "started": bool(res.get("ok")),
                    "reason": res.get("reason")})
         return {"ok": bool(res.get("ok")), "mode": mode, "scope": grades,
@@ -384,15 +394,15 @@ def public_class_review(payload: dict = Body(default={})):
 @router.get("/retention")
 def retention_plan(days: int = None):
     """数据保留预演（边界4）：算出各表会被删多少行。**只读，不删任何数据。**"""
-    d = days if days is not None else ss.setting_int("data_retention_days",
+    d = days if days is not None else db.setting_int("data_retention_days",
                                                      "DATA_RETENTION_DAYS", 0)
     return retention.plan(int(d or 0))
 
 
-@router.post("/retention/purge")
+@router.post("/retention/purge", dependencies=[Depends(api_guard.require("admin"))])
 def retention_purge(payload: dict = Body(default={})):
     """执行数据保留清理。**必须显式传 `confirm=true`** 才会真删。"""
-    days = int(payload.get("days") or ss.setting_int("data_retention_days",
+    days = int(payload.get("days") or db.setting_int("data_retention_days",
                                                      "DATA_RETENTION_DAYS", 0))
     if not payload.get("confirm"):
         return {**retention.plan(days), "dry_run": True,
@@ -406,9 +416,9 @@ def get_settings():
     """运行时配置全量读取。
 
     ⚠️ **键/类型/默认值一律来自 `settings_registry`**（代码评审 P2-10）：
-    改造前这里是 62 行手写 `ss.setting_int("ctx_window_size", "CTX_WINDOW_SIZE", 60)`，
+    改造前这里是 62 行手写 `db.setting_int("ctx_window_size", "CTX_WINDOW_SIZE", 60)`，
     与写侧的 46 项白名单元组**各存一份** → 新增配置极易只改一侧。
-    现在两侧同源，无法漂移。取值仍走 `ss.setting_*`（app_setting > .env > 默认），
+    现在两侧同源，无法漂移。取值仍走 `db.setting_*`（app_setting > .env > 默认），
     **行为逐字不变**（`tests/test_settings_registry.py` 做逐键等值对比）。
 
     少数「计算值 / 非 app_setting 来源」的键仍在此显式给出（见下方注释）。
@@ -427,16 +437,16 @@ def get_settings():
     # ⚠️ 写进响应用的键名是 `api_key`（历史对外名），**不是** app_setting 键名 ——
     # 少数键两者不同（如 max_sessions ← scoring_max_sessions），用 app_setting 键名
     # 会直接破坏前端读取（改名是破坏性变更，不是重构）。
-    fn = {settings_registry.INT: ss.setting_int,
-          settings_registry.BOOL: ss.setting_bool,
-          settings_registry.FLOAT: ss.setting_float,
-          settings_registry.STR: ss.setting}
+    fn = {settings_registry.INT: db.setting_int,
+          settings_registry.BOOL: db.setting_bool,
+          settings_registry.FLOAT: db.setting_float,
+          settings_registry.STR: db.setting}
     for spec in settings_registry.SETTINGS:
         out[spec.api_key] = settings_registry.typed_get(spec, fn[spec.type])
     return out
 
 
-@router.post("/settings")
+@router.post("/settings", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def set_settings(payload: dict = Body(default={})):
     """运行时调整：回写模式 / 单次会话上限 / 最少消息数 / 是否取标签 / 预处理层 / 契约参数。
 
@@ -465,8 +475,7 @@ def _apply_settings(payload: dict):
         # ⚠️ 保留原有 action 名（`writeback_mode`）**不改**成 `set_setting` ——
         # 已有审计查询/前端可能按这个名字过滤，改名字是行为变更而非重构。
         db.set_setting("score_writeback_mode", m)
-        db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-                   (security.actor(), "writeback_mode", m, db.as_json({"mode": m})))
+        audit.record_action(security.actor(), "writeback_mode", m, {"mode": m})
         changed.append("score_writeback_mode")
     # ---- D2-1 等级标签开关：**独立于分数回写**，且默认 off ----
     # 为什么单独一个分支（而不是并进下面的通用循环）：需要校验取值，
@@ -478,11 +487,8 @@ def _apply_settings(payload: dict):
         old = db.get_setting("grade_tag_mode")
         if str(old or "off") != gm:
             db.set_setting("grade_tag_mode", gm)
-            db.execute("INSERT INTO audit_log (actor, action, target, detail) "
-                       "VALUES (%s,%s,%s,%s)",
-                       (security.actor(), "grade_tag_mode", gm,
-                        db.as_json({"mode": gm, "old": old or "off",
-                                    "scope": "仅等级标签，不影响分数回写"})))
+            audit.record_action(security.actor(), "grade_tag_mode", gm, {"mode": gm, "old": old or "off",
+                                    "scope": "仅等级标签，不影响分数回写"})
             changed.append("grade_tag_mode")
     # ⚠️ 白名单**不再手写** —— 与读侧同源（`settings_registry.WRITABLE`）。
     # 改造前这里是 46 项手写元组、读侧另有 62 行手工取值，两份清单靠约定同步：
@@ -493,7 +499,11 @@ def _apply_settings(payload: dict):
             db.set_setting(skey, payload[key])
             # 值没变则不留痕（避免「点一次保存刷一堆无意义记录」）
             if str(old) != str(payload[key]):
-                _audit_setting(skey, old, payload[key])
+                audit.record_action(
+                    security.actor(), "set_setting", skey,
+                    {"key": skey,
+                     "old": None if old is None else str(old),
+                     "new": None if payload[key] is None else str(payload[key])})
                 changed.append(skey)
     # 早会时刻 / 保留期 改了要**立即生效**（否则得重启后端，用户会以为设置没生效）
     if any(k in changed for k in ("scoring_morning_cron", "data_retention_days")):
@@ -502,17 +512,6 @@ def _apply_settings(payload: dict):
         except Exception as e:                      # noqa: BLE001
             print(f"[settings] 重排定时任务失败（不影响配置保存）：{e}")
     return {"ok": True, "changed": changed, **get_settings()}
-
-
-def _audit_setting(key: str, old, new) -> None:
-    """写一条配置变更审计（**失败不影响配置生效** —— 审计是旁路观测）。"""
-    try:
-        db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-                   (security.actor(), "set_setting", key,
-                    db.as_json({"key": key, "old": None if old is None else str(old),
-                                "new": None if new is None else str(new)})))
-    except Exception as e:                      # noqa: BLE001
-        print(f"[settings] 写 audit_log 失败（不影响配置）：{e}")
 
 
 # ============================================================================
@@ -570,7 +569,7 @@ def task_detail(task_id: int, steps: int = 50):
     return {"task": t, "steps": rows, "approvals": pend}
 
 
-@router.post("/tasks/{task_id}/resume")
+@router.post("/tasks/{task_id}/resume", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def resume_task(task_id: int):
     """从检查点**新建**任务续跑（源任务历史不变）。
 
@@ -581,7 +580,7 @@ def resume_task(task_id: int):
                                 lambda: task_runtime.resume(task_id))
 
 
-@router.post("/tasks/{task_id}/cancel")
+@router.post("/tasks/{task_id}/cancel", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def cancel_task(task_id: int, payload: dict = Body(default={})):
     """取消任务（终态，不可迁出）。"""
     try:
@@ -606,7 +605,7 @@ def list_approvals(status: str = "pending", limit: int = 50):
     return {"items": rows}
 
 
-@router.post("/approvals/{request_id}")
+@router.post("/approvals/{request_id}", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def decide_approval(request_id: int, payload: dict = Body(default={})):
     """审批：`{"approved": true, "note": "..."}`。通过 → 任务回 running；驳回 → cancelled。"""
     approve = bool(payload.get("approved"))
@@ -616,7 +615,7 @@ def decide_approval(request_id: int, payload: dict = Body(default={})):
             request_id, approve=approve, note=(payload.get("note") or "").strip()))
 
 
-@router.get("/audit/tool")
+@router.get("/audit/tool", dependencies=[Depends(api_guard.require("admin"))])
 def tool_audit_list(tool_name: str = "", actor_id: str = "",
                     decision: str = "", result_status: str = "",
                     days: int = 7, limit: int = 100):
@@ -638,7 +637,7 @@ def tool_audit_list(tool_name: str = "", actor_id: str = "",
     return {"items": rows, "counts": audit.stats().get("counts")}
 
 
-@router.post("/audit/export")
+@router.post("/audit/export", dependencies=[Depends(api_guard.require("admin"))])
 def tool_audit_export(payload: dict = Body(default={})):
     """导出某天的工具审计为 JSONL（合规留存：追加写、按天轮转、可离线校验）。
 

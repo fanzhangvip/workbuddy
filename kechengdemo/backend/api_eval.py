@@ -9,10 +9,14 @@
 """
 import json
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 from fastapi.responses import Response
 
+import api_common
+import api_guard
+import audit
 import db
+import eval_case_repo
 import eval_runner
 import meta_loop
 import rules as rules_mod
@@ -32,6 +36,11 @@ def stats():
           (SELECT count(*) FROM eval_case WHERE expected_items IS NOT NULL)  AS labeled,
           (SELECT count(*) FROM eval_case WHERE expected_items IS NULL)      AS unlabeled,
           (SELECT count(*) FROM eval_case WHERE prefilled)                   AS prefilled,
+          -- 草稿**带内容**（= 保存过或预标注过，但都不是金标准）。
+          -- 与 `confirmed` 的区别是本项目踩过的坑：保存路径曾不清 `prefilled`，
+          -- 于是"人工确认过"在门禁眼里等于 0 条；这个计数让那种状态可见。
+          (SELECT count(*) FROM eval_case
+             WHERE prefilled AND expected_items IS NOT NULL)                 AS prefilled_with_content,
           (SELECT count(*) FROM eval_case
              WHERE expected_items IS NOT NULL AND NOT prefilled)             AS confirmed,
           (SELECT count(*) FROM eval_case WHERE frozen)                      AS frozen,
@@ -75,22 +84,21 @@ def list_cases(kind: str = "", status: str = "", q: str = "",
         cond.append("(target_name ILIKE %(q)s OR staff_name ILIKE %(q)s OR session_id ILIKE %(q)s)")
         params["q"] = f"%{q}%"
 
-    where = " AND ".join(cond)
-    params["limit"], params["offset"] = page_size, (max(1, page) - 1) * page_size
-    items = db.query(f"""
+    res = api_common.paginate(
+        """
         SELECT case_id, kind, staff_id, session_id, target_id, staff_name, target_name,
                msg_count, last_msg_time, expected_items, expected_raw_score, expected_grade,
                baseline_raw_score, baseline_grade, baseline_rule_version, baseline_at,
                source, disputed, annotator, prefilled, frozen, note, created_at, updated_at
-          FROM eval_case WHERE {where}
-         ORDER BY prefilled DESC, (expected_items IS NULL) DESC, case_id DESC
-         LIMIT %(limit)s OFFSET %(offset)s""", params)
-    total = db.query_one(f"SELECT count(*) AS n FROM eval_case WHERE {where}",
-                         {k: v for k, v in params.items() if k not in ("limit", "offset")})
+          FROM eval_case""",
+        "SELECT count(*) AS n FROM eval_case",
+        " AND ".join(cond), params,
+        order_by="prefilled DESC, (expected_items IS NULL) DESC, case_id DESC",
+        page=page, page_size=page_size)
     # 派生：标注与基线的差异（一眼看出"人标 vs 系统判"差在哪）
-    for it in items:
+    for it in res["items"]:
         it["diff_from_baseline"] = _diff_label(it)
-    return {"items": items, "total": (total or {}).get("n", 0), "page": page, "page_size": page_size}
+    return res
 
 
 def _diff_label(it: dict):
@@ -115,6 +123,9 @@ def detail(case_id: int, msg_limit: int = 100):
     if c.get("messages_hash"):
         drift = eval_runner.messages_hash(c["staff_id"], c["session_id"]) != c["messages_hash"]
     return {"case": c, "conversation": conv, "drift": drift,
+            # `messages` = 给人看的结构化消息（带媒体地址）；`conversation` 保留兼容
+            "messages": ss.build_display_messages(c["staff_id"], c["session_id"],
+                                                  limit=msg_limit),
             "msg_limit": msg_limit, "rules": _rule_options()}
 
 
@@ -144,7 +155,7 @@ def options():
 
 # ---------------- 保存标注（金标准）----------------
 
-@router.post("/save")
+@router.post("/save", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def save(payload: dict = Body(default={})):
     """保存人工标注。payload: {case_id, items:[{rule_id, score, reason}], note, annotator, disputed}"""
     cid = payload.get("case_id")
@@ -164,17 +175,14 @@ def save(payload: dict = Body(default={})):
     reported = payload.get("annotator")
     annotator = security.actor()
 
-    db.execute(
-        """UPDATE eval_case SET expected_items=%s, expected_raw_score=%s, expected_grade=%s,
-               annotator=%s, note=%s, disputed=%s, prefilled=false, updated_at=now()
-             WHERE case_id=%s""",
-        (db.as_json(valid), score["raw_score"], grade["grade"], annotator,
-         (payload.get("note") or "").strip(), bool(payload.get("disputed")), cid))
-    db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-               (annotator, "eval_annotate", str(cid),
-                db.as_json(security.actor_detail(
-                    reported, items=valid, raw_score=score["raw_score"],
-                    grade=grade["grade"], invalid=bad))))
+    eval_case_repo.set_annotation(cid, items=valid, raw_score=score["raw_score"],
+                                  grade=grade["grade"], annotator=annotator,
+                                  note=(payload.get("note") or "").strip(),
+                                  disputed=bool(payload.get("disputed")),
+                                  # 审计写在 repo 内（与 UPDATE 同事务）：
+                                  # 这里只补「服务端推导不出来的那一半」——
+                                  # 客户端自报的 annotator 与非法项。
+                                  detail=security.actor_detail(reported, invalid=bad))
     return {"ok": True, "expected_raw_score": score["raw_score"], "expected_grade": grade["grade"],
             "positive_total": score["positive_total"], "negative_total": score["negative_total"],
             "invalid_items": bad}
@@ -182,37 +190,49 @@ def save(payload: dict = Body(default={})):
 
 # ---------------- 冻结 / 解冻 ----------------
 
-@router.post("/freeze")
+@router.post("/dispute", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
+def dispute(payload: dict = Body(default={})):
+    """标记「AI 判定有误」：**只打争议标记，不动标注内容**。
+
+    为什么不复用 `/save`：`/save` 会把 `prefilled` 清成 false → 那份**错误内容**
+    立刻变成"人工金标准"计入指标 —— 那比不标更糟（指标被污染且看不出来）。
+    所以处置是：留在草稿态（继续被排除在指标外）+ 打争议标记进「争议」筛选，
+    等人工把命中项改对再保存。
+    """
+    cid = payload.get("case_id")
+    if not cid:
+        return {"ok": False, "reason": "缺少 case_id"}
+    note = (payload.get("note") or "").strip()
+    n = eval_case_repo.mark_dispute(cid, note, actor=security.actor())
+    return {"ok": bool(n), "case_id": cid, "disputed": True,
+            "note": "已标记争议；标注内容保持不变（仍排除在指标外），改正后再保存"}
+
+
+@router.post("/freeze", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def freeze(payload: dict = Body(default={})):
     """金标准一经冻结，除仲裁外不得修改（架构 §5.3 第 4 条）。"""
     cid, frozen = payload.get("case_id"), bool(payload.get("frozen", True))
-    n = db.execute("UPDATE eval_case SET frozen=%s, updated_at=now() WHERE case_id=%s",
-                   (frozen, cid))
-    db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-               (security.actor(), "eval_freeze", str(cid),
-                db.as_json(security.actor_detail(payload.get("annotator"),
-                                                 frozen=frozen))))
+    n = eval_case_repo.set_frozen(cid, frozen, actor=security.actor())
     return {"ok": bool(n), "frozen": frozen}
 
 
-@router.post("/active")
+@router.post("/active", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def set_active(payload: dict = Body(default={})):
     cid, active = payload.get("case_id"), bool(payload.get("active", True))
-    n = db.execute("UPDATE eval_case SET active=%s, updated_at=now() WHERE case_id=%s",
-                   (active, cid))
+    n = eval_case_repo.set_active(cid, active, actor=security.actor())
     return {"ok": bool(n), "active": active}
 
 
-@router.post("/delete")
+@router.post("/delete", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def delete_case(payload: dict = Body(default={})):
     cid = payload.get("case_id")
-    n = db.execute("DELETE FROM eval_case WHERE case_id=%s AND frozen=false", (cid,))
+    n = eval_case_repo.delete_case(cid, actor=security.actor())
     return {"ok": bool(n), "deleted": n}
 
 
 # ---------------- 分层抽样 ----------------
 
-@router.post("/sample")
+@router.post("/sample", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def sample(payload: dict = Body(default={})):
     """按「等级 × 是否有负分 × 消息数分档」分层抽样，覆盖 S/A/B/C/D。"""
     return eval_runner.sample(kind=(payload.get("kind") or "golden"),
@@ -223,7 +243,7 @@ def sample(payload: dict = Body(default={})):
 
 # ---------------- AI 预标注（把草稿填好，人工只复核）----------------
 
-@router.post("/prefill")
+@router.post("/prefill", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def prefill(payload: dict = Body(default={})):
     """把 AI 当时的判定预填成标注初稿（`prefilled=true`），人工只需复核修正。
 
@@ -233,20 +253,31 @@ def prefill(payload: dict = Body(default={})):
     # ⚠️ `annotator` 是**系统身份**（「AI 预标注」），刻意**不接受客户端指定** ——
     # 否则可以伪造「这条是 AI 预标注/这条是人工标注」的溯源信息。
     # 操作者身份由鉴权中间件从凭据推导，只进审计 detail。
+    #
+    # W3（修 P14）：覆盖分三级 —— 默认只填空白；`overwrite` 只覆盖仍是草稿的；
+    # 要冲掉**已人工确认**的内容必须显式 `force_overwrite_annotated`，且**仅 admin**，
+    # 审计里会带 `overwrote_annotated`。改造前一次 `overwrite:true` 就能把人工标注全冲掉。
+    if payload.get("force_overwrite_annotated") and not security.has_role("admin"):
+        return {"ok": False,
+                "reason": "覆盖已人工确认的标注需要 admin 角色（普通复核请用 overwrite=true，"
+                          "它只覆盖仍是草稿的样本）"}
     return eval_runner.prefill(kind=(payload.get("kind") or ""),
                                limit=int(payload.get("limit") or 0),
                                overwrite=bool(payload.get("overwrite")),
-                               dry_run=bool(payload.get("dry_run")))
+                               dry_run=bool(payload.get("dry_run")),
+                               overwrite_annotated=bool(payload.get("force_overwrite_annotated")),
+                               actor=security.actor())
 
 # ---------------- 跑分（后台线程 + 进度）----------------
 
-@router.post("/start")
+@router.post("/start", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def start_run(payload: dict = Body(default={})):
     return eval_runner.start(kind=(payload.get("kind") or ""),
-                             limit=int(payload.get("limit") or 0))
+                             limit=int(payload.get("limit") or 0),
+                             include_prefilled=bool(payload.get("include_prefilled")))
 
 
-@router.post("/run")
+@router.post("/run", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def run_now(payload: dict = Body(default={})):
     """**同步**跑一遍评估集并返回指标（后台版是 `/start`）。
 
@@ -294,7 +325,25 @@ def meta_loop_report():
     return meta_loop.report()
 
 
-@router.post("/backflow")
+@router.get("/coverage")
+def coverage():
+    """评估集对每条规则的覆盖度（修 P9）：哪条规则在评估集里**一条样本都没有**。
+
+    用途：新加规则时先看这里 —— 0 样本覆盖 = 改了也测不出来，门禁对它天然免疫。
+    """
+    return eval_runner.coverage()
+
+
+@router.get("/alerts")
+def alerts():
+    """评估侧的告警汇总（修 P8）：门禁越界 / 单规则误报率 / 复核积压 / 凭据与同步新鲜度。
+
+    `items` 为空 = 一切正常。前端总览页据此显示徽标。
+    """
+    return eval_runner.alerts()
+
+
+@router.post("/backflow", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def meta_loop_backflow(payload: dict = Body(default={})):
     """把**人工改判过**的复核记录回流成 `eval_case`（E5）。
 
@@ -310,7 +359,7 @@ def get_baseline():
     return eval_runner.load_baseline()
 
 
-@router.post("/baseline")
+@router.post("/baseline", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def set_baseline(payload: dict = Body(default={})):
     """把某次跑分冻结为基线（门禁的对比参照）；不传 run_id 则取最近一次成功记录。"""
     rid = payload.get("run_id")
@@ -323,9 +372,7 @@ def set_baseline(payload: dict = Body(default={})):
                                     prompt_version=row.get("prompt_version") or "",
                                     case_total=row.get("case_total") or 0,
                                     note=(payload.get("note") or "").strip())
-    db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-               (security.actor(), "eval_set_baseline", str(row["id"]),
-                db.as_json({"metrics": row.get("metrics")})))
+    audit.record_action(security.actor(), "eval_set_baseline", str(row["id"]), {"metrics": row.get("metrics")})
     return {"ok": True, "baseline": out}
 
 

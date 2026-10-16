@@ -41,6 +41,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 import config
+import db                          # 登录会话存库里（跨进程可见、可撤销、可过期）
 
 #: 未启用鉴权时的审计主体（固定常量，非客户端可控）
 LOCAL_ACTOR = "local"
@@ -48,6 +49,17 @@ LOCAL_ACTOR = "local"
 REALM = "weiban-scoring"
 #: 自动生成口令的长度
 GEN_LEN = 20
+
+#: 角色（权限由小到大）。顺序有意义：`>=` 比较用得上。
+ROLES = ("viewer", "reviewer", "operator", "admin")
+
+#: 各角色的职责边界（写在这里，供前端展示与文档引用）
+ROLE_DESC = {
+    "viewer":   "只读：看列表、看结论、看任务与审计",
+    "reviewer": "可提交人工复核结论、标注评估集（不改配置、不写外部系统）",
+    "operator": "可发起任务、调整运行时设置、执行需确认的回写动作",
+    "admin":    "全部权限，含审计导出、数据清理、规则发布、建标签",
+}
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = ROOT / ".env"
@@ -118,12 +130,156 @@ def verify(header: str | None) -> str | None:
         user, _, pwd = raw.partition(":")
     except Exception:                           # noqa: BLE001  畸形头一律视为未认证
         return None
-    exp_user, exp_pwd = credentials()
-    if not exp_pwd:                             # 没口令 → 无法认证（配置缺失，宁可拒绝）
+    # 逐个账号比对：口令为空的一律跳过（**配置缺失宁可拒绝，不能变成"空口令可登录"**）
+    for exp_user, exp_pwd, _role in accounts():
+        if not exp_pwd:
+            continue
+        # 定长比较，避免时序侧信道
+        ok = (secrets.compare_digest(user, exp_user)
+              & secrets.compare_digest(pwd, exp_pwd))
+        if ok:
+            return user
+    return None
+
+
+# ============================================================ 登录会话（Cookie）
+#
+# 背景（用户的直接反馈）：全站 Basic 的代价是**首屏弹浏览器原生登录框** —— 样式
+# 不可控、不能「记住我」、看不出当前是谁、退出还要关浏览器。于是加一层服务端会话：
+# 浏览器只拿一个**不透明 sid**（HttpOnly），口令不进前端存储；脚本/curl/测试
+# 继续走 Basic（`verify` 那条路，两边并存、互不影响）。
+
+#: Cookie 名。`HttpOnly`（JS 读不到）+ `SameSite=Lax`（跨站 POST 不带它，够挡 CSRF）。
+COOKIE_NAME = "wb_session"
+#: 勾选「记住我」的有效期（天）
+REMEMBER_DAYS = 30
+#: 未勾选时的有效期（小时）。**照样给服务端过期**，避免僵尸会话永远有效。
+SESSION_HOURS = 12
+
+
+def _session_ttl_seconds(remember: bool) -> int:
+    if remember:
+        days = int(config.get("SESSION_REMEMBER_DAYS") or REMEMBER_DAYS)
+        return max(1, days) * 86400
+    hours = float(config.get("SESSION_HOURS") or SESSION_HOURS)
+    return max(0.1, hours) * 3600
+
+
+def create_session(username: str, *, remember: bool = False,
+                   user_agent: str = None, client_ip: str = None) -> str:
+    """建一条登录会话，返回 sid（**只在不透明 token 里表达身份，不签名不塞用户信息**）。
+
+    顺手清掉过期行：会话表只增不减会慢慢变成「谁都在」的垃圾堆，而清理逻辑放在这里
+    最省事（每次登录一次 DELETE，代价可忽略）。
+    """
+    import secrets as _secrets
+
+    sid = _secrets.token_urlsafe(32)
+    db.execute("DELETE FROM login_session WHERE expires_at < now()")
+    db.execute(
+        """INSERT INTO login_session (sid, username, expires_at, user_agent, client_ip)
+           VALUES (%s, %s, now() + make_interval(secs => %s), %s, %s)""",
+        (sid, username, _session_ttl_seconds(remember),
+         (user_agent or "")[:300] or None, (client_ip or "")[:64] or None))
+    return sid
+
+
+def resolve_session(sid: str | None) -> str | None:
+    """sid → 用户名（过期/不存在 → None，并把过期行顺手删掉）。"""
+    if not sid:
         return None
-    # 定长比较，避免时序侧信道
-    ok = secrets.compare_digest(user, exp_user) & secrets.compare_digest(pwd, exp_pwd)
-    return user if ok else None
+    try:
+        row = db.query_one(
+            """SELECT username, (expires_at <= now()) AS expired
+                 FROM login_session WHERE sid=%s""", (sid,))
+    except Exception:                              # noqa: BLE001  查库失败按未登录处理
+        return None
+    if not row:
+        return None
+    if row.get("expired"):
+        revoke_session(sid)
+        return None
+    db.execute("UPDATE login_session SET last_seen_at=now() WHERE sid=%s", (sid,))
+    return row.get("username")
+
+
+def revoke_session(sid: str | None) -> None:
+    """退出：删掉这条会话（幂等，不存在也不报错）。"""
+    if not sid:
+        return
+    try:
+        db.execute("DELETE FROM login_session WHERE sid=%s", (sid,))
+    except Exception:                              # noqa: BLE001
+        pass
+
+
+def sessions_overview(limit: int = 20) -> dict:
+    """活跃会话一览（供「谁在用」排查）。**只暴露用户名与时间，不含 sid**。"""
+    rows = db.query(
+        """SELECT username, created_at, last_seen_at, expires_at, client_ip
+             FROM login_session WHERE expires_at > now()
+            ORDER BY last_seen_at DESC LIMIT %s""", (int(limit),))
+    return {"active": len(rows), "items": rows}
+
+
+def accounts() -> list:
+    """全部可用账号：``[(user, password, role), ...]``。
+
+    两种配置方式（**后者优先**）：
+
+    · 单账号：`API_USER` + `API_PASSWORD` → 角色固定 `admin`
+      （向后兼容，也是"只有一个人用"时的默认）
+    · 多账号：`API_USERS=zhang:pwd:reviewer,li:pwd:operator,admin:pwd:admin`
+
+    为什么用环境变量而不是建表：本系统是单机内部工具，账号数量是个位数；
+    建 `actor` 表要配套增删改查、口令哈希、轮换界面 —— 那是给"几十人、要自助管理"
+    的场景准备的（ARCHITECTURE §6.1 已把表设计留作将来）。**现在这层的价值是
+    "不同的人拿到不同的权限"，不是"能自助注册"**。
+
+    解析失败的条目**直接跳过**（并在启动时由 `startup_report()` 提示），
+    绝不因为一行格式写错就让某个账号静默变成 admin。
+    """
+    raw = (config.get("API_USERS") or "").strip()
+    out = []
+    if raw:
+        for part in raw.split(","):
+            bits = part.strip().split(":")
+            if len(bits) != 3:
+                continue
+            u, p, r = (x.strip() for x in bits)
+            if u and p and r in ROLES:
+                out.append((u, p, r))
+    if out:
+        return out
+    user, pwd = credentials()
+    return [(user, pwd, "admin")]
+
+
+def role_of(user: str | None) -> str | None:
+    """某账号的角色；查不到返回 None。"""
+    if not user:
+        return None
+    for u, _p, r in accounts():
+        if u == user:
+            return r
+    return None
+
+
+def current_role() -> str | None:
+    """当前请求主体的角色。
+
+    · 已认证 → 该账号的角色
+    · 鉴权关闭 → `admin`（`API_AUTH=off` 是显式逃生阀，启动会打印警告；
+      既然允许任何人直接访问，就不该再假装拦得住 —— 拦不住的权限是坏权限）
+    """
+    if not enabled():
+        return "admin"
+    return role_of(current_principal())
+
+
+def has_role(*allowed: str) -> bool:
+    """当前主体是否具备 `allowed` 中任一角色。"""
+    return current_role() in (allowed or ROLES)
 
 
 # ---------------------------------------------------------------- 主体传递
@@ -180,6 +336,14 @@ def startup_report() -> str:
         line += f"｜ 🔑 本次自动生成口令：{generated_password}（已写入 .env）"
     else:
         line += "｜ 口令取自 .env（API_PASSWORD）"
+    # 多账号时把「谁是什么角色」打出来 —— 权限配错是排查时最难想到的一类问题
+    accs = accounts()
+    if len(accs) > 1 or (config.get("API_USERS") or "").strip():
+        who = "、".join(f"{u}({r})" for u, _p, r in accs) or "（解析失败，已回退单账号）"
+        line += f"｜ 账号：{who}"
+        raw = (config.get("API_USERS") or "").strip()
+        if raw and not accs:
+            line += "｜ ⚠️ API_USERS 格式应为 user:pwd:role（逗号分隔），当前解析不出任何账号"
     return line
 
 

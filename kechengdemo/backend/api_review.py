@@ -9,9 +9,14 @@
         ignored   已忽略（AI 误判，无需扣分）
   · 每次提交 / 改状态都写 ``audit_log``，便于追溯与评估模型准确率。
 """
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 
+import api_common
+import api_guard
+import assessment_repo
+import audit
 import db
+import review_repo
 import rules as rules_mod
 import scoring_service as ss
 import security
@@ -59,23 +64,19 @@ def list_reviews(status: str = "", staff_id: str = "", grade: str = "",
     if date_to:
         cond.append("r.created_at < (%(date_to)s::date + 1)"); params["date_to"] = date_to
 
-    where = " AND ".join(cond)
-    params["limit"] = page_size
-    params["offset"] = (max(1, page) - 1) * page_size
-    items = db.query(f"""
+    return api_common.paginate(
+        """
         SELECT r.*, a.raw_score AS a_raw_score, a.positive_total,
                a.model_confidence, a.session_confidence, a.review_reasons,
                (SELECT count(*) FROM chat_message m
-                 WHERE m.staff_id = r.staff_id AND m.session_id = r.session_id) AS session_msg_count
+                 WHERE m.staff_id = r.staff_id AND m.session_id = r.session_id)
+                 AS session_msg_count
           FROM negative_review r
-          LEFT JOIN customer_intent_assessment a ON a.assessment_id = r.assessment_id
-         WHERE {where}
-         ORDER BY (r.status = 'pending') DESC, r.updated_at DESC
-         LIMIT %(limit)s OFFSET %(offset)s""", params)
-    total = db.query_one(
-        f"SELECT count(*) AS n FROM negative_review r WHERE {where}",
-        {k: v for k, v in params.items() if k not in ("limit", "offset")})
-    return {"items": items, "total": (total or {}).get("n", 0), "page": page, "page_size": page_size}
+          LEFT JOIN customer_intent_assessment a ON a.assessment_id = r.assessment_id""",
+        "SELECT count(*) AS n FROM negative_review r",
+        " AND ".join(cond), params,
+        order_by="(r.status = 'pending') DESC, r.updated_at DESC",
+        page=page, page_size=page_size)
 
 
 # ---------------- 详情（含证据消息）----------------
@@ -89,9 +90,12 @@ def detail(review_id: int, msg_limit: int = 60):
     a = db.query_one("SELECT * FROM customer_intent_assessment WHERE assessment_id=%s",
                      (r["assessment_id"],))
     conv = ""
+    msgs = []
     if r.get("staff_id") and r.get("session_id"):
         conv = ss.build_conversation(r["staff_id"], r["session_id"], limit=msg_limit)
+        msgs = ss.build_display_messages(r["staff_id"], r["session_id"], limit=msg_limit)
     return {"review": r, "assessment": a, "conversation": conv,
+            "messages": msgs,
             "status_cn": STATUS_CN.get(r["status"], r["status"])}
 
 
@@ -115,7 +119,7 @@ def options():
 
 # ---------------- 提交人工打分 ----------------
 
-@router.post("/submit")
+@router.post("/submit", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def submit(payload: dict = Body(default={})):
     """提交人工打分：确认/修正扣分项 → 状态置为「已完成」。
 
@@ -136,11 +140,8 @@ def submit(payload: dict = Body(default={})):
     reported = payload.get("reviewer")
     reviewer = security.actor()
 
-    db.execute(
-        """UPDATE negative_review SET human_negative_items=%s, human_negative_total=%s,
-               human_note=%s, reviewer=%s, status='done', reviewed_at=now(), updated_at=now()
-             WHERE id=%s""",
-        (db.as_json(valid), total, note, reviewer, rid))
+    review_repo.submit(rid, human_items=valid, human_total=total, note=note,
+                       reviewer=reviewer)
     # E4（架构 §7.2 / §6.3）：人工验证状态落列 —— 此前**这一列建了但没有任何写入方**，
     # 于是「模型算的置信度」与「人到底认同没有」永远分不清。
     # 三种结果语义不同，必须分开：
@@ -154,16 +155,11 @@ def submit(payload: dict = Body(default={})):
         vstatus = "verified"
     else:
         vstatus = "corrected"
-    db.execute(
-        """UPDATE customer_intent_assessment
-              SET review_status='done', verification_status=%s WHERE assessment_id=%s""",
-        (vstatus, r["assessment_id"]))
-    db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-               (reviewer, "review_submit", str(rid),
-                db.as_json(security.actor_detail(
+    assessment_repo.mark_review_done(r["assessment_id"], vstatus)
+    audit.record_action(reviewer, "review_submit", str(rid), security.actor_detail(
                     reported, human_negative_total=total, items=valid,
                     ai_negative_total=r["ai_negative_total"],
-                    verification_status=vstatus, note=note))))
+                    verification_status=vstatus, note=note))
     # E5 meta-loop：改判过的复核**立刻回流评估集**（人工判断是最贵的资源，不该只用一次）。
     # 失败不影响复核提交本身 —— 回流是「后续改进」，不是「本次结论」。
     backflow = {}
@@ -179,7 +175,7 @@ def submit(payload: dict = Body(default={})):
 
 # ---------------- 修改状态 ----------------
 
-@router.post("/status")
+@router.post("/status", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def set_status(payload: dict = Body(default={})):
     """修改复核状态：pending / done / ignored。"""
     rid = payload.get("review_id")
@@ -192,24 +188,17 @@ def set_status(payload: dict = Body(default={})):
 
     reported = payload.get("reviewer")
     reviewer = security.actor()          # 服务端推导，不采信请求体（评审 P0-2）
-    reviewed = "now()" if st in ("done", "ignored") else "NULL"
-    db.execute(
-        f"""UPDATE negative_review SET status=%s, reviewer=%s,
-                reviewed_at={reviewed}, updated_at=now(),
-                human_note = COALESCE(NULLIF(%s,''), human_note)
-              WHERE id=%s""",
-        (st, reviewer, (payload.get("note") or "").strip(), rid))
-    db.execute("UPDATE customer_intent_assessment SET review_status=%s WHERE assessment_id=%s",
-               (st, r["assessment_id"]))
-    db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-               (reviewer, "review_status", str(rid),
-                db.as_json(security.actor_detail(reported, status=st))))
+    review_repo.set_status(rid, status=st, reviewer=reviewer,
+                           note=(payload.get("note") or "").strip(),
+                           reviewed=st in ("done", "ignored"))
+    assessment_repo.set_review_status(r["assessment_id"], st)
+    audit.record_action(reviewer, "review_status", str(rid), security.actor_detail(reported, status=st))
     return {"ok": True, "status": st}
 
 
 # ---------------- 批量操作 ----------------
 
-@router.post("/batch-status")
+@router.post("/batch-status", dependencies=[Depends(api_guard.require("reviewer", "operator", "admin"))])
 def batch_status(payload: dict = Body(default={})):
     ids = payload.get("review_ids") or []
     st = str(payload.get("status") or "").strip()
@@ -217,19 +206,21 @@ def batch_status(payload: dict = Body(default={})):
         return {"ok": False, "reason": "参数不合法"}
     reported = payload.get("reviewer")
     reviewer = security.actor()          # 服务端推导（评审 P0-2）
-    n = db.execute(
-        "UPDATE negative_review SET status=%s, updated_at=now() WHERE id = ANY(%s)",
-        (st, list(ids)))
-    db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-               (reviewer, "review_batch_status", f"{len(ids)} 条",
-                db.as_json(security.actor_detail(reported, status=st, ids=list(ids)))))
+    n = review_repo.set_status_bulk(ids, status=st)
+    audit.record_action(reviewer, "review_batch_status", f"{len(ids)} 条", security.actor_detail(reported, status=st, ids=list(ids)))
     return {"ok": True, "updated": n}
 
 
 # ---------------- 审计 ----------------
 
 @router.get("/audit")
-def audit(limit: int = 30):
+def audit_log(limit: int = 30):
+    """最近 N 条**业务动作**审计（URL 仍是 `/review/audit`）。
+
+    ⚠️ 函数名不能叫 `audit` —— 那会把本模块顶部的 `import audit` 覆盖掉，
+    于是同一个文件里 `audit.record_action(...)` 变成「函数没有 record_action 属性」。
+    改名只动 Python 里的名字，**HTTP 路径不变**（前端 `api.reviewAudit` 不受影响）。
+    """
     rows = db.query(
         """SELECT id, actor, action, target, detail, created_at
              FROM audit_log ORDER BY id DESC LIMIT %s""", (limit,))

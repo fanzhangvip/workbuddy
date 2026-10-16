@@ -54,6 +54,10 @@ sys.path.insert(0, str(ROOT))
 # 浏览器路径与生命周期统一由 wb_bootstrap 管理（可配置 + 只关自己的实例）
 import wb_bootstrap  # noqa: E402
 
+# 本脚本常被 cmd.exe 直接跑（GBK 控制台）→ 与 wb_bootstrap 共用同一份输出防崩逻辑，
+# 否则失败分支里的 `❌` 会把 print 打挂（`UnicodeEncodeError`）。
+wb_bootstrap.prepare_console_output()
+
 CHROME = wb_bootstrap.CHROME
 PROFILE = wb_bootstrap.PROFILE
 CDP_PORT = wb_bootstrap.CDP_PORT
@@ -68,6 +72,15 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
 
 DEFAULT_MAX_AGE_HOURS = 48      # 超过这个时长没刷新就主动保活一次（7 天窗口的安全余量）
+
+#: 保活失败码：4 = **当前环境弹不出浏览器**（容器内 / 未装 Chrome）。
+#: 与 1（抓取失败）/ 2（cookie 校验失败）/ 3（缺凭据文件）区分开 —— 这三种要修代码或
+#: 重新扫码，而 4 是「换个地方执行就行」，处置完全不同，混在一起会误判。
+CODE_NO_BROWSER = 4
+#: 5 = **微伴 cookie 刷到了，但企微正文通道仍然不可用**（实测 42006 missing session）。
+#: 这一档必须单独存在：它**不是**"保活失败"，而是"保活做完了，通道还是断的" ——
+#: 处置是"去宿主机打开后台点进一个会话/重新扫码"，与 1/2 的重试逻辑不同。
+CODE_CHANNEL_DOWN = 5
 
 # 最近一次保活/校验的结果（进程内状态，供 API 展示）
 _last_run = {"at": None, "ok": None, "code": None, "message": None, "source": None}
@@ -88,6 +101,19 @@ def _record(ok: bool, code: int, message: str, source: str) -> dict:
     global _last_run
     _last_run = {"at": int(time.time()), "ok": ok, "code": code,
                  "message": message, "source": source}
+    # 状态**落库**（修 P12）：改造前只写这个模块级全局变量 —— 重启即失，
+    # 于是 `GET /api/sync/keepalive` 的 `last_run` 恒为 null，"上次成功保活是什么时候"
+    # 没有任何地方记得住。正文通道 2026-10-13 断掉、同步空转两天没人发现，
+    # 根因之一就是这里没有可查、可告警的事实。
+    # ⚠️ 落库失败**绝不能影响保活本身**：本脚本跑在宿主机、可能比库先起来，
+    #    也可能在没有库的环境里单独跑（那时它只是个 CLI）。
+    try:
+        if str(ROOT / "backend") not in sys.path:
+            sys.path.insert(0, str(ROOT / "backend"))
+        import db                                  # noqa: PLC0415
+        db.set_setting("keepalive_last", json.dumps(_last_run, ensure_ascii=False))
+    except Exception as e:                         # noqa: BLE001
+        log(f"（保活状态未落库：{type(e).__name__}: {e}）")
     return _last_run
 
 
@@ -138,6 +164,7 @@ def status() -> dict:
     """凭据文件 + 最近一次保活的状态（给 API 用）。"""
     boot = load_bootstrap() or {}
     cap = boot.get("captured_at")
+    benv = wb_bootstrap.browser_env()
     return {
         "credential": {
             "exists": bool(boot),
@@ -147,18 +174,20 @@ def status() -> dict:
             "cookie_count": len(boot.get("wb_cookie") or []),
         },
         "last_run": dict(_last_run),
-        "browser": {"cdp_port": CDP_PORT, "alive": cdp_alive()},
+        # `available=False` 说明"这台机器根本弹不出浏览器"（容器部署的常态），
+        # 与 `alive`（CDP 连不连得上）是两件事，必须分开看：
+        # 前者要换地方执行，后者只是"还没把 Chrome 拉起来"。
+        "browser": {"cdp_port": CDP_PORT, "alive": cdp_alive(),
+                    "available": benv["available"], "reason": benv["reason"],
+                    "hint": benv["hint"], "in_container": benv["in_container"]},
     }
 
 
 # ---------------------------------------------------------------- 浏览器
 
 def cdp_alive() -> bool:
-    try:
-        with urllib.request.urlopen(f"{CDP_URL}/json/version", timeout=3) as r:
-            return r.status == 200
-    except Exception:
-        return False
+    """CDP 是否在线。实现统一在 `wb_bootstrap`（浏览器生命周期只有一份）。"""
+    return wb_bootstrap.cdp_alive(CDP_URL)
 
 
 def launch_chrome(url: str):
@@ -167,75 +196,20 @@ def launch_chrome(url: str):
     wb_bootstrap.launch_chrome(url)
 
 
-def harvest(url: str, wait_sec: int = 45) -> dict:
-    """连 CDP，刷新会话页，抓最新 cookie + open_sid。"""
-    from playwright.sync_api import sync_playwright
+def harvest(url: str, wait_sec: int = 45, reset_session: bool = False) -> dict:
+    """连 CDP、刷新会话页、抓最新 cookie + open_sid。
 
-    captured = {}
-    with sync_playwright() as p:
-        browser = None
-        if not cdp_alive():
-            launch_chrome(url)
-        for _ in range(30):
-            try:
-                browser = p.chromium.connect_over_cdp(CDP_URL)
-                break
-            except Exception:
-                time.sleep(2)
-        if browser is None:
-            raise RuntimeError("无法连接 Chrome（CDP 连接失败）")
-
-        ctx = browser.contexts[0]
-
-        # 优先复用已打开的微伴后台标签页（保活不打扰用户）
-        page = None
-        for pg in ctx.pages:
-            if "weibanzhushou.com/dashboard" in pg.url:
-                page = pg
-                break
-        new_page = page is None
-        if new_page:
-            page = ctx.new_page()
-
-        def on_request(req):
-            if "createOpenChatSession" in req.url and "body" not in captured:
-                try:
-                    captured["body"] = json.loads(req.post_data or "{}")
-                except Exception:
-                    pass
-
-        page.on("request", on_request)
-
-        log(f"{'打开' if new_page else '刷新'}会话页：{url[:90]}…")
-        try:
-            if new_page:
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            else:
-                page.reload(wait_until="domcontentloaded", timeout=60000)
-        except Exception as e:
-            log(f"导航告警（继续）：{str(e)[:100]}")
-
-        deadline = time.time() + wait_sec
-        while time.time() < deadline and "body" not in captured:
-            page.wait_for_timeout(1200)
-
-        cookies = ctx.cookies()
-        if new_page:
-            try:
-                page.close()
-            except Exception:
-                pass
-
-    body = captured.get("body") or {}
-    return {
-        "open_sid": body.get("open_sid"),
-        "open_sid_meta": body.get("open_sid_meta"),
-        "url": body.get("url") or "https://weibanzhushou.com/dashboard/messages",
-        "agent_config_params": body.get("agent_config_params") or {},
-        "wb_cookie": [c for c in cookies if "weibanzhushou.com" in c.get("domain", "")],
-        "ww_cookie": [c for c in cookies if "work.weixin.qq.com" in c.get("domain", "")],
-        "captured_at": int(time.time()),
-    }
+    **复用** `wb_bootstrap.harvest` —— 这里原先是照抄一份的实现，于是「取最新的
+    open session」只在另一处修好、这一处照旧复用旧值（2026-10-16 实测被咬：
+    保活连抓三次都拿到 3 天前的会话）。差异只保留在参数上：
+    `reuse_tab`（复用已打开的后台标签页，不打扰用户）+ `launch_if_absent`
+    （没有 CDP 才拉起浏览器）。
+    """
+    if not cdp_alive():
+        launch_chrome(url)
+    log(f"刷新会话页：{url[:90]}…")
+    return wb_bootstrap.harvest(url, wait_sec, reset_session=reset_session,
+                                reuse_tab=True, launch_if_absent=True)
 
 
 def pick_session_url() -> str:
@@ -269,19 +243,16 @@ def pick_session_url() -> str:
 
 # ---------------------------------------------------------------- 核心动作
 
-def refresh(wait_sec: int = 45, restart: bool = False, source: str = "manual") -> dict:
-    """执行一次保活刷新。返回 {ok, code, message, ...}，不会抛异常。"""
-    if restart:
-        # 只关本项目自己的 Chrome 实例（绝不无差别杀掉用户其他 Chrome 窗口）
-        log("重启浏览器：关闭本项目 Chrome 实例…")
-        res = wb_bootstrap.kill_own_chrome(wait_sec=3)
-        log(f"已关闭本项目 Chrome 实例 {res.get('count', 0)} 个")
+def _capture_and_write(url: str, wait_sec: int, *, reset_session: bool,
+                       source: str) -> dict:
+    """抓一次 → 校验微伴 cookie → 写盘 → 端到端自检。返回 {ok, code, message, ...}。
 
-    CACHE_DIR.mkdir(exist_ok=True)
-    url = pick_session_url()
+    抽成函数是为了让 :func:`refresh` 的「抓一次不成就清缓存重抓」复用同一条路径 ——
+    复制一份"差不多的抓取流程"正是 `AGENTS.md` 禁止的那种写法。
+    """
     try:
-        data = harvest(url, wait_sec)
-    except Exception as e:
+        data = harvest(url, wait_sec, reset_session=reset_session)
+    except Exception as e:                                # noqa: BLE001
         msg = f"保活失败：{e}"
         log("❌ " + msg)
         _record(False, 1, msg, source)
@@ -318,21 +289,98 @@ def refresh(wait_sec: int = 45, restart: bool = False, source: str = "manual") -
 
     BOOTSTRAP_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
                               encoding="utf-8")
-    msg = f"凭据已刷新：{detail}"
+    log(f"   写入凭据：open_sid …{data['open_sid'][-12:]}"
+        f"（取自 {data.get('open_sid_source')}）"
+        f"｜微伴 cookie {len(data['wb_cookie'])} 个 / 企微 cookie {len(data['ww_cookie'])} 个")
+
+    # ⚠️ 写盘成功 ≠ 通道可用。企微那侧的 open session 会**先于**微伴 cookie 失效，
+    #    而它与微伴 cookie 不是同一把钥匙 —— 只看 `verify()`（微伴 jsapi_sign）就报
+    #    「✅ 凭据已刷新」会掩盖真实故障：实测 2026-10-13 起正文通道断了 3 天，
+    #    保活日志一路绿，没人发现（仓库设计文档 P12 记的就是这一条）。
+    chk = {"ok": False, "error": "未执行自检"}
+    try:
+        import ww_chatdata
+        chk = ww_chatdata.check_channel()
+    except Exception as e:                                # noqa: BLE001
+        chk = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    if not chk.get("ok"):
+        msg = (f"微伴 cookie 已刷新（{detail}），但**企微正文通道不可用**："
+               f"{chk.get('error') or chk.get('message')}")
+        log("❌ " + msg)
+        _record(False, CODE_CHANNEL_DOWN, msg, source)
+        return {"ok": False, "code": CODE_CHANNEL_DOWN, "message": msg,
+                "captured_at": data.get("captured_at"),
+                "hint": ("去宿主机把微伴后台打开并点进任意一个会话（让组件重建 open session），"
+                         "或重新扫码：host_bootstrap_login.bat。"
+                         "容器内没有浏览器，这一步必须在宿主机做。"),
+                "channel": chk}
+
+    msg = f"凭据已刷新，{chk.get('message')}（{detail}）"
     log("✅ " + msg)
-    log(f"   open_sid   : …{data['open_sid'][-12:]}")
-    log(f"   微伴 cookie: {len(data['wb_cookie'])} 个 / 企微 cookie: {len(data['ww_cookie'])} 个")
     _record(True, 0, msg, source)
     return {"ok": True, "code": 0, "message": msg,
             "captured_at": data.get("captured_at"),
-            "open_sid_tail": "…" + data["open_sid"][-12:]}
+            "open_sid_tail": "…" + data["open_sid"][-12:],
+            "channel": chk}
+
+
+def refresh(wait_sec: int = 45, restart: bool = False, source: str = "manual") -> dict:
+    """执行一次保活刷新。返回 {ok, code, message, ...}，不会抛异常。
+
+    **两段式**：先照常抓一次；若抓到的企微会话已经失效（端到端自检不通），
+    就清掉缓存的旧 open session **重抓一次**。
+
+    为什么必须有第二段（2026-10-16 实测）：页面把 open session 缓存进 iframe 的
+    localStorage 后会**一直复用**它 —— 三次保活抓到的都是同一个 3 天前的值，
+    而企微那边早就回 `42006 missing session`。只会"再抓一次"是没用的，
+    必须先把缓存清掉，页面才会去换发新的。
+    """
+    # 环境体检放在最前面：容器里既没有 Chrome 也没有显示器，继续往下走只会得到
+    # `[Errno 2] No such file or directory: 'C:\Program Files\...\chrome.exe'` ——
+    # 那句话既不能定位问题，也没告诉人该干什么（保活只能靠宿主机执行）。
+    benv = wb_bootstrap.browser_env()
+    if not benv["available"]:
+        msg = f"保活需要浏览器，但当前环境不可用：{benv['reason']}"
+        log(f"❌ {msg}")
+        log(f"   {benv['hint']}")
+        _record(False, CODE_NO_BROWSER, msg, source)
+        return {"ok": False, "code": CODE_NO_BROWSER, "message": msg,
+                "hint": benv["hint"], "browser": benv}
+
+    if restart:
+        # 只关本项目自己的 Chrome 实例（绝不无差别杀掉用户其他 Chrome 窗口）
+        log("重启浏览器：关闭本项目 Chrome 实例…")
+        res = wb_bootstrap.kill_own_chrome(wait_sec=3)
+        log(f"已关闭本项目 Chrome 实例 {res.get('count', 0)} 个")
+
+    CACHE_DIR.mkdir(exist_ok=True)
+    url = pick_session_url()
+
+    last = {"ok": False, "code": 1, "message": "未执行"}
+    for reset in (False, True):
+        if reset:
+            log("通道不可用 → 清掉页面缓存的旧企微会话，重抓一次…")
+        res = _capture_and_write(url, wait_sec, reset_session=reset, source=source)
+        if res.get("ok"):
+            return res
+        last = res
+        # 只有"通道不通"值得清缓存重抓；其它失败（没抓到请求 / cookie 校验失败）
+        # 重抓一次也是一样的结果，白等一轮。
+        if res.get("code") != CODE_CHANNEL_DOWN:
+            return res
+    return last
 
 
 def ensure_credentials(max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
                        source: str = "auto") -> dict:
-    """同步前的凭据体检：有效且够新鲜就跳过，否则触发保活。
+    """同步前的凭据体检：**微伴 cookie 新鲜 + 正文通道可用**才跳过，否则触发保活。
 
     返回 ``{ok, code, message, skipped?}``；``skipped=True`` 表示无需刷新。
+
+    ⚠️ 为什么要连**通道**一起验（而不是只看 cookie 年龄）：两把凭据的失效节奏不同 ——
+    微伴 cookie 滑动过期、刷一次续 7 天；企微 ``open_sid`` 是页面缓存的会话，**会先死**。
+    只看年龄的话，通道最多可能断 48 小时才被发现（实测就是这么断了 3 天）。
     """
     boot = load_bootstrap()
     if not boot:
@@ -345,10 +393,33 @@ def ensure_credentials(max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
     age = (time.time() - (boot.get("captured_at") or 0)) / 3600
 
     if ok and age < max_age_hours:
-        msg = f"凭据有效（{age:.1f} 小时前刷新），无需保活"
-        _record(True, 0, msg, source)
-        return {"ok": True, "code": 0, "skipped": True,
-                "message": msg, "age_hours": round(age, 2)}
+        chk = {"ok": True, "message": ""}
+        try:
+            import ww_chatdata
+            chk = ww_chatdata.check_channel()
+        except Exception as e:                            # noqa: BLE001
+            # 自检本身不可用（模块缺失等）→ 退回"只判 cookie 年龄"的旧行为，
+            # 不能因为体检工具坏了就把同步拦下或误报故障。
+            log(f"通道自检跳过（{type(e).__name__}: {e}）")
+        if chk.get("ok"):
+            msg = f"凭据有效（{age:.1f} 小时前刷新），无需保活"
+            _record(True, 0, msg, source)
+            return {"ok": True, "code": 0, "skipped": True,
+                    "message": msg, "age_hours": round(age, 2), "channel": chk}
+
+        # cookie 新鲜但通道断了：有浏览器就重建会话，没有就如实上报 + 给操作指引
+        benv = wb_bootstrap.browser_env()
+        if benv["available"]:
+            log(f"凭据 cookie 新鲜但正文通道不可用（{chk.get('error') or chk.get('message')}），"
+                f"尝试通过浏览器重建会话…")
+            return refresh(source=source)
+        msg = (f"微伴 cookie 有效（{age:.1f} 小时前刷新），但**企微正文通道不可用**："
+               f"{chk.get('error') or chk.get('message')}")
+        log("❌ " + msg)
+        _record(False, CODE_CHANNEL_DOWN, msg, source)
+        return {"ok": False, "code": CODE_CHANNEL_DOWN, "message": msg,
+                "age_hours": round(age, 2), "hint": benv["hint"], "browser": benv,
+                "channel": chk}
 
     log(f"凭据需要刷新（有效={ok}，已 {age:.1f} 小时未刷新），开始保活…")
     return refresh(source=source)

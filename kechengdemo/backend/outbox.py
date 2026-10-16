@@ -20,10 +20,12 @@
     调用一次微伴接口；这比「永久丢失」可接受得多，且 ``score_writeback`` 不会
     产生重复行。卡在 ``sending`` 超过 ``STUCK_SECONDS`` 的行会在下次 drain 被回收。
 """
-import random
 import time
 
 import db
+import assessment_repo
+import http_client                  # 全项目唯一的退避实现（Reuse Before Rewrite）
+import writeback_repo                # 回写记账与水位唯一写入口（与评分内联路径共用）
 
 BACKOFF_BASE = 30           # 秒；首次失败后的等待
 BACKOFF_CAP = 3600          # 秒；退避上限
@@ -40,13 +42,17 @@ def _json(value):
 
 
 def _delay(attempts: int) -> int:
-    """第 attempts 次失败后的等待秒数（指数退避 + 上限 + **±30% 抖动**）。
+    """第 attempts 次失败后的等待秒数。
+
+    统一走 `http_client.backoff_seconds()` —— 原先本函数与 `grade_tag._delay()`
+    是**逐字相同的两份**（指数 + ±30% 抖动 + 上限），改一处必然忘另一处。
+    差异只靠 `base`/`cap` 参数表达：回写要等得更久（最长 1 小时）。
 
     抖动不会破坏「退避生效」这一不变量：最小值为 ``BACKOFF_BASE × 0.7``，
     仍严格大于 0（`test_outbox_drain` 断言 `next_attempt_at > updated_at`）。
     """
-    raw = min(BACKOFF_BASE * (2 ** max(0, attempts - 1)), BACKOFF_CAP)
-    return max(1, int(raw * random.uniform(1.0 - BACKOFF_JITTER, 1.0 + BACKOFF_JITTER)))
+    return max(1, int(http_client.backoff_seconds(
+        attempts - 1, BACKOFF_BASE, cap=BACKOFF_CAP)))
 
 
 # ============================================================ 入队（调用方事务内）
@@ -118,13 +124,8 @@ def mark_result(assessment_id, ok, errcode=None, errmsg=None, resp=None, conn=No
 
 def _claim(conn, limit: int) -> list:
     """抢占到期任务：先回收「投递中断」的行，再把到期行标记为 sending。"""
-    conn.execute(
-        """UPDATE writeback_outbox
-              SET status='failed', next_attempt_at=now(), updated_at=now(),
-                  last_errmsg = COALESCE(last_errmsg, '') || ' [投递中断，已回收]'
-            WHERE status='sending'
-              AND updated_at < now() - make_interval(secs => %s)""",
-        (STUCK_SECONDS,))
+    db.reclaim_stuck_sending(conn, "writeback_outbox", STUCK_SECONDS,
+                             " [投递中断，已回收]")
     with conn.cursor() as cur:
         cur.execute(
             """SELECT outbox_id, assessment_id, relationship_key, staff_id, target_id,
@@ -148,21 +149,13 @@ def _record(conn, row, status, ok, attempts, errcode=None, errmsg=None, resp=Non
             dead=False) -> None:
     """一次投递结束：写 score_writeback（幂等 upsert）+ 回填 assessment + 落 outbox 终态。"""
     with conn.cursor() as cur:
-        # score_writeback：UNIQUE(assessment_id)，用 upsert 保证恒一行
-        cur.execute(
-            """INSERT INTO score_writeback
-                 (relationship_key, assessment_id, staff_id, external_user_id, score,
-                  mode, status, attempts, errcode, errmsg, response)
-               VALUES (%s,%s,%s,%s,%s,'live',%s,%s,%s,%s,%s)
-               ON CONFLICT (assessment_id) DO UPDATE
-                  SET status=EXCLUDED.status, attempts=EXCLUDED.attempts,
-                      errcode=EXCLUDED.errcode, errmsg=EXCLUDED.errmsg,
-                      response=EXCLUDED.response, updated_at=now()""",
-            (row["relationship_key"], row["assessment_id"], row["staff_id"], row["target_id"],
-             row["score"], status, attempts, errcode, errmsg, _json(resp)))
-        cur.execute(
-            "UPDATE customer_intent_assessment SET writeback_status=%s WHERE assessment_id=%s",
-            (status, row["assessment_id"]))
+        # score_writeback：与评分内联路径**共用同一份 SQL**（`writeback_repo`）
+        writeback_repo.record_delivery(
+            conn, rel_key=row["relationship_key"], aid=row["assessment_id"],
+            staff_id=row["staff_id"], target_id=row["target_id"], score=row["score"],
+            status=status, attempts=attempts, errcode=errcode, errmsg=errmsg, resp=resp)
+        # 与评分内联回写路径**共用同一个写入口**（这一列被两条路径写）
+        assessment_repo.set_writeback_status(row["assessment_id"], status, conn=conn)
         # outbox 终态
         if ok:
             cur.execute(
@@ -174,7 +167,9 @@ def _record(conn, row, status, ok, attempts, errcode=None, errmsg=None, resp=Non
             # D2-1：投递成功才推进客户级回写水位（差值累加的依据）。
             # ⚠️ 必须与「写 score_writeback」在**同一事务**里 —— 否则出现
             # 「记账说写成功了、水位没动」→ 下次差值重复算 → 重复回写。
-            _advance_ledger(cur, row)
+            writeback_repo.advance_ledger(row["relationship_key"], row["staff_id"],
+                                          row["target_id"], row["assessment_id"],
+                                          int(row["score"] or 0), conn=conn)
         else:
             cur.execute(
                 """UPDATE writeback_outbox
@@ -185,27 +180,6 @@ def _record(conn, row, status, ok, attempts, errcode=None, errmsg=None, resp=Non
                     WHERE outbox_id=%s""",
                 ("dead" if dead else "failed", attempts, errcode, errmsg, _json(resp),
                  _delay(attempts), row["outbox_id"]))
-
-
-def _advance_ledger(cur, row) -> None:
-    """D2-1：回写成功后推进客户级水位（**复用调用方 cursor**，与记账同事务）。
-
-    `row["score"]` 在差值模式下本来就是「差值」（入队时已算好），
-    所以直接累加即可 —— 不要在这里再减一次水位（那会双重打折）。
-    """
-    cur.execute(
-        """INSERT INTO writeback_ledger
-             (relationship_key, staff_id, external_user_id, written_total,
-              last_assessment_id, last_write_at, writes)
-           VALUES (%s,%s,%s,%s,%s,now(),1)
-           ON CONFLICT (relationship_key) DO UPDATE
-             SET written_total = writeback_ledger.written_total + EXCLUDED.written_total,
-                 last_assessment_id = EXCLUDED.last_assessment_id,
-                 last_write_at = now(),
-                 writes = writeback_ledger.writes + 1,
-                 updated_at = now()""",
-        (row["relationship_key"], row["staff_id"], row["target_id"],
-         int(row["score"] or 0), row["assessment_id"]))
 
 
 def _defer(conn, row, seconds: int, note: str) -> None:

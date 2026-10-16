@@ -10,19 +10,15 @@
   4. 可重试异常耗尽后抛 ``RuntimeError``（同样穿透）
 并顺带验证成功路径会正确累加 ``assessment_new``。
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import FAILED, PASSED, ROOT, check, delete_rows, purge_run  # noqa: E402
 
 import analyze                # noqa: E402
 import contracts              # noqa: E402
@@ -33,12 +29,8 @@ import rules as rules_mod     # noqa: E402
 import scoring_service as ss  # noqa: E402
 
 RUN_ID = 993000001
-PASSED, FAILED = [], []
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 def pick_candidate():
@@ -64,15 +56,9 @@ def raise_stub(exc):
 
 
 def cleanup(sid):
-    for tbl in ("writeback_outbox", "negative_review", "score_writeback"):
-        db.execute(f"""DELETE FROM {tbl} WHERE assessment_id IN
-                       (SELECT assessment_id FROM customer_intent_assessment
-                         WHERE source_run_id = %s)""", (RUN_ID,))
-    db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id = %s", (RUN_ID,))
-    # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
-    try: ss.repair_current_flags()
-    except Exception: pass
-    db.execute("DELETE FROM session_failure WHERE session_id = %s", (sid,))
+    purge_run(RUN_ID)                       # 公共产物（见 _harness.purge_run）
+    # 本用例额外的产物：按 session_id 的会话失败记录
+    delete_rows("session_failure", session_id=sid)
 
 
 def main():

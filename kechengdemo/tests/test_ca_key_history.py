@@ -11,35 +11,22 @@
 
 跑法：``.venv\\Scripts\\python.exe tests/test_ca_key_history.py``
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import re
 import sys
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "backend"))
-sys.path.insert(0, BASE)
+from _harness import ROOT, check, delete_rows, summary  # noqa: E402
 
 import db                        # noqa: E402
 import scoring_service as ss     # noqa: E402
 
-_TOTAL, _FAILED = 0, 0
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 def _strip_time(lines):
@@ -99,7 +86,7 @@ def main():
         hits = []
         for rel in ("backend/scoring_service.py", "backend/graph_session.py",
                     "backend/api_scoring.py"):
-            with open(os.path.join(BASE, rel), encoding="utf-8") as fh:
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
                 for n, line in enumerate(fh, 1):
                     s = line.strip()
                     if s.startswith("#") or s.startswith('"'):
@@ -107,7 +94,7 @@ def main():
                     if "build_conversation(" in s and "def build_conversation" not in s:
                         hits.append(f"{rel}:{n}")
         check("评分链路无 build_conversation 调用点（V1）", hits == [], str(hits))
-        with open(os.path.join(BASE, "backend/graph_session.py"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, "backend/graph_session.py"), encoding="utf-8") as fh:
             check("图路径经 build_context 取数（V1）", "build_context(" in fh.read())
 
         # ── 2. ④′ 冷启动：无标签时取最早 N 条 ───────────────────────────────
@@ -286,8 +273,7 @@ def main():
                 db.execute(f"""DELETE FROM {tbl} WHERE assessment_id IN
                                (SELECT assessment_id FROM customer_intent_assessment
                                  WHERE source_run_id = %s)""", (run_id,))
-            db.execute("DELETE FROM customer_intent_assessment WHERE source_run_id = %s",
-                       (run_id,))
+            delete_rows("customer_intent_assessment", source_run_id=run_id)
             # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
             try: ss.repair_current_flags()
             except Exception: pass
@@ -298,9 +284,7 @@ def main():
         left = db.query_one("SELECT count(*) AS n FROM chat_message WHERE cardinality(rule_tags) > 0")
         print(f"\n清理完成，全库带标签行 = {left['n']}")
 
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

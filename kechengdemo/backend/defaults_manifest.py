@@ -36,12 +36,16 @@ for _p in (str(_ROOT), str(_ROOT / "backend")):   # 支持直接 `python backend
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import db  # noqa: E402  设置读侧（`db.setting*`，唯一实现）
+
 #: `(键, API 名, 类别, 默认值, 说明)`
 #: 默认值为 `None` 表示「由其他模块常量决定」（如 confidence.* 的标定值）
 MANIFEST: tuple = (
     # ---------------- 保护：默认必须开 ----------------
     ("eval_gate_enabled", "eval_gate_enabled", "guard", True,
      "改规则前强制跑评估集门禁（闸6）：不开则规则可以随便发布、指标倒退无人拦"),
+    ("daily_run_analysis", "daily_run_analysis", "guard", True,
+     "日常任务：同步跑完自动接着跑分析（需求 4.2）。关掉则日常任务只同步不评分"),
     ("writeback_delta_mode", "writeback_delta_mode", "guard", True,
      "微伴评分是累计语义 → 只写差值。关掉会让客户分数被反复累加而虚高"),
     ("use_outbox", "use_outbox", "guard", True,
@@ -89,6 +93,12 @@ WIRED_JOBS: tuple = (
      "重投评分失败的会话（修 G5）"),
     ("data-retention", "retention.purge()", 720,
      "按 `data_retention_days` 清理观测数据（**默认 0 = 直接返回，不清理**）"),
+    ("daily-main", "sync → 分析（需求 4.2 主任务，默认 20:00）", 1440,
+     "每晚主增量同步 + 分析：覆盖 19:30 的销售主动发送及其后的客户互动"),
+    ("daily-compensate", "sync(lookback=48h) → 分析（需求 4.2 补偿，默认 03:30）", 1440,
+     "48 小时补偿同步 + 分析：修复接口入库延迟 / 网络失败 / 任务中断导致的漏处理"),
+    ("daily-watch", "scheduler._daily_watch_job（链条推进 + 窗口收尾）", 0.5,
+     "每 30 秒推进「同步 → 分析」链条：同步结束才启动分析，窗口到点请求停止"),
 )
 
 
@@ -109,11 +119,11 @@ def verify() -> dict:
     for key, api, kind, default, desc in MANIFEST:
         try:
             if isinstance(default, bool):
-                actual = ss.setting_bool(key, "", default)
+                actual = db.setting_bool(key, "", default)
             elif isinstance(default, int):
-                actual = ss.setting_int(key, "", default)
+                actual = db.setting_int(key, "", default)
             else:
-                actual = ss.setting(key, "", default)
+                actual = db.setting(key, "", default)
         except Exception as e:                  # noqa: BLE001
             actual = f"<读取失败 {type(e).__name__}>"
         drift = _norm(actual) != _norm(default)

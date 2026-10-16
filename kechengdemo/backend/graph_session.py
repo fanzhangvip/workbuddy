@@ -29,9 +29,13 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+import assessment_repo          # ② 段记忆要读「上次评估」（该表唯一读入口）
+import confidence               # 阈值 + 三层合成（不再经由 scoring_service 转发）
+import db
 import hooks
+import llm
 import rules as rules_mod
-import scoring_service as ss
+import scoring_context          # 事实 / 上下文（评分输入的中立模块）
 import trace
 
 NODE_PREPARE = "prepare_context"
@@ -84,20 +88,21 @@ def n_prepare(svc, state: SessionState) -> dict:
     """取消息 → 预处理层规范化 → 判定「有效条数是否够」。对应旧 L513-520。"""
     cand = state["cand"]
     staff_id, session_id = cand["staff_id"], cand["session_id"]
-    ctx = ss.build_context(staff_id, session_id,
-                           session_meta={"staff_id": staff_id, "session_id": session_id},
-                           rel_key=f"{staff_id}:{cand['target_id']}")
+    ctx = scoring_context.build_context(
+        staff_id, session_id,
+        session_meta={"staff_id": staff_id, "session_id": session_id},
+        rel_key=f"{staff_id}:{cand['target_id']}")
     # ① before_llm_call（架构 §2.4 H3）：与旧路径同一判定入口，保证口径一致。
     # B4 三口径（保留条数 / 客户开口数 / 文本长度）与旧路径**必须完全一致**，
     # 否则 `test_graph_session_parity` 会立刻暴露差异。
     _st = ctx["stats"]
     gate = hooks.before_llm_call(
         kept=_st["kept"],
-        min_kept=ss.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4),
+        min_kept=db.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4),
         customer_msgs=_st.get("customer_msgs"),
-        min_customer_msgs=ss.setting_int("ctx_min_customer_msgs", "CTX_MIN_CUSTOMER_MSGS", 1),
+        min_customer_msgs=db.setting_int("ctx_min_customer_msgs", "CTX_MIN_CUSTOMER_MSGS", 1),
         text_len=_st.get("text_len"),
-        min_effective_chars=ss.setting_int("ctx_min_effective_chars",
+        min_effective_chars=db.setting_int("ctx_min_effective_chars",
                                            "CTX_MIN_EFFECTIVE_CHARS", 0))
     if gate.denied:
         svc._note_hook(gate)
@@ -118,8 +123,8 @@ def n_ctx_stats(svc, state: SessionState) -> dict:
 def n_facts(svc, state: SessionState) -> dict:
     """规则引擎事实（48h 未回复等）。对应旧 L523。"""
     cand = state["cand"]
-    facts = ss.compute_facts(cand["staff_id"], cand["session_id"],
-                             fetch_tags=state["fetch_tags"])
+    facts = scoring_context.compute_facts(cand["staff_id"], cand["session_id"],
+                                          fetch_tags=state["fetch_tags"])
     svc._note_facts(facts)          # 修 G1：取标签失败留痕（与旧路径同口径）
     return {"facts": facts}
 
@@ -135,9 +140,12 @@ def n_items(svc, state: SessionState) -> dict:
     """拆分正/负项 + 叠加规则引擎硬指标。对应旧 L527-532。"""
     res, rules, facts = state["res"], state["rules"], state["facts"]
     # engine=rule 的规则已在 rules.derive_items 里排除，这里再兜一层（防御契约回退）
-    engine_ids = svc._engine_rule_ids(rules)
+    engine_ids = rules_mod.engine_rule_ids(rules)
     neg = [i for i in (res.get("negative_items") or []) if i.get("rule_id") not in engine_ids]
-    neg += svc._engine_negative_items(facts, rules)      # negative_no_reply_2d 等硬指标
+    neg += rules_mod.engine_negative_items(facts, rules)  # negative_no_reply_2d 等硬指标
+    # P2：锚点随 `res` 带去落库（与串行路径 `_score_one` 同口径 —— 两条路径必须一致，
+    # 否则 `test_graph_session_parity.py` 会漂）
+    res["data_as_of"] = facts.get("as_of")
     return {"pos_items": res.get("positive_items") or [], "neg_items": neg}
 
 
@@ -154,15 +162,16 @@ def n_local_score(svc, state: SessionState) -> dict:
                                   total_llm=len(rules_mod.llm_rule_ids(state["rules"])))
     svc._note_hook(gate)
     if gate.denied:
-        raise ss.llm.FatalLLMError(
+        raise llm.FatalLLMError(
             f"命中项极性异常（规则表与输出不符）：{gate.detail.get('polarity_violations')}")
     # 置信度三层合成（架构 第六章 E4）：与旧路径同一函数、同一阈值，口径必然一致
     cand = state["cand"]
-    last_grade = (ss._last_assessment(f"{cand['staff_id']}:{cand['target_id']}") or {}).get("grade")
+    last_grade = (assessment_repo.last_assessment(
+        f"{cand['staff_id']}:{cand['target_id']}") or {}).get("grade")
     # 传**合并后**的 pos/neg_items（含引擎硬指标）；理由见 scoring_service._score_one 的注释
-    conf = ss.confidence.compute(state["pos_items"], state["neg_items"], state["res"],
-                                 score, grade, state["rules"], last_grade=last_grade,
-                                 thresholds=ss._confidence_thresholds())
+    conf = confidence.compute(state["pos_items"], state["neg_items"], state["res"],
+                              score, grade, state["rules"], last_grade=last_grade,
+                              thresholds=confidence.thresholds())
     n_pos = len(state["pos_items"])
     conf_items = conf.get("items") or []
     return {"score": score, "grade": grade, "unchecked": unchecked,

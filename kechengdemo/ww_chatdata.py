@@ -130,6 +130,18 @@ class WecomChatData:
         if self.verbose:
             print(f"[ww] {msg}", flush=True)
 
+    def _page_url(self) -> str:
+        """给企微/微伴用的页面 URL：**必须去掉 `#片段`**。
+
+        实证（2026-10-16）：页面自己发 `createOpenChatSession` 时 body.url 是
+        `https://weibanzhushou.com/dashboard/messages`（无片段）；我们曾把带
+        `#type=staff&...` 的完整地址传进去，企微回
+        ``40093 不合法的jsapi_ticket参数`` —— 签名是按这个字符串算的，
+        多一段片段就对不上。这里统一收敛，调用方不必记得这件事。
+        """
+        raw = (self.boot.get("url") or "").split("#")[0].strip()
+        return raw or "https://weibanzhushou.com/dashboard/messages"
+
     # ---- 原始 POST ----
     def _post(self, url: str, body: dict, cookie: str,
               extra_headers: dict = None, timeout: int = 30):
@@ -155,7 +167,7 @@ class WecomChatData:
         if not force and self._sig and time.time() - self._sig_at < SIG_TTL:
             return self._sig
 
-        url = self.boot["url"]
+        url = self._page_url()          # 去片段：见 `_page_url` 的 40093 说明
         q = urllib.parse.urlencode({"url": url})
         req = urllib.request.Request(
             f"{WB_SIGN_URL}?{q}",
@@ -190,7 +202,7 @@ class WecomChatData:
     # ---- ② 开会话拿 sid ----
     def new_session(self) -> str:
         body = {
-            "url": self.boot["url"],
+            "url": self._page_url(),    # 去片段：与页面自己发的请求体逐字一致
             "open_sid": self.boot["open_sid"],
             "open_sid_meta": self.boot.get("open_sid_meta"),
             "agent_config_params": self._sign_params(),
@@ -260,6 +272,114 @@ class WecomChatData:
                  for m in messages
                  if m.get("original_id") and m.get("secret_key")]
         return self.decrypt_items(items)
+
+
+# ---------------------------------------------------------------- 端到端自检
+
+def _sample_session_from_db() -> dict:
+    """从库里挑一个**最近有消息**的 ext_user 会话，供自检取样例消息用。
+
+    延迟 import `db`：本模块默认是"纯 HTTP 客户端"，只有需要取样例时才连库；
+    连不上就返回空 dict，让调用方退回"扫前几个员工"的兜底路径。
+    """
+    try:
+        import sys as _sys
+        _backend = str(Path(__file__).resolve().parent / "backend")
+        if _backend not in _sys.path:      # 本模块在仓库根，`db` 在 backend/ 下
+            _sys.path.insert(0, _backend)
+        import db
+        row = db.query_one(
+            """SELECT staff_id, session_id FROM chat_session
+                WHERE session_type = 'ext_user' AND target_id IS NOT NULL
+                ORDER BY last_msg_time DESC NULLS LAST, session_id
+                LIMIT 1""")
+        return {"staff_id": row["staff_id"], "session_id": row["session_id"]} if row else {}
+    except Exception:                                       # noqa: BLE001
+        return {}
+
+
+def check_channel(sample: int = 3, session_hint: dict = None) -> dict:
+    """端到端自检：**签名 → 开会话 → 取样例消息 → 解密**。纯 HTTP，不需要浏览器。
+
+    ## 为什么不能只校验微伴 jsapi_sign
+
+    这条链路有**两把独立的凭据**，失效节奏完全不同：
+      · 微伴登录态 cookie —— 滑动过期，`wb_keepalive` 每 6 小时刷一次就永不失效；
+      · 企微 ``open_sid`` —— 页面写进 ``localStorage`` 的**缓存值**
+        （组件源码：`if (!(n = localStorage.getItem("ww.open.sid"))) throw new Error("Missing open sid")`），
+        它背后那侧的服务端会话会**先死**。
+
+    实测（2026-10-15）：微伴 cookie 明明有效（`jsapi_sign` 返回 success），但
+    ``createOpenChatSession`` 回 ``errCode 42006 missing session`` —— 正文通道实际
+    已经断了 3 天（`content_state='ok'` 的 `fetched_at` 停在 10-13 13:26 UTC），
+    而保活日志一路在报「✅ 凭据已刷新」。**只验一半就报成功，比不验更危险**。
+
+    所以 `auth_service.verify()`（页面上的"校验凭据是否有效"）与
+    `wb_keepalive.refresh()`（保活后的收尾）**都调这一个函数**，口径只有一份。
+
+    返回 ``{ok, sid_tail, sample_msgs, decrypted, message, error}``；不抛异常。
+    """
+    out = {"ok": False, "sid_tail": None, "sample_msgs": 0, "decrypted": 0,
+           "message": "", "error": ""}
+    try:
+        import weiban
+    except Exception as e:                                  # noqa: BLE001
+        out["error"] = out["message"] = f"模块导入失败：{e}"
+        return out
+
+    # ① + ②：能否建立解密会话 —— 这一步失败基本就是 open session 没了
+    try:
+        ww = WecomChatData(verbose=False)
+        sid = ww.new_session()
+        out["sid_tail"] = sid[-8:]
+    except Exception as e:                                  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {e}"
+        out["message"] = "企微正文会话建立失败（open session 可能已失效）"
+        return out
+
+    # ③：取样例消息真解一遍。
+    #   ⚠️ 两处都踩过：只看"第一个员工"很容易拿到名下没有会话的人，于是每次都
+    #   "跳过解密冒烟" —— 而**跳过的冒烟等于没验**，通道断了也会报"正常"。
+    #   所以优先用调用方给的/库里挑的**确实有消息**的会话，再退回"扫前几个员工"。
+    #   :param session_hint: ``{"staff_id":..., "session_id":...}``（可选）
+    try:
+        inspected, msgs = 0, []
+        hint = session_hint if session_hint and session_hint.get("staff_id") else \
+            _sample_session_from_db()
+        if hint.get("staff_id") and hint.get("session_id"):
+            inspected = 1
+            msgs = (weiban.list_messages(hint["staff_id"], hint["session_id"], limit=sample)
+                    .get("message_list") or [])
+        for staff in ([] if msgs else weiban.iter_all_staff()):
+            inspected += 1
+            if inspected > 5:
+                break
+            res = weiban.list_sessions(staff["id"], "ext_user", limit=1, offset=0,
+                                       order_by="last_updated_desc")
+            sess = (res.get("session_list") or [None])[0]
+            if not sess:
+                continue
+            msgs = (weiban.list_messages(staff["id"], sess["id"], limit=sample)
+                    .get("message_list") or [])
+            if msgs:
+                break
+        out["sample_msgs"] = len(msgs)
+        if msgs:
+            out["decrypted"] = len(ww.decrypt(msgs))
+        else:
+            out["message"] = "正文会话已建立（查了 %d 个员工都没取到消息，跳过解密冒烟）" % inspected
+    except Exception as e:                                  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {e}"
+        out["message"] = "正文会话已建立，但取样例消息失败"
+        return out
+
+    out["ok"] = True
+    # 真解过样例才说"通道正常"；一条样例都没拿到时保留"跳过冒烟"的原话 ——
+    # 含糊地把 0/0 说成"正常"，就是本文档开头批评的那种"只验一半"。
+    if not out["message"]:
+        out["message"] = (f"凭据有效，正文通道正常"
+                          f"（解密 {out['decrypted']}/{out['sample_msgs']} 条样例消息）")
+    return out
 
 
 # ---------------------------------------------------------------- 明文格式化

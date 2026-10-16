@@ -1,6 +1,10 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { api, fmtTime, fmtRelative } from '../api'
+import { ref, computed, onMounted } from 'vue'
+import { api, fmtRelative, gradeTag } from '../api'
+import ChatBubbles from '../components/ChatBubbles.vue'
+import Pager from '../components/Pager.vue'
+import { useAsyncAction } from '../composables/useAsyncAction'
+import { usePolling } from '../composables/usePolling'
 
 const TABS = [
   { key: '', label: '全部' },
@@ -19,10 +23,8 @@ const options = ref([])            // 可选扣分项
 const rows = ref([])               // 人工打分行
 const note = ref('')
 const reviewer = ref(localStorage.getItem('reviewer') || '工作人员')
-const busy = ref(false)
-const error = ref('')
-let timer = null
-
+// busy / error / msg 由 composable 提供（模板里的 `busy` 用法不变）
+const { busy, error, run } = useAsyncAction()
 async function refresh() {
   try {
     const [s, l] = await Promise.all([
@@ -67,57 +69,45 @@ async function open(r) {
 }
 
 const humanTotal = computed(() => rows.value.filter(r => r.checked).reduce((s, r) => s + (r.score || 0), 0))
-const convLines = computed(() => {
-  const txt = current.value?.conversation || ''
-  return txt.split('\n').filter(Boolean).map(l => {
-    const i = l.indexOf(':')
-    return { who: l.slice(0, i), text: l.slice(i + 1).trim(), side: l.startsWith('销售') ? 'right' : 'left' }
-  })
-})
 
 async function submit() {
   if (!current.value) return
-  busy.value = true; error.value = ''
-  try {
+  await run(async () => {
     localStorage.setItem('reviewer', reviewer.value)
     const items = rows.value.filter(r => r.checked)
       .map(r => ({ rule_id: r.rule_id, score: r.score, reason: r.reason || r.dimension }))
     const res = await api.reviewSubmit({
       review_id: current.value.review.id, items, note: note.value, reviewer: reviewer.value,
     })
-    if (!res.ok) { error.value = res.reason || '提交失败'; busy.value = false; return }
+    if (!res.ok) { error.value = res.reason || '提交失败'; return }
     await refresh(); await open({ id: current.value.review.id })
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 async function setStatus(st) {
   if (!current.value) return
-  busy.value = true; error.value = ''
-  try {
+  await run(async () => {
     localStorage.setItem('reviewer', reviewer.value)
     const res = await api.reviewSetStatus({
       review_id: current.value.review.id, status: st, note: note.value, reviewer: reviewer.value,
     })
-    if (!res.ok) { error.value = res.reason || '操作失败'; busy.value = false; return }
+    if (!res.ok) { error.value = res.reason || '操作失败'; return }
     await refresh(); await open({ id: current.value.review.id })
-  } catch (e) { error.value = e.message }
-  busy.value = false
+  })
 }
 
 const ST_TAG = { pending: 'orange', done: 'green', ignored: '' }
 const ST_CN = { pending: '未打分', done: '已完成', ignored: '已忽略' }
-const GRADE_TAG = { S: 'red', A: 'orange', B: 'blue', C: 'green', D: '' }
 
 function reset() { current.value = null; error.value = '' }
 
-onMounted(() => { refresh(); loadStaffs(); loadOptions(); timer = setInterval(refresh, 5000) })
-onUnmounted(() => clearInterval(timer))
+onMounted(() => { loadStaffs(); loadOptions() })
+usePolling(refresh, 5000)
 </script>
 
 <template>
   <div class="page">
-    <div class="layout">
+    <div class="split-2col">
       <!-- 左：待办列表 -->
       <div class="card">
         <div class="card-head">负分复核</div>
@@ -134,7 +124,7 @@ onUnmounted(() => clearInterval(timer))
               <option v-for="s in staffs" :key="s.staff_id" :value="s.staff_id">{{ s.name }}</option>
             </select>
             <input v-model="filters.q" class="input" placeholder="客户 / 员工名称" @keyup.enter="search" />
-            <div class="two">
+            <div class="grid-2">
               <input v-model="filters.date_from" class="input" type="date" @change="search" />
               <input v-model="filters.date_to" class="input" type="date" @change="search" />
             </div>
@@ -158,11 +148,8 @@ onUnmounted(() => clearInterval(timer))
               </tbody>
             </table>
           </div>
-          <div class="pager" v-if="list.total > filters.page_size">
-            <button class="btn sm" :disabled="filters.page <= 1" @click="goto(filters.page - 1)">上一页</button>
-            <span class="muted" style="font-size:12px">{{ filters.page }} / {{ Math.ceil(list.total / filters.page_size) }}</span>
-            <button class="btn sm" :disabled="filters.page >= Math.ceil(list.total / filters.page_size)" @click="goto(filters.page + 1)">下一页</button>
-          </div>
+          <Pager :page="filters.page" :page-size="filters.page_size"
+                 :total="list.total" @go="goto" />
         </div>
       </div>
 
@@ -172,7 +159,7 @@ onUnmounted(() => clearInterval(timer))
           <div class="card-head">
             复核详情 · {{ current.review.target_name }}
             <span class="tag" :class="ST_TAG[current.review.status]" style="margin-left:8px">{{ ST_CN[current.review.status] }}</span>
-            <span v-if="current.assessment" class="tag" :class="GRADE_TAG[current.assessment.grade]" style="margin-left:6px">
+            <span v-if="current.assessment" class="tag" :class="gradeTag(current.assessment.grade)" style="margin-left:6px">
               {{ current.assessment.grade }} · {{ current.assessment.raw_score }} 分
             </span>
             <button class="btn sm" style="margin-left:auto" @click="reset">收起</button>
@@ -189,8 +176,10 @@ onUnmounted(() => clearInterval(timer))
               <div v-for="(i, k) in (current.review.ai_negative_items || [])" :key="k" class="item">
                 <span class="tag red">{{ i.score }}</span>
                 <div><b>{{ i.dimension }}</b>
-                  <div class="muted" style="font-size:12px">{{ i.reason }}</div>
-                  <div v-for="(ev, e) in (i.evidence || [])" :key="e" class="ev">{{ ev }}</div>
+                  <div class="muted" style="font-size:12px;white-space:pre-wrap">{{ i.reason }}</div>
+                <!-- 证据行 = 后端回填的整行文本（`#012 [时间] 角色: 内容`），
+                     交给同一个组件渲染：去编号噪音、左右分栏、多行保留 -->
+                <ChatBubbles compact :text="(i.evidence || []).join('\n')" />
                 </div>
               </div>
             </div>
@@ -198,10 +187,9 @@ onUnmounted(() => clearInterval(timer))
             <div>
               <div class="lbl">聊天记录（近期）</div>
               <div class="conv">
-                <div v-for="(l, k) in convLines" :key="k" class="bubble" :class="l.side">
-                  <span class="who">{{ l.who }}</span>{{ l.text }}
-                </div>
-                <div v-if="!convLines.length" class="muted" style="font-size:12px">无聊天记录</div>
+                <!-- 气泡渲染统一走公共组件（AGENTS.md: Reuse Before Rewrite） -->
+                <ChatBubbles :messages="current.messages || []" :text="current.conversation"
+                             empty="无聊天记录" />
               </div>
             </div>
           </div>
@@ -212,7 +200,7 @@ onUnmounted(() => clearInterval(timer))
           <div class="card-body" style="display:grid;gap:14px">
             <div>
               <label class="lbl">确认成立的扣分项（勾选即计入，分值可微调）</label>
-              <div v-for="r in rows" :key="r.rule_id" class="row">
+              <div v-for="r in rows" :key="r.rule_id" class="kv-row">
                 <label class="ck">
                   <input type="checkbox" v-model="r.checked" />
                   <span>{{ r.dimension }}</span>
@@ -265,29 +253,10 @@ onUnmounted(() => clearInterval(timer))
 </template>
 
 <style scoped>
-.layout { display: grid; grid-template-columns: 420px 1fr; gap: 16px; align-items: start; }
-@media (max-width: 1200px) { .layout { grid-template-columns: 1fr; } }
-.lbl { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 6px; font-weight: 500; }
-.two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-.tabs button {
-  padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel);
-  font-size: 12.5px; cursor: pointer; font-family: inherit; color: var(--text-2); display: inline-flex; gap: 6px; align-items: center;
-}
-.tabs button.on { border-color: var(--brand); background: var(--brand-weak); color: var(--brand); font-weight: 600; }
-.cnt { background: var(--panel-2); border-radius: 99px; padding: 0 6px; font-size: 11px; border: 1px solid var(--border); }
-.tabs button.on .cnt { background: #fff; border-color: #d3e1ff; }
 tr.sel { background: var(--brand-weak) !important; }
-.pager { display: flex; align-items: center; gap: 12px; justify-content: center; }
-.item { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--border); }
-.item:last-child { border-bottom: none; }
-.ev { font-size: 12px; color: #1e4fa8; background: var(--brand-weak); border-radius: 6px; padding: 4px 8px; margin-top: 5px; }
-.row { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 5px 0; }
 .ck { display: flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; }
 .conv { max-height: 320px; overflow: auto; background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
-.bubble { font-size: 12.5px; line-height: 1.6; max-width: 84%; padding: 7px 10px; border-radius: 10px;
-  background: var(--panel); border: 1px solid var(--border); word-break: break-all; }
-.bubble.right { margin-left: auto; background: var(--brand-weak); border-color: #d3e1ff; }
-.bubble .who { display: block; font-size: 10.5px; color: var(--text-3); margin-bottom: 2px; }
+/* 气泡 / 引用块 / 媒体样式已移入 components/ChatBubbles.vue
+   （AGENTS.md: Reuse Before Rewrite —— 这里不再重复定义） */
 </style>

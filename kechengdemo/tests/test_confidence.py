@@ -13,39 +13,26 @@
 
 跑法：``.venv\\Scripts\\python.exe tests/test_confidence.py``
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "backend"))
-sys.path.insert(0, BASE)
+from _harness import ROOT, check, delete_rows, summary  # noqa: E402
 
 import confidence as cf          # noqa: E402
 import db                        # noqa: E402
 import rules as rules_mod        # noqa: E402
 import scoring_service as ss     # noqa: E402
 
-_TOTAL, _FAILED = 0, 0
 _R = rules_mod.load_rules()
 _RIS = rules_mod._index(_R)
 _ENGINE_RID = next(rid for rid, r in _RIS.items() if r.get("engine") == "rule")
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 def P(rid, score, ev=(), eids=()):
@@ -312,7 +299,7 @@ def test_db():
               row["model_confidence"] == 0.9, str(row["model_confidence"]))
     finally:
         if aid:
-            db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (aid,))
+            delete_rows("customer_intent_assessment", assessment_id=aid)
             # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
             try: ss.repair_current_flags()
             except Exception: pass
@@ -324,9 +311,7 @@ def main():
     test_session()
     test_triggers()
     test_db()
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

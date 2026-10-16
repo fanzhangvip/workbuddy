@@ -12,34 +12,21 @@
   · 「已接线」的定时任务清单里含 `idempotency.reap`（评审 P2-1 的原话形态：
     「函数写好了但全仓库没有调用方」）
 """
-# 统一输出编码（修 P2-2）
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import ROOT, check, delete_rows, summary  # noqa: E402
 
 import defaults_manifest as dm   # noqa: E402
 import schema_check as sc        # noqa: E402
 
-_TOTAL = 0
-_FAILED = 0
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 # ============================================================ 解析器
@@ -155,7 +142,7 @@ def test_guard_mismatch_detected():
         check("整体 ok 转为 False", r.get("ok") is False, str(r.get("ok")))
     finally:
         if orig is None:
-            db.execute("DELETE FROM app_setting WHERE key=%s", (key,))
+            delete_rows("app_setting", key=key)
         else:
             db.set_setting(key, orig)
 
@@ -168,9 +155,7 @@ def main():
     test_manifest_shape()
     test_manifest_verify()
     test_guard_mismatch_detected()
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -1,13 +1,14 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed } from 'vue'
 import { api } from '../api'
+import { usePolling } from '../composables/usePolling'
 
 const status = ref(null)
 const verifying = ref(false)
 const verifyResult = ref(null)
 const starting = ref(false)
 const localError = ref('')
-let timer = null
+const copied = ref(false)
 
 const STAGES = [
   { key: 'launching', text: '启动浏览器' },
@@ -21,6 +22,10 @@ async function load() {
 }
 
 const login = computed(() => status.value?.login || {})
+// 浏览器能力由后端判定并下发（唯一来源：wb_bootstrap.browser_env）——
+// 容器部署时 available=false，此时"扫码登录"这个动作在容器里**做不到**，
+// 页面必须给宿主机指引，而不是让用户点一个必然失败的按钮。
+const browser = computed(() => status.value?.browser || { available: true })
 const stageIndex = computed(() => {
   const i = STAGES.findIndex(s => s.key === login.value.stage)
   return login.value.stage === 'failed' ? -1 : i
@@ -39,10 +44,19 @@ async function startLogin() {
   verifyResult.value = null
   try {
     const r = await api.authLogin({ wait_sec: 300 })
-    if (!r.ok) localError.value = r.reason || '启动失败'
+    // 后端会带上 reason + hint（该怎么解决），不要只显示一个错误码
+    if (!r.ok) localError.value = [r.reason || '启动失败', r.hint].filter(Boolean).join(' ')
   } catch (e) { localError.value = e.message }
   starting.value = false
   load()
+}
+
+async function copyHint() {
+  try {
+    await navigator.clipboard.writeText(browser.value.host_command || 'host_bootstrap_login.bat')
+    copied.value = true
+    setTimeout(() => { copied.value = false }, 2000)
+  } catch (e) { localError.value = '复制失败，请手动输入：' + (browser.value.host_command || 'host_bootstrap_login.bat') }
 }
 
 async function doVerify() {
@@ -53,8 +67,7 @@ async function doVerify() {
   load()
 }
 
-onMounted(() => { load(); timer = setInterval(load, 3000) })
-onUnmounted(() => clearInterval(timer))
+usePolling(load, 3000)
 </script>
 
 <template>
@@ -82,14 +95,31 @@ onUnmounted(() => clearInterval(timer))
           </table>
 
           <div style="display:flex;gap:10px;margin-top:18px;flex-wrap:wrap">
-            <button class="btn primary lg" :disabled="starting || login.running" @click="startLogin">
+            <button class="btn lg" :class="{ primary: browser.available !== false }"
+                    :disabled="starting || login.running || browser.available === false" @click="startLogin">
               <i v-if="starting || login.running" class="spin"></i>
-              {{ login.running ? '登录流程进行中…' : '弹出浏览器扫码登录' }}
+              {{ browser.available === false ? '本环境无法弹浏览器（见下方指引）'
+                 : login.running ? '登录流程进行中…' : '弹出浏览器扫码登录' }}
             </button>
-            <button class="btn lg" :disabled="verifying || !status?.has_file" @click="doVerify">
+            <button class="btn lg" :class="{ primary: browser.available === false }"
+                    :disabled="verifying || !status?.has_file" @click="doVerify">
               <i v-if="verifying" class="spin dark"></i>
               校验凭据是否有效
             </button>
+          </div>
+
+          <!-- 容器部署的常态：后端弹不出浏览器。给出**可执行**的宿主机指引 -->
+          <div v-if="browser.available === false" class="alert warn" style="margin-top:14px">
+            <strong>这台后端弹不出浏览器</strong><br />
+            {{ browser.reason }}<br />
+            <span style="display:block;margin-top:6px">{{ browser.hint }}</span>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+              <code class="mono" style="background:var(--panel);padding:3px 8px;border-radius:6px;border:1px solid var(--border)">
+                {{ browser.host_command || 'host_bootstrap_login.bat' }}
+              </code>
+              <button class="btn sm" @click="copyHint">{{ copied ? '已复制' : '复制命令' }}</button>
+              <span class="muted" style="font-size:12px">在宿主机项目目录执行；凭据写入 .cache/ 后本页刷新即生效</span>
+            </div>
           </div>
 
           <div v-if="localError" class="alert err" style="margin-top:14px">{{ localError }}</div>
@@ -107,17 +137,21 @@ onUnmounted(() => clearInterval(timer))
       <div class="card" v-if="login.running || login.stage !== 'idle'">
         <div class="card-head">登录进度</div>
         <div class="card-body">
-          <div class="steps">
+          <div class="chip-row">
             <div v-for="(s, i) in STAGES" :key="s.key" class="step"
                  :class="{ done: stageIndex > i || login.stage === 'done', active: stageIndex === i }">
               <span class="step-dot"></span>
               <span>{{ s.text }}</span>
             </div>
           </div>
-          <div class="alert" :class="login.stage === 'failed' ? 'err' : login.stage === 'done' ? 'ok' : 'info'"
+          <div class="alert"
+               :class="login.stage === 'failed' ? 'err'
+                       : login.stage === 'unavailable' ? 'warn'
+                       : login.stage === 'done' ? 'ok' : 'info'"
                style="margin-top:14px">
             {{ login.message }}
-            <div v-if="login.error" class="mono" style="margin-top:6px">{{ login.error }}</div>
+            <div v-if="login.error" style="margin-top:6px"
+                 :class="{ mono: login.stage === 'failed' }">{{ login.error }}</div>
           </div>
           <div v-if="login.running" class="alert warn" style="margin-top:12px">
             浏览器窗口已弹出，请在窗口内完成登录（企业微信扫码）。<br />
@@ -141,6 +175,12 @@ onUnmounted(() => clearInterval(timer))
             抓到的凭据会缓存在 <span class="mono">.cache/ww_bootstrap.json</span>，之后<b>所有同步都是纯 HTTP</b>，
             不再需要浏览器。微伴登录态约 7 天有效，过期后回到本页重新登录一次即可。
           </p>
+          <p style="margin:10px 0 0">
+            <b>如果本页的「扫码登录」是灰的</b>：说明后端跑在容器里（容器没有 Chrome 和显示器）。
+            在<b>宿主机</b>项目目录双击 <span class="mono">host_bootstrap_login.bat</span> 扫码即可 ——
+            凭据写进同一个 <span class="mono">.cache/</span> 目录，容器会自动读到；
+            「校验凭据是否有效」不依赖浏览器，容器里随时可用。
+          </p>
         </div>
       </div>
 
@@ -149,7 +189,6 @@ onUnmounted(() => clearInterval(timer))
 </template>
 
 <style scoped>
-.steps { display: flex; gap: 8px; flex-wrap: wrap; }
 .step {
   display: flex; align-items: center; gap: 7px; padding: 7px 13px;
   border: 1px solid var(--border); border-radius: 99px; font-size: 12.5px; color: var(--text-3);

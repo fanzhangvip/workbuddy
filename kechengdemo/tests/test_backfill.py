@@ -13,37 +13,29 @@
 ⚠️ 测试只用 `rel_like` 隔离出的**合成行**，绝不碰生产数据；
 所有断言用自造数据（不依赖全库现状），跑完清理。
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import json
 import os
 import sys
 import tempfile
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
 
 import backfill as bf            # noqa: E402
 import db                        # noqa: E402
 import rules as rules_mod        # noqa: E402
 import scoring_service as ss     # noqa: E402
 
-PASSED, FAILED = [], []
 
 #: 合成行的关系键前缀（同时用于 `rel_like` 隔离）
 REL = "BFTEST:subject"
 REL2 = "BFTEST:noevidence"
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 def _rules():
@@ -133,7 +125,7 @@ def test_snapshot_determinism():
     # 同一 rel 造两行（第二行的 last_grade 应取第一行的**原** grade）
     marker = "BFTEST:snap"
     try:
-        db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key=%s", (marker,))
+        delete_rows("customer_intent_assessment", relationship_key=marker)
         # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
         try: ss.repair_current_flags()
         except Exception: pass
@@ -162,7 +154,7 @@ def test_snapshot_determinism():
         snap2 = bf.snapshot_last_grade(bf.fetch_rows(only_missing=True, rel_like=marker))
         check("快照幂等（重复计算一致）", snap == snap2, f"{snap} vs {snap2}")
     finally:
-        db.execute("DELETE FROM customer_intent_assessment WHERE relationship_key=%s", (marker,))
+        delete_rows("customer_intent_assessment", relationship_key=marker)
         # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
         try: ss.repair_current_flags()
         except Exception: pass
@@ -240,7 +232,7 @@ def test_end_to_end():
               row2b["needs_human_review"] is False, str(row2b["needs_human_review"]))
     finally:
         for aid in aids:
-            db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (aid,))
+            delete_rows("customer_intent_assessment", assessment_id=aid)
             # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
             try: ss.repair_current_flags()
             except Exception: pass
@@ -384,7 +376,7 @@ def test_backup_shape():
               rec["session_confidence"] is None, str(rec["session_confidence"]))
     finally:
         if aid:
-            db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (aid,))
+            delete_rows("customer_intent_assessment", assessment_id=aid)
             # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
             try: ss.repair_current_flags()
             except Exception: pass

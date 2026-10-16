@@ -1,18 +1,32 @@
-# PostgreSQL（本系统专用实例，映射到宿主 5433，避免与其他项目冲突）
-# 启动：docker compose up -d
+# 客户意向评分系统 —— 全栈 Docker 编排
+#
+# 一键起：docker compose up -d --build
+# 带 HTTPS：docker compose --profile https up -d --build
+# 带定时备份：docker compose --profile ops up -d
+#
+# ⚠️ 一个必须知道的边界：**浏览器凭据链路跑在宿主机，不在容器里**
+#     `wb_bootstrap` / `wb_keepalive` 需要本机 Chrome + 企业微信扫码（微伴没有账号密码登录），
+#     容器里既没有 Chrome 也没有显示器。所以：
+#       · 宿主机跑一次：python wb_bootstrap.py     （扫码，产出 .cache/ww_bootstrap.json）
+#       · 之后周期性：  python wb_keepalive.py     （保活，滑动过期 7 天）
+#       · 容器通过 volume 读同一个 .cache/ → 之后所有同步/解密/评分都是纯 HTTP，全在容器内完成
+#     这是外部约束（对方只有扫码登录），不是本项目缺陷。
+
 services:
+  # ---------------- PostgreSQL ----------------
   postgres:
     image: pgvector/pgvector:pg16
     container_name: weiban-chat-pg
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      # 口令从 .env 读取（compose 会自动加载同目录 .env）；未设置则直接报错，
-      # 避免仓库里带着口令、部署时静默沿用弱口令
+      # 口令从 .env 读取；未设置则直接报错，避免仓库里带着口令、部署时静默沿用弱口令
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置，请在 .env 中配置}
       POSTGRES_DB: weiban_chat
+      TZ: Asia/Shanghai
     ports:
-      - "5433:5432"
+      # 只绑本机：容器间走内部网络（postgres:5432），宿主端口仅供本机排障工具使用
+      - "127.0.0.1:5433:5432"
     volumes:
       - weiban_pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,5 +35,97 @@ services:
       timeout: 5s
       retries: 5
 
+  # ---------------- 应用（API + 调度器 + 前端静态托管） ----------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kechengdemo/scoring-app:latest
+    container_name: weiban-scoring-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # .env 提供全部密钥（微伴 corp_id/secret、LLM key、API_PASSWORD 等）；
+    # 下面 environment 里的值**优先级更高**，用来修掉"宿主机视角"的连接串。
+    env_file:
+      - .env
+    environment:
+      # ★ 必须覆盖：.env 里是宿主机视角的 127.0.0.1:5433，容器内要连服务名
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?}@postgres:5432/weiban_chat
+      TZ: Asia/Shanghai
+      # 容器内没有 Chrome：显式关掉依赖浏览器的能力，避免有人误以为容器里能扫码
+      # ⚠️ 这里原本写的是 `BROWSER_IN_CONTAINER: "false"`，但**全库没有任何代码读它** ——
+      #    于是容器里点「扫码登录」照样去 Popen 一个 Windows 路径的 chrome.exe，
+      #    用户看到的是 `[Errno 2] No such file or directory: 'C:\Program Files\...'`。
+      #    现在改为 `BROWSER_ENABLED=0`，由 `wb_bootstrap.browser_env()` 读取，
+      #    效果是**给出正确指引**（去宿主机跑 host_bootstrap_login.bat）而不是抛裸系统错误。
+      BROWSER_ENABLED: "0"
+    ports:
+      # 只绑本机。要多人访问请用下面的 https profile（或自行加反代），不要直接对外开这个端口。
+      - "127.0.0.1:8848:8848"
+    volumes:
+      # 凭据（宿主机扫码产出、容器只读使用）
+      - ./.cache:/app/.cache
+      # 备份 + JSONL 审计导出（落宿主机，容器删了也不丢）
+      - ./backups:/app/backups
+      - ./导出:/app/导出
+      - ./eval:/app/eval
+    healthcheck:
+      # ⚠️ 用 python 而不是 curl：镜像里**没装 curl**（见 Dockerfile 的取舍说明）。
+      #    注意 compose 的 healthcheck 会**覆盖** Dockerfile 里的同名声明，
+      #    所以两处必须保持一致 —— 只改一处就会出现"应用健康但被判 unhealthy"。
+      test: ["CMD", "python", "-c",
+             "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8848/api/health', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+  # ---------------- HTTPS 反代（可选：--profile https） ----------------
+  # 为什么需要它：应用用的是 HTTP Basic 鉴权，**明文 HTTP 下口令会裸奔**。
+  # 只绑 127.0.0.1 单人用尚可；一旦要多人/跨机访问，必须走这一层。
+  # Caddy 用 `tls internal` 自签内部 CA，零证书运维；客户端首次需信任该 CA。
+  proxy:
+    image: caddy:2-alpine
+    container_name: weiban-scoring-proxy
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # ---------------- 定时备份（可选：--profile ops） ----------------
+  # 为什么要有它：微伴回写是**不可逆**的（评分接口只能累加），
+  # 结论、复核记录、回写账本一旦误删就只能靠备份。
+  backup:
+    image: postgres:16-alpine
+    container_name: weiban-scoring-backup
+    profiles: ["ops"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?}
+      PGHOST: postgres
+      PGDATABASE: weiban_chat
+      PGUSER: postgres
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./backups:/backups
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/backup-loop.sh"]
+
 volumes:
   weiban_pg_data:
+  caddy_data:
+  caddy_config:

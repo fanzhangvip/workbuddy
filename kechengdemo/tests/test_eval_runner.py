@@ -10,19 +10,15 @@
 
 跑法：``.venv\\Scripts\\python.exe tests/test_eval_runner.py``
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "backend"))
-sys.path.insert(0, BASE)
+from _harness import ROOT, check, delete_rows, summary  # noqa: E402
 
 import analyze                   # noqa: E402
 import api_eval                  # noqa: E402
@@ -31,18 +27,9 @@ import eval_runner as er         # noqa: E402
 import rules as rules_mod        # noqa: E402
 import scoring_service as ss     # noqa: E402
 
-_TOTAL, _FAILED = 0, 0
 _KIND = "edge"                   # 用最不可能有真实数据的层级做测试
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 def _pick(min_msgs=60):
@@ -113,28 +100,31 @@ def test_metrics():
 
 def test_gate():
     print("\n--- 2. 回归门禁（方向敏感 + 容差）---")
-    base = {"rule_f1": 0.80, "grade_acc": 0.70, "fp_case_rate": 0.20}
+    # ⚠️ 门禁主指标是 `rule_f1_llm`（**排除引擎硬指标**，见 `GATE_METRICS` 注释）——
+    #    用 `rule_f1` 建夹具会让该项被「静默跳过」，于是"下降 → 阻断"永远测不出来
+    #    （这个坑真踩过：改主指标时本用例立刻变红，正是它该有的表现）。
+    base = {"rule_f1_llm": 0.80, "grade_acc": 0.70, "fp_case_rate": 0.20}
 
-    ok, diffs = er.gate({"rule_f1": 0.80, "grade_acc": 0.70, "fp_case_rate": 0.20}, base)
+    ok, diffs = er.gate({"rule_f1_llm": 0.80, "grade_acc": 0.70, "fp_case_rate": 0.20}, base)
     check("指标持平 → 通过", ok is True, str(diffs))
 
-    ok2, d2 = er.gate({"rule_f1": 0.90, "grade_acc": 0.75, "fp_case_rate": 0.10}, base)
+    ok2, d2 = er.gate({"rule_f1_llm": 0.90, "grade_acc": 0.75, "fp_case_rate": 0.10}, base)
     check("指标全面变好 → 通过", ok2 is True, str(d2))
 
-    ok3, d3 = er.gate({"rule_f1": 0.60, "grade_acc": 0.70, "fp_case_rate": 0.20}, base)
+    ok3, d3 = er.gate({"rule_f1_llm": 0.60, "grade_acc": 0.70, "fp_case_rate": 0.20}, base)
     check("F1 明显下降 → 阻断", ok3 is False, str(d3))
     check("阻断项标出 ok=false",
-          any(x["metric"] == "rule_f1" and not x["ok"] for x in d3), str(d3))
+          any(x["metric"] == "rule_f1_llm" and not x["ok"] for x in d3), str(d3))
 
-    ok4, d4 = er.gate({"rule_f1": 0.80, "grade_acc": 0.70, "fp_case_rate": 0.35}, base)
+    ok4, d4 = er.gate({"rule_f1_llm": 0.80, "grade_acc": 0.70, "fp_case_rate": 0.35}, base)
     check("误报率上升 → 阻断（方向相反）", ok4 is False, str(d4))
     check("误报率方向的 delta 为负（升了 = 变差）",
           next(x for x in d4 if x["metric"] == "fp_case_rate")["delta"] > 0, str(d4))
 
-    ok5, _ = er.gate({"rule_f1": 0.79, "grade_acc": 0.69, "fp_case_rate": 0.21}, base)
+    ok5, _ = er.gate({"rule_f1_llm": 0.79, "grade_acc": 0.69, "fp_case_rate": 0.21}, base)
     check("降幅在容差（2pp）内 → 不阻断", ok5 is True, "容差未生效")
 
-    ok6, _ = er.gate({"rule_f1": 0.80}, {})     # 没基线
+    ok6, _ = er.gate({"rule_f1_llm": 0.80}, {})     # 没基线
     check("无基线 → 不阻断（视为通过）", ok6 is True, str(ok6))
 
 
@@ -166,7 +156,7 @@ def test_hash_and_sample():
         h3 = er.messages_hash(S["staff_id"], S["session_id"])
         check("新增一条消息 → 指纹变化", h3 != h1, f"{h1} vs {h3}")
     finally:
-        db.execute("DELETE FROM chat_message WHERE message_id=%s", (mid,))
+        delete_rows("chat_message", message_id=mid)
     check("删除后指纹恢复", er.messages_hash(S["staff_id"], S["session_id"]) == h1, "未恢复")
 
     print("\n--- 4. 分层抽样（等级 × 负分 × 消息数）---")
@@ -222,7 +212,7 @@ def test_hash_and_sample():
         # 会把 `negative_no_reply_2d`（客户超 48h 未回复）等 engine 项**追加**进负分。
         # 若人标只写 stub 那一条，引擎项就会算成 fp（实测 F1 掉到 0.67）。
         facts = ss.compute_facts(S2["staff_id"], S2["session_id"], fetch_tags=False)
-        eng = ss.service._engine_negative_items(facts, rules_mod.load_rules())
+        eng = rules_mod.engine_negative_items(facts, rules_mod.load_rules())
         exp_items = [{"rule_id": "positive_coder_profile", "polarity": "positive",
                       "score": 2, "reason": "人工标注"}]
         exp_items += [{"rule_id": e["rule_id"], "polarity": e.get("polarity", "negative"),
@@ -284,10 +274,10 @@ def test_hash_and_sample():
     finally:
         analyze.analyze = orig
         if made:
-            db.execute("DELETE FROM eval_case WHERE case_id=%s", (made["case_id"],))
+            delete_rows("eval_case", case_id=made["case_id"])
         if run_id:
             db.execute("DELETE FROM eval_run WHERE id >= %s AND kind=%s", (run_id, _KIND))
-        db.execute("DELETE FROM eval_run WHERE kind=%s", (_KIND,))
+        delete_rows("eval_run", kind=_KIND)
         check("清理完成（eval_case / eval_run 归零）",
               db.query_one("SELECT count(*) AS n FROM eval_case WHERE kind=%s", (_KIND,))["n"] == 0
               and db.query_one("SELECT count(*) AS n FROM eval_run WHERE kind=%s",
@@ -382,9 +372,7 @@ def main():
     test_gate()
     test_hash_and_sample()
     test_prefill()
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

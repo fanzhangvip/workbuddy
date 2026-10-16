@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """同步任务接口。"""
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 
+import api_guard
 import db
 import scheduler
 from sync_service import service
@@ -63,6 +64,53 @@ def set_schedule(payload: dict = Body(default={})):
     if payload.get("interval_minutes") is not None:
         return scheduler.set_interval(int(payload["interval_minutes"]))
     return scheduler.schedule_info()
+
+
+@router.post("/schedule/daily", dependencies=[Depends(api_guard.require("operator", "admin"))])
+def set_daily_schedule(payload: dict = Body(default={})):
+    """配置**日常任务**（需求 4.2）：什么时间同步、什么时候接着分析。
+
+    可配项（只传要改的键）：
+
+    · `sync_main_cron`              主增量同步 + 分析时刻 `HH:MM`（空 = 关闭）
+    · `sync_main_window_minutes`    主任务执行窗口（分钟，0 = 不限）
+    · `sync_compensate_cron`        48 小时补偿同步 + 分析时刻 `HH:MM`（空 = 关闭）
+    · `sync_compensate_lookback_hours` 补偿回看窗口（小时）
+    · `daily_run_analysis`          同步跑完是否自动接着分析
+
+    ⚠️ 时刻**必须校验**：写成 `8:0` 这类非法值若静默存下，任务会被悄悄关掉，
+    而界面上看不出问题 —— 所以这里直接拒绝并说明格式。
+    """
+    INT_KEYS = {"sync_main_window_minutes": (0, 240),
+                "sync_compensate_lookback_hours": (1, 720)}
+    if payload.get("sync_main_cron") is not None:
+        v = str(payload["sync_main_cron"]).strip()
+        if v and not scheduler._parse_hhmm(v):
+            return {"ok": False, "reason": f"主任务时刻格式应为 HH:MM（收到 {v!r}；留空=关闭）"}
+    if payload.get("sync_compensate_cron") is not None:
+        v = str(payload["sync_compensate_cron"]).strip()
+        if v and not scheduler._parse_hhmm(v):
+            return {"ok": False, "reason": f"补偿任务时刻格式应为 HH:MM（收到 {v!r}；留空=关闭）"}
+    for key, (lo, hi) in INT_KEYS.items():
+        if payload.get(key) is None:
+            continue
+        try:
+            n = int(payload[key])
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": f"{key} 必须是整数"}
+        if not (lo <= n <= hi):
+            return {"ok": False, "reason": f"{key} 应在 {lo}~{hi} 之间（收到 {n}）"}
+
+    for key in ("sync_main_cron", "sync_main_window_minutes", "sync_compensate_cron",
+                "sync_compensate_lookback_hours", "daily_run_analysis"):
+        if payload.get(key) is None:
+            continue
+        if key == "daily_run_analysis":
+            db.set_setting(key, "true" if payload[key] else "false")
+        else:
+            db.set_setting(key, str(payload[key]).strip())
+    scheduler.reschedule_all()          # 改完立即生效（不必重启后端）
+    return {"ok": True, **scheduler.schedule_info()}
 
 
 # ---------------- 凭据保活 ----------------

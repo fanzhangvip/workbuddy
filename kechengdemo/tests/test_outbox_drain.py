@@ -7,33 +7,25 @@
     ok / failed（退避并前推 next_attempt_at）/ dry_run / off / dead（超尝试上限）
 不触网、可反复运行；用负数 assessment_id 造数据，结束后清理。
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
 
 import db                     # noqa: E402
 import outbox                 # noqa: E402
 import scoring_service as ss  # noqa: E402
 import weiban                 # noqa: E402
 
-PASSED, FAILED = [], []
 _MODE_KEY = "score_writeback_mode"
 _ORIG_MODE = None
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 def set_mode(m):
@@ -65,10 +57,10 @@ def get_wb(aid):
 
 def cleanup(*aids):
     for aid in aids:
-        db.execute("DELETE FROM writeback_outbox WHERE assessment_id=%s", (aid,))
-        db.execute("DELETE FROM score_writeback WHERE assessment_id=%s", (aid,))
+        delete_rows("writeback_outbox", assessment_id=aid)
+        delete_rows("score_writeback", assessment_id=aid)
         # ⚠️ D2-1 之后回写成功会推进 `writeback_ledger`（**新增写副作用**）→ 必须同步清
-        db.execute("DELETE FROM writeback_ledger WHERE last_assessment_id=%s", (aid,))
+        delete_rows("writeback_ledger", last_assessment_id=aid)
 
 
 def main():
@@ -165,7 +157,7 @@ def main():
     finally:
         cleanup(-901001, -901002, -901003, -901004, -901005)
         if _ORIG_MODE is None:
-            db.execute("DELETE FROM app_setting WHERE key=%s", (_MODE_KEY,))
+            delete_rows("app_setting", key=_MODE_KEY)
         else:
             db.set_setting(_MODE_KEY, _ORIG_MODE)
 

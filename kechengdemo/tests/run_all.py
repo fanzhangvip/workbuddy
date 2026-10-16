@@ -1,23 +1,44 @@
 # -*- coding: utf-8 -*-
-"""统一测试入口 —— 一次跑完全部脚本式测试并汇总。
+"""统一测试入口 —— 按**依赖分层**跑，默认只跑便宜的两层。
 
-    .venv\\Scripts\\python.exe tests/run_all.py              # 跑全部
-    .venv\\Scripts\\python.exe tests/run_all.py --list        # 只列出会跑哪些
-    .venv\\Scripts\\python.exe tests/run_all.py test_hooks test_contracts
-    .venv\\Scripts\\python.exe tests/run_all.py --skip-db     # 只跑不需要数据库的
-    .venv\\Scripts\\python.exe tests/run_all.py -x            # 首个失败即停
+    .venv\\Scripts\\python.exe tests/run_all.py                  # 默认 t0+t1（目标 ≤1 分钟）
+    .venv\\Scripts\\python.exe tests/run_all.py --t2              # 加上真实外部（真模型/真通道）
+    .venv\\Scripts\\python.exe tests/run_all.py --tier t0        # 只跑纯逻辑（≤5 秒）
+    .venv\\Scripts\\python.exe tests/run_all.py --changed backend/scoring_context.py
+    .venv\\Scripts\\python.exe tests/run_all.py --list           # 列出会跑哪些（含分层）
+    .venv\\Scripts\\python.exe tests/run_all.py test_hooks -x    # 只跑指定测试，首个失败即停
 
-为什么需要它（代码评审 P2-3）
-    23 个测试是**自包含脚本**（各自 `main()` + `sys.exit()`），需人工逐个执行 ——
-    没有统一入口、没有 CI、没有覆盖率。结果是「改了不知道有没有跑全」，且容易漏跑。
+## 为什么分层（2026-10-16 逐个实测）
 
-设计取舍
-    · **不改造成 pytest**：这些脚本用自研 `check()`、且大量依赖 DB 状态与跨进程子测试，
-      改造成本远大于收益（且项目约定「非 pytest，勿引入」）。这里只做**编排 + 汇总**。
-    · **串行执行**：连接池 `max_size=8`，两个测试进程并行会互相抢连接 →
-      抛 `PoolTimeout` 而**看起来像断言失败**（实测踩到过）。这里刻意不加并行。
-    · **按退出码 + 输出特征双重判定**：脚本用 `sys.exit(非零)` 报失败，
-      但个别脚本结尾汇总行也含「失败 / FAIL」字样。两者任一命中即判失败。
+| 层 | 依赖 | 文件数 | 实测 |
+|---|---|---|---|
+| t0 | 无（不碰 PG / 网络） | 8 | 合计 5.5s |
+| t1 | 本地 PostgreSQL 5433 | 27 | 合计 530s |
+| t2 | 真实外部（真模型 / 真微伴企微 / Chrome） | 1 | 1861~2909s（31~48 分钟） |
+
+合计一轮 45~60 分钟 —— **改一次跑一轮，"半天"就是这么没的**；而其中约 480 秒
+还是连接池退出白等（已在 `db.close_pool()` 修掉，见该函数注释）。分层后：
+默认一轮 ≈1 分钟，重活显式开。
+
+## 四条设计取舍
+
+1. **不改造成 pytest**：脚本用自研 `check()` + 退出码判定，改造收益小于成本（项目约定）。
+2. **层级声明写在测试文件里**（`TIER = "t0|t1|t2"`）：名单写在本文件里就会漂 ——
+   改造前 `DB_MARKERS = ("ctx_integration",)` 只匹配 1 个文件，而实际需要 DB 的有 27 个，
+   `--skip-db` 形同虚设。**忘声明 TIER 的文件直接拒绝执行**：默认拒绝比默认放过安全
+   （漏登记 = 悄悄不跑，那比跑得慢危险得多）。
+3. **串行执行**：t1 里会启动批量任务的几个测试之间有互斥闸
+   （`job_service.running_kinds()`），并行会互相挡住；且连接池 `max_size=8`，
+   两进程并行曾触发 `PoolTimeout` 被误读成"断言失败"。
+4. **超时按层给**（t0 15s / t1 120s / t2 3600s）：挂住一个只花 15 秒，
+   而不是 `--timeout` 默认 900 秒的十五分钟。t2 的 3600s 是给
+   `test_stage_a_acceptance` 留的（它要循环最多 6 个候选会话、每次一次真实模型调用）。
+
+## 判定只信退出码
+
+本项目所有测试脚本都以 `sys.exit(1 if FAILED else 0)` 表达结果。曾两次试图用输出特征
+辅助判定，两次都误报（把 `PASS 26 / FAIL 0` 判成失败、把正常日志里的"评分失败："判成失败），
+已删除。**「超时」与「断言失败」在展示上必须分开**：前者是预算问题，后者是代码问题。
 """
 import argparse
 import os
@@ -29,37 +50,42 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-#: 需要 PostgreSQL 的测试（文件名片段）—— 用于 `--skip-db`
-DB_MARKERS = ("ctx_integration",)
-#: 按测试覆盖超时（秒）。默认 `--timeout`（900s）对调**真实模型**的测试不够：
-#: `test_stage_a_acceptance` 会循环最多 6 个候选会话直到命中，每次一次真实 LLM 调用
-#: —— **实测两次分别是 1861s 与 2909s**（模型侧延迟波动很大，2 倍差异很常见）。
-#: ⚠️ 这不是「测试变慢」，是它天然如此；调大超时而不是改小工作量（改小会削弱验收强度）。
-#: 日常快跑建议 `--skip-llm` 跳过它，全量回归前再单独跑一次。
-TIMEOUT_OVERRIDES = {
-    "test_stage_a_acceptance.py": 3600,      # 实测 2909s，留 20% 余量
-    "test_backfill.py": 1500,
-    "test_batch234.py": 1500,
-}
-#: 需要真实 LLM 的测试（`--skip-llm` 跳过；无 API Key 时必然失败）
-LLM_MARKERS = ("stage_a_acceptance",)
-# ⚠️ 这里曾有 `FAIL_PAT` / `_looks_failed()` 用于「输出特征辅助判定」——
-# 已删除：两次误报（`PASS 26 / FAIL 0`、正常日志里的「评分失败：」）证明它只会引入假阳性。
-# 判定只信退出码；详见 `run_one()` 里的注释。
-#: 通过特征（仅用于提取摘要行显示，不参与判定）
-PASS_PAT = re.compile(r"(通过|passed|PASS\b)", re.I)
+# 复用 `_harness` 的 stdout 编码修正（它 import 时会把 stdout/stderr 切成 utf-8）。
+# ⚠️ 不 import 的话，本文件打印的 `▶`（U+25B6）在 Windows 默认 GBK 控制台下会
+#    `UnicodeEncodeError` —— **一键回归入口自己先崩**，比被测代码的失败更难排查。
+sys.path.insert(0, str(HERE))
+import _harness  # noqa: E402,F401  仅为其导入副作用：统一输出编码
+import _map      # noqa: E402  改动 → 测试 的映射（`--changed` 用）
+
+#: 分层的默认超时（秒）。`--timeout` 可整体覆盖。
+TIER_TIMEOUT = {"t0": 15, "t1": 120, "t2": 3600}
+#: 默认跑哪些层
+DEFAULT_TIERS = ("t0", "t1")
+
+_TIER_RE = re.compile(r'^TIER\s*=\s*["\'](t[012])["\']', re.M)
 
 
-def discover(names=None) -> list:
+def read_tier(path: Path):
+    """从测试文件里读它的分层声明；没有声明返回 None。"""
+    m = _TIER_RE.search(path.read_text(encoding="utf-8", errors="replace"))
+    return m.group(1) if m else None
+
+
+def discover(names=None) -> tuple:
+    """返回 (可跑的 [(path, tier)], 未声明 TIER 的文件名)。"""
     files = sorted(HERE.glob("test_*.py"))
     if names:
         want = {n if n.endswith(".py") else f"{n}.py" for n in names}
         files = [f for f in files if f.name in want]
-    return files
+    ok, undeclared = [], []
+    for f in files:
+        t = read_tier(f)
+        (ok.append((f, t)) if t else undeclared.append(f.name))
+    return ok, undeclared
 
 
 def db_available() -> bool:
-    """DB 是否可用（不可用时给出明确提示，而不是让每个测试都 30 秒超时）。"""
+    """DB 是否可用（不可用时给出明确提示，而不是让每个测试都超时）。"""
     code = (
         "import sys;sys.path.insert(0,r'%s');sys.path.insert(0,r'%s');"
         "import db;db.query_one('SELECT 1 AS x');print('OK')" % (ROOT, ROOT / "backend")
@@ -68,14 +94,13 @@ def db_available() -> bool:
         r = subprocess.run([sys.executable, "-c", code], capture_output=True,
                            text=True, timeout=25, encoding="utf-8", errors="replace")
         return "OK" in (r.stdout or "")
-    except Exception:
+    except Exception:                          # noqa: BLE001
         return False
 
 
 def run_one(path: Path, timeout: int) -> dict:
-    """跑一个测试脚本，返回 {name, ok, seconds, tail, exit}。"""
+    """跑一个测试脚本，返回 {name, ok, seconds, summary, exit, timed_out}。"""
     env = dict(os.environ)
-    # 测试脚本自身已 reconfigure stdout，但子进程与个别第三方输出仍需兜底
     env.setdefault("PYTHONIOENCODING", "utf-8")
     t0 = time.time()
     timed_out = False
@@ -87,75 +112,103 @@ def run_one(path: Path, timeout: int) -> dict:
     except subprocess.TimeoutExpired as e:
         out = (e.stdout or "") if isinstance(e.stdout, str) else ""
         err = (e.stderr or "") if isinstance(e.stderr, str) else ""
-        code = -9
-        timed_out = True
+        code, timed_out = -9, True
     secs = time.time() - t0
     blob = out + "\n" + err
-    # 摘要行：取最后一条含「通过 / passed / failed」的行
     summary = ""
     for line in blob.splitlines():
         if re.search(r"(通过|passed|\d+\s*/\s*\d+|failed)", line, re.I):
             summary = line.strip()
-
-    # ⚠️ 判定**只看退出码**（超时视为失败）：本项目所有测试脚本都以
-    # `sys.exit(1 if FAILED else 0)` 表达结果，退出码是权威信号。
-    # 曾两次试图用「输出特征」辅助判定，两次都误报：
-    #   ① 宽松正则 `\d+\s*failed` → 把 `PASS 26 / FAIL 0` 判成失败；
-    #   ② `失败：` 规则 → 把正常日志 `[scoring] 会话 xx 评分失败：stub 失败` 判成失败。
-    # 教训：测试结果已在退出码里，再叠一层文本判据只会引入假阳性。
-    # 但**「超时」与「断言失败」必须分开显示** —— 两者处置完全不同
-    # （超时是预算问题，失败是代码问题），混在一起会误导排查方向。
-    ok = (code == 0)
-    return {"name": path.name, "ok": ok, "seconds": secs, "summary": summary,
+    return {"name": path.name, "ok": code == 0, "seconds": secs, "summary": summary,
             "exit": code, "blob": blob, "timed_out": timed_out}
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="统一测试入口（串行）")
+    ap = argparse.ArgumentParser(description="统一测试入口（按依赖分层）")
     ap.add_argument("names", nargs="*", help="只跑指定测试（可不带 .py）")
-    ap.add_argument("--list", action="store_true", help="只列出测试清单")
-    ap.add_argument("--skip-db", action="store_true", help="跳过需要数据库的测试")
-    ap.add_argument("--skip-llm", action="store_true", help="跳过需要真实大模型的测试")
-    ap.add_argument("--timeout", type=int, default=900, help="单个测试超时秒数（默认 900）")
+    ap.add_argument("--list", action="store_true", help="只列出测试清单（含分层）")
+    ap.add_argument("--tier", default="", help=f"跑哪些层，逗号分隔（默认 {','.join(DEFAULT_TIERS)}）")
+    ap.add_argument("--t2", "--full", action="store_true", dest="t2",
+                    help="加上 t2（真实外部依赖，慢且可能花钱）")
+    ap.add_argument("--changed", nargs="+", default=None, metavar="FILE",
+                    help="只跑与被改文件相关的测试（映射见 tests/_map.py）")
+    ap.add_argument("--skip-db", action="store_true", help="等价于 --tier t0（保留旧写法）")
+    ap.add_argument("--skip-llm", action="store_true", help="跳过 t2（现在已是默认行为）")
+    ap.add_argument("--timeout", type=int, default=0, help="覆盖该层的默认超时")
     ap.add_argument("-x", "--exit-first", action="store_true", help="首个失败即停")
     args = ap.parse_args()
 
-    files = discover(args.names)
-    if not files:
+    if args.tier:
+        tiers = tuple(t.strip().lower() for t in args.tier.split(",") if t.strip())
+    elif args.skip_db:
+        tiers = ("t0",)
+    else:
+        tiers = DEFAULT_TIERS
+    if args.t2:
+        tiers = tuple(sorted(set(tiers) | {"t2"}))
+    bad = [t for t in tiers if t not in TIER_TIMEOUT]
+    if bad:
+        print(f"未知分层：{bad}（只能是 t0 / t1 / t2）")
+        return 1
+
+    names = args.names
+    if args.changed:
+        picked = _map.tests_for([Path(p).name for p in args.changed])
+        if picked is None:
+            unk = _map.unknown_files([Path(p).name for p in args.changed])
+            print(f"⚠️  这些文件不在 `tests/_map.py` 里：{', '.join(unk)}")
+            print("   → 按「宁可多跑，不可漏跑」处理：退回全量（t0+t1）\n")
+        else:
+            names = picked
+            print(f"改了 {', '.join(Path(p).name for p in args.changed)}"
+                  f" → 只跑 {len(picked)} 个相关测试\n")
+
+    all_files, undeclared = discover(names)
+    if undeclared:
+        print("❌ 以下测试文件没有声明分层（文件里缺一行 `TIER = \"t0|t1|t2\"`）：")
+        for n in undeclared:
+            print("   " + n)
+        print("   这是**拒绝执行**而不是警告：漏登记 = 悄悄不跑，比跑得慢危险得多。")
+        return 1
+    if not all_files:
         print("没有匹配的测试文件")
         return 1
+
     if args.list:
-        for f in files:
-            print(" ", f.name)
-        print(f"\n共 {len(files)} 个")
+        for f, t in all_files:
+            flag = "" if t in tiers else "  （本次不跑）"
+            print(f"  {t}  {f.name}{flag}")
+        n = sum(1 for _, t in all_files if t in tiers)
+        print(f"\n共 {len(all_files)} 个；本次会跑 {n} 个（层：{','.join(tiers)}）")
         return 0
 
+    selected = [(f, t) for f, t in all_files if t in tiers]
+    skipped_tier = [f.name for f, t in all_files if t not in tiers]
+    if not selected:
+        print(f"这些文件都不在本次层（{','.join(tiers)}）里。用 --list 看全量。")
+        return 1
+
     has_db = db_available()
-    if not has_db:
-        print("⚠️  PostgreSQL(5433) 不可用 —— 需要数据库的测试会失败/超时。")
+    if not has_db and any(t == "t1" for _, t in selected):
+        print("⚠️  PostgreSQL(5433) 不可用 —— t1 会失败/超时。")
         print("   请确认 Docker Desktop 已启动（PG 是容器）。\n")
 
-    results, skipped = [], []
-    for f in files:
-        if args.skip_db and (not has_db or any(m in f.name for m in DB_MARKERS)):
+    results, skipped = [], list(skipped_tier)
+    for f, tier in selected:
+        if not has_db and tier == "t1":
             skipped.append(f.name)
             continue
-        if args.skip_llm and any(m in f.name for m in LLM_MARKERS):
-            skipped.append(f.name)
-            continue
-        if not has_db and any(m in f.name for m in DB_MARKERS):
-            skipped.append(f.name)
-            continue
-        print(f"▶ {f.name} ...", end="", flush=True)
-        r = run_one(f, TIMEOUT_OVERRIDES.get(f.name, args.timeout))
+        timeout = args.timeout or TIER_TIMEOUT[tier]
+        print(f"▶ [{tier}] {f.name} ...", end="", flush=True)
+        r = run_one(f, timeout)
+        r["tier"] = tier
         results.append(r)
         flag = "✅" if r["ok"] else ("⏱" if r["timed_out"] else "❌")
         print(f" {flag} {r['seconds']:.1f}s  {r['summary'][:70]}")
         if not r["ok"]:
             if r["timed_out"]:
-                print(f"      ⏱ 超时（{TIMEOUT_OVERRIDES.get(f.name, args.timeout)}s）"
-                      f"—— 与「断言失败」不同：先看是否只是预算不足，"
-                      f"可用 --timeout 加大或 --skip-llm 跳过真模型测试")
+                print(f"      ⏱ 超时（{timeout}s，层 {tier}）—— 与「断言失败」不同："
+                      f"先看是否只是预算不足（`--timeout` 加大，或确认它该不该在这一层）")
             tail = [ln for ln in r["blob"].splitlines()
                     if re.search(r"(FAIL|Error|Traceback|失败)", ln)][-6:]
             for ln in tail:
@@ -165,20 +218,22 @@ def main() -> int:
 
     ok_n = sum(1 for r in results if r["ok"])
     timed = [r["name"] for r in results if r["timed_out"]]
+    failed = [r["name"] for r in results if not r["ok"] and not r["timed_out"]]
     print("\n" + "=" * 66)
-    print(f"总计 {len(results)} 个测试文件｜通过 {ok_n}"
+    print(f"总计 {len(results)} 个｜通过 {ok_n}"
           + (f"｜超时 {len(timed)}" if timed else "")
-          + f"｜失败 {len(results) - ok_n - len(timed)}"
-          + (f"｜跳过 {len(skipped)}" if skipped else ""))
+          + f"｜失败 {len(failed)}" + (f"｜跳过 {len(skipped)}" if skipped else ""))
+    for tier in tiers:
+        rs = [r for r in results if r["tier"] == tier]
+        if rs:
+            print(f"  {tier}: {len(rs)} 个，{sum(r['seconds'] for r in rs):.1f}s")
     if skipped:
         print("跳过：" + ", ".join(skipped))
     if timed:
         print("⏱ 超时（≠ 断言失败）：" + ", ".join(timed))
-    failed = [r["name"] for r in results if not r["ok"] and not r["timed_out"]]
     if failed:
         print("❌ 失败清单：" + ", ".join(failed))
-    total_s = sum(r["seconds"] for r in results)
-    print(f"总耗时 {total_s:.0f}s")
+    print(f"总耗时 {sum(r['seconds'] for r in results):.0f}s")
     print("=" * 66)
     return 1 if (failed or timed) else 0
 

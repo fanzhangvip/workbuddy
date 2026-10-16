@@ -15,19 +15,16 @@
 
 ⚠️ 全部打桩外部依赖（绝不真调微伴 / 绝不起浏览器）；跑完清理；断言不依赖生产现状。
 """
-# 统一输出编码（修 P2-2）
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import copy
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import ROOT, check, delete_rows, summary  # noqa: E402
 
 import db                          # noqa: E402
 import grade_tag as gt             # noqa: E402
@@ -38,24 +35,14 @@ import trace as trace_mod          # noqa: E402
 import weiban                      # noqa: E402
 import wb_bootstrap                # noqa: E402
 
-_TOTAL = 0
-_FAILED = 0
 _SYNC_JOB_IDS = []
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 def _cleanup():
     for jid in _SYNC_JOB_IDS:
-        db.execute("DELETE FROM sync_job WHERE id=%s", (jid,))
+        delete_rows("sync_job", id=jid)
     db.execute("DELETE FROM app_setting WHERE key='grade_tag_probe_customer'")
     # E2 自愈（其它测试同款）
     try:
@@ -264,12 +251,12 @@ def test_heartbeat_zombie():
               st.get("status") == "failed" and "心跳" in str(st.get("error")), str(st))
 
         # 阈值必须大于单会话最坏耗时（否则会误杀活任务 → 破坏互斥）
-        hb = ss.setting_int("job_heartbeat_stale_minutes", "JOB_HEARTBEAT_STALE_MINUTES",
+        hb = db.setting_int("job_heartbeat_stale_minutes", "JOB_HEARTBEAT_STALE_MINUTES",
                             ss.HEARTBEAT_STALE_MINUTES)
         check("★ 心跳阈值 > 单会话最坏耗时（3 次重试 × 120s ≈ 6 分钟，留足余量）",
               hb >= 10, f"{hb} 分钟")
         check("心跳阈值远小于二级兜底（否则等于没缩短）",
-              hb < ss.setting_int("scoring_stale_minutes", "SCORING_STALE_MINUTES",
+              hb < db.setting_int("scoring_stale_minutes", "SCORING_STALE_MINUTES",
                                   ss.STALE_MINUTES), f"{hb} vs {ss.STALE_MINUTES}")
 
         # 老行（heartbeat_at 为 NULL）不能被永久误判为活 → 退回 started_at 判定
@@ -282,7 +269,7 @@ def test_heartbeat_zombie():
         check("无心跳且绝对超时 → 仍能判死（二级兜底生效）",
               sync_service.service.is_running() is False)
     finally:
-        db.execute("DELETE FROM sync_job WHERE id=%s", (jid,))
+        delete_rows("sync_job", id=jid)
         if jid in _SYNC_JOB_IDS:
             _SYNC_JOB_IDS.remove(jid)
 
@@ -305,7 +292,7 @@ def test_progress_refreshes_heartbeat():
         check("★ 一次进度更新后心跳被刷新（判死机制才有意义）",
               after is not None and float(after) < 5, str(after))
     finally:
-        db.execute("DELETE FROM sync_job WHERE id=%s", (jid,))
+        delete_rows("sync_job", id=jid)
         if jid in _SYNC_JOB_IDS:
             _SYNC_JOB_IDS.remove(jid)
 
@@ -325,11 +312,12 @@ def test_rule_tier_from_table():
     for r in mutated["negative_rules"]:
         if r["rule_id"] == "negative_no_reply_2d":
             r["options"][0]["score"] = -3
-    items = ss.service._engine_negative_items({"no_reply_48h": True, "hours": 50}, mutated)
+    # 引擎硬指标已下沉到 `rules`（P3：它本就是规则引擎的职责，不是跑批服务的）
+    items = rules_mod.engine_negative_items({"no_reply_48h": True, "hours": 50}, mutated)
     check("档位改成 -3 后，产出同步变成 -3（不再硬编码 -2）",
           bool(items) and items[0]["score"] == -3, str(items))
     check("未改动时仍按原档位",
-          ss.service._rule_tier_score(base, "negative_no_reply_2d", -2) == orig, str(orig))
+          rules_mod.rule_tier_score(base, "negative_no_reply_2d", -2) == orig, str(orig))
 
 
 # ============================================================ P2-11
@@ -436,9 +424,7 @@ def main():
         test_unified_http_layer()
     finally:
         _cleanup()
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

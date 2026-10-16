@@ -24,7 +24,6 @@
 """
 import json
 import math
-import threading
 import time
 import traceback
 from dataclasses import replace
@@ -43,8 +42,17 @@ import grade_tag                    # noqa: E402
 import outbox                       # noqa: E402  回写 outbox（修 G6：回写与评分解耦）
 import http_client                  # noqa: E402  统一退避（抖动 + Retry-After）
 import audit                        # noqa: E402  工具调用审计（五问 + 脱敏）
+import assessment_repo              # noqa: E402  评估结果表唯一写入口（P3）
+import job_service                  # noqa: E402  批量任务骨架（与 SyncService 共用）
 import policy                       # noqa: E402  Policy 三档策略（修硬伤 4）
+import review_repo                  # noqa: E402  复核队列唯一写入口（P3）
 import task_runtime                 # noqa: E402  任务运行时（外循环，修硬伤 3）
+import writeback_repo               # noqa: E402  回写记账与水位唯一写入口（P3）
+from job_service import HEARTBEAT_STALE_MINUTES, STALE_MINUTES   # noqa: F401 再导出
+from scoring_context import (          # noqa: E402  再导出：调用点不变
+    READABLE as _READABLE, MSG_COLS as _MSG_COLS,
+    build_context, compute_facts, ctx_options as _ctx_options,
+    recent_rows as _recent_rows)
 
 #: Policy 拒绝回写时的中文文案（`hooks.REASON_CN` 里没有这两个原因）
 _POLICY_WB_CN = {
@@ -115,325 +123,23 @@ def current_rule_version() -> str:
     return rules_mod.load_rules().get("rule_version") or "v1.0"
 
 
-def setting(key: str, env_key: str, default=None):
-    """运行时设置（app_setting）优先，其次 .env，最后默认值。"""
-    v = db.get_setting(key)
-    if v is None or v == "":
-        v = config.get(env_key)
-    return default if v is None or v == "" else v
-
-
-def setting_int(key: str, env_key: str, default: int = 0) -> int:
-    try:
-        return int(setting(key, env_key, default))
-    except Exception:
-        return default
-
-
-def setting_bool(key: str, env_key: str, default: bool = False) -> bool:
-    return str(setting(key, env_key, str(default))).strip().lower() in ("1", "true", "yes", "on")
-
-
-def setting_float(key: str, env_key: str, default: float = 0.0) -> float:
-    try:
-        return float(setting(key, env_key, default))
-    except Exception:
-        return default
-
-
-# ============================================================ 事实（规则引擎）
-
-def compute_facts(staff_id: str, session_id: str, fetch_tags: bool = False) -> dict:
-    """计算给大模型/规则引擎用的事实。
-
-    - 连续未回复时长：由后台按消息时间计算，不由大模型判断（需求 §5.5）
-    - 标签（到课/完课）：优先取微伴自定义字段，作为「邀课成功」的佐证
-    """
-    last = db.query_one(
-        """SELECT direction, msg_time, from_name FROM chat_message
-            WHERE staff_id = %s AND session_id = %s
-            ORDER BY msg_time DESC, message_id DESC LIMIT 1""",
-        (staff_id, session_id))
-    now = int(time.time())
-    hours, no_reply = None, False
-    if last and last.get("msg_time"):
-        hours = round((now - int(last["msg_time"])) / 3600, 1)
-        # 最后一条是员工发出、且超过 48 小时无客户回复
-        no_reply = last.get("direction") == "send" and hours >= 48
-
-    lines = []
-    if hours is not None:
-        lines.append(f"距最后一条消息 {hours} 小时；最后发言方为"
-                     f"{'员工' if last.get('direction') == 'send' else '客户'}。")
-    lines.append(f"是否满足「连续 48 小时未回复」（规则引擎判定）：{'是' if no_reply else '否'}。")
-
-    tags, tag_text, tag_error = [], "", None
-    if fetch_tags:
-        try:
-            fields = weiban.get_custom_fields(staff_id, session_id)  # 会话 id 即客户 id
-            for f in fields:
-                name = f.get("field_name") or ""
-                val = f.get("field_value")
-                opts = "、".join(o.get("option_name", "") for o in (f.get("option_list") or []))
-                tags.append({"name": name, "value": val or opts, "type": f.get("field_type")})
-            if tags:
-                tag_text = "；".join(f"{t['name']}={t['value']}" for t in tags if t["value"])
-                lines.append(f"微伴客户标签/自定义字段：{tag_text}")
-        except Exception as e:
-            # 修 G1：不再 ``except: pass`` 静默吞掉。
-            # 静默的后果很隐蔽 —— 标签取不到时，「实际到课」这类靠标签佐证的维度
-            # 会被当成「没有证据」→ 分数被悄悄降级，而日志里什么都不留。
-            # 现在：① 事实文本里显式标注降级（模型能看见，不会据缺失推定未到课）；
-            #       ② 把失败写进 tool_failure（由调用方计入 scoring_run.detail，可观测）。
-            tag_error = f"{type(e).__name__}: {e}"
-            lines.append("【降级】微伴客户标签/自定义字段获取失败，本次未纳入标签证据；"
-                         "请勿据其缺失推定「未到课 / 无标签」。")
-
-    return {"text": "\n".join(lines) or "无额外事实。", "hours": hours,
-            "no_reply_48h": no_reply, "last_direction": (last or {}).get("direction"),
-            "tags": tags, "tag_text": tag_text, "tool_failure": tag_error}
-
-
-# ============================================================ 上下文预处理（委托 ctx_preprocess）
-
-def _ctx_options() -> "ctx_preprocess.CtxOptions":
-    """从运行时设置构造预处理层选项（app_setting > .env > 默认）。"""
-    return ctx_preprocess.CtxOptions(
-        window=setting_int("ctx_window_size", "CTX_WINDOW_SIZE", 60),
-        drop_msgtypes=ctx_preprocess.parse_msgtypes(
-            setting("ctx_drop_msgtypes", "CTX_DROP_MSGTYPES", "31,9")),
-        drop_pure_url=setting_bool("ctx_drop_pure_url", "CTX_DROP_PURE_URL", True),
-        drop_system=setting_bool("ctx_drop_system", "CTX_DROP_SYSTEM", True),
-        display_relative=setting_bool("ctx_display_relative", "CTX_DISPLAY_RELATIVE", True),
-    )
-
-
-# ============================================================ 关键历史检索（架构 §4.4）
-
-# 与「近期窗口」逐字一致的可读条件：有企微明文，或有非空正文。
-_READABLE = "(plain IS NOT NULL OR (content IS NOT NULL AND content <> ''))"
-_MSG_COLS = ("message_id, msgid, direction, msg_time, from_name, content, "
-             "msgtype, content_state, plain")
-
-
-def _key_rule_ids(rel_key: str, staff_id: str, session_id: str) -> list:
-    """「本次相关规则集」＝ K2（架构 §4.4.2）。
-
-    K2 = **上次评估命中的 rule_id** ∪ **本会话 rule_tags 全集**。
-    不选 K1（全部 14 条非引擎规则）是因为每个维度都拉 3 条会把 30 条配额吃光，
-    而大部分维度该客户从未表现过信号。
-    """
-    ids = set()
-    last = db.query_one(
-        """SELECT positive_items, negative_items FROM customer_intent_assessment
-            WHERE relationship_key = %s ORDER BY assessment_id DESC LIMIT 1""",
-        (rel_key,))
-    if last:
-        for col in ("positive_items", "negative_items"):
-            items = last.get(col)
-            if isinstance(items, str):
-                try:
-                    items = json.loads(items)
-                except Exception:
-                    items = []
-            for it in (items or []):
-                if isinstance(it, dict) and it.get("rule_id"):
-                    ids.add(str(it["rule_id"]))
-    rows = db.query(
-        """SELECT DISTINCT unnest(rule_tags) AS rule_id FROM chat_message
-            WHERE staff_id = %s AND session_id = %s AND cardinality(rule_tags) > 0""",
-        (staff_id, session_id))
-    ids.update(str(r["rule_id"]) for r in rows if r.get("rule_id"))
-    return sorted(ids)
-
-
-def _key_history_rows(staff_id: str, session_id: str, rule_ids: list,
-                      max_total: int) -> list:
-    """④ 段取数：两阶段，避免「高频规则吃光配额」（架构 §4.4.3）。
-
-    阶段 1 每个相关 rule 保底最近 1 条（≤ 规则条数）；阶段 2 余额度按时间倒序补齐；
-    同一消息命中多规则 → 合并成一行（``tags`` 带出命中的维度）。
-    最终按时间**升序**返回，便于合并后统一编号（C2）。
-    """
-    if not rule_ids:
-        return []
-    return db.query(
-        f"""WITH hit AS (
-               SELECT {_MSG_COLS}, t.rule_id
-                 FROM chat_message
-                 CROSS JOIN LATERAL unnest(rule_tags) AS t(rule_id)
-                WHERE staff_id = %s AND session_id = %s
-                  AND rule_tags && %s::text[]
-             ),
-             first_per_rule AS (            -- 阶段 1：每 rule 最近 1 条
-               SELECT DISTINCT ON (rule_id) * FROM hit
-                ORDER BY rule_id, msg_time DESC, message_id DESC
-             ),
-             rest AS (                      -- 阶段 2：其余按时间倒序
-               SELECT h.* FROM hit h
-                WHERE NOT EXISTS (SELECT 1 FROM first_per_rule f
-                                   WHERE f.message_id = h.message_id
-                                     AND f.rule_id = h.rule_id)
-                ORDER BY h.msg_time DESC, h.message_id DESC
-             ),
-             merged AS (
-               SELECT * FROM first_per_rule
-               UNION ALL
-               SELECT * FROM (SELECT * FROM rest
-                               LIMIT GREATEST(%s - %s, 0)) r
-             ),
-             dedup AS (                     -- 同一消息命中多规则 → 合并成一行
-               SELECT message_id, msg_time, array_agg(DISTINCT rule_id) AS tags
-                 FROM merged GROUP BY message_id, msg_time
-             )
-        SELECT d.message_id, d.msg_time, d.tags,
-               m.msgid, m.direction, m.from_name, m.content, m.msgtype,
-               m.content_state, m.plain
-          FROM dedup d
-          JOIN chat_message m
-            ON m.staff_id = %s AND m.session_id = %s AND m.message_id = d.message_id
-         ORDER BY d.msg_time ASC, d.message_id ASC
-         LIMIT %s""",
-        (staff_id, session_id, list(rule_ids), int(max_total), len(rule_ids),
-         staff_id, session_id, int(max_total)))
-
-
-def _early_anchor_rows(staff_id: str, session_id: str, n: int) -> list:
-    """④′ 早期锚点（架构 §4.4.4）：④ 命中为 0 时，取会话**最早**的 n 条。
-
-    理由是「岗位 / 需求 / 预算」这类最重要的事实几乎总在会话开头。
-    与 ④ **互斥**（有 ④ 就不启用），并计入同一配额。
-    """
-    n = int(n or 0)
-    if n <= 0:
-        return []
-    return db.query(
-        f"""SELECT {_MSG_COLS} FROM chat_message
-             WHERE staff_id = %s AND session_id = %s AND {_READABLE}
-             ORDER BY msg_time ASC, message_id ASC LIMIT %s""",
-        (staff_id, session_id, n))
-
-
-# ============================================================ 上下文装配（架构 §4.5）
-
-_TRIM_BATCH = 20        # 裁剪 ③ 时每批砍掉的最早条数（架构 §4.5.4(3) 第 4 条）
-
-
-def _recent_rows(staff_id: str, session_id: str, n: int) -> list:
-    """取「最近 n 条」可读消息（时间升序）。⑤ 兜底与展示壳共用。"""
-    n = int(n or 0)
-    if n <= 0:
-        return []
-    rows = db.query(
-        f"""SELECT {_MSG_COLS} FROM chat_message
-             WHERE staff_id = %s AND session_id = %s AND {_READABLE}
-             ORDER BY msg_time DESC, message_id DESC LIMIT %s""",
-        (staff_id, session_id, n))
-    rows.reverse()
-    return rows
-
-
-def _watermark(rel_key: str):
-    """③ 段的起点：该客户**最近一次评估**记录的 ``last_msg_time``（架构 §4.5.2）。
-
-    直接复用既有增量水位口径（``customer_intent_assessment.last_msg_time``），
-    因此**不需要新表**（架构 §4.8 C-B 的关键点）。查不到 → ``None``。
-    """
-    row = db.query_one(
-        """SELECT last_msg_time FROM customer_intent_assessment
-            WHERE relationship_key = %s AND last_msg_time IS NOT NULL
-            ORDER BY assessment_id DESC LIMIT 1""",
-        (rel_key,))
-    if not row or row.get("last_msg_time") is None:
-        return None
-    return int(row["last_msg_time"])
-
-
-def _delta_rows(staff_id: str, session_id: str, wm, soft_cap: int) -> list:
-    """③ 增量消息：自水位之后新增的可读消息（架构 §4.5.1）。
-
-    - 水位为空（首次评分 / 无历史评估）→ **增量 = 全量**，与现状等价（§4.4.4）
-    - 超出 ``soft_cap`` → **保留最新的**那批：被砍的应该是"最早"的消息
-      （与 §4.5.4 裁剪方向一致；早期事实由 ④ / ④′ 承担）
-    """
-    soft_cap = int(soft_cap or 0)
-    if soft_cap <= 0:
-        return []
-    if wm:
-        sql = (f"""SELECT {_MSG_COLS} FROM chat_message
-                    WHERE staff_id = %s AND session_id = %s AND {_READABLE}
-                      AND msg_time > %s
-                    ORDER BY msg_time DESC, message_id DESC LIMIT %s""")
-        params = (staff_id, session_id, int(wm), soft_cap)
-    else:
-        sql = (f"""SELECT {_MSG_COLS} FROM chat_message
-                    WHERE staff_id = %s AND session_id = %s AND {_READABLE}
-                    ORDER BY msg_time DESC, message_id DESC LIMIT %s""")
-        params = (staff_id, session_id, soft_cap)
-    rows = db.query(sql, params)
-    rows.reverse()
-    return rows
-
-
-def _dedup_rows(*groups) -> list:
-    """按 ``message_id`` 去重合并（**先到先得**：先传入的段优先保留，如 ④ 的 ``_pinned``）。
-
-    合并后按 ``(msg_time, message_id)`` 升序。tie-breaker 必须有：同一秒的消息
-    只靠 ``msg_time`` 排序不稳定，V3（确定性）会挂（架构 §4.5.2）。
-    """
-    seen, out = set(), []
-    for g in groups:
-        for r in (g or []):
-            mid = r.get("message_id")
-            if mid in seen:
-                continue
-            seen.add(mid)
-            out.append(r)
-    out.sort(key=lambda x: (x.get("msg_time") or 0, str(x.get("message_id") or "")))
-    return out
-
-
-def _estimate_tokens(text: str) -> int:
-    """零依赖 token 估算：``len / 1.5``（中文保守系数，**宁可高估**；架构 §4.5.4(1)）。"""
-    return int(math.ceil(len(text or "") / 1.5))
-
-
-# ============================================================ ①② 记忆段（架构 §4.5.3 / §4.8 C-C）
-
-_MEM_TEXT_CAP = 400      # 画像摘要 / 销售策略各自的字符上限（≈267 token），防止记忆段吃掉预算
-_MEM_ITEM_CAP = 12       # ①② 各列命中的 item 数上限（超出只列前 N 条 + 合计）
+# `setting*`（运行时设置读取）的**唯一实现已在 `db.py`**，本模块不再转发：
+# 改造前它住在这里，于是 `sync_service` / `scheduler` / `audit` 为了读一个设置
+# 得反过来 import 评分服务（依赖方向是反的）；现在各处直接调 `db.setting*`。
 
 
 def _as_items(value) -> list:
-    """JSONB 读回来可能是 list，也可能是 json 字符串（不同驱动行为不一），统一成 list。"""
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except Exception:
-            return []
-    return [i for i in (value or []) if isinstance(i, dict)]
+    """JSONB 读回来可能是 list，也可能是 json 字符串 → 统一成「只含 dict 的 list」。
 
-
-def _confidence_thresholds() -> dict:
-    """置信度与复核触发的运行时阈值（app_setting > .env > 代码默认）。
-
-    全部**可配**：现在的默认值是按 52 条真实评估标定的（见 `confidence.py` 的常量注释），
-    业务若觉得复核队列量不合适，可在此调，不必改代码。
+    实现已收敛到 `db.as_dict_list()`（原先这个知识在 5 处各写一遍）。
+    保留本函数名是为了不动既有调用点（`db._as_items` 之类的外部引用）。
     """
-    return {
-        "conf_min": setting_float("confidence_review_min", "CONFIDENCE_REVIEW_MIN",
-                                  confidence.REVIEW_CONF_MIN),
-        "boundary": setting_int("confidence_boundary_delta", "CONFIDENCE_BOUNDARY_DELTA",
-                               confidence.GRADE_BOUNDARY_DELTA),
-        "flip_steps": setting_int("confidence_flip_steps", "CONFIDENCE_FLIP_STEPS",
-                                  confidence.GRADE_FLIP_STEPS),
-        "weak_weight": setting_int("confidence_weak_weight", "CONFIDENCE_WEAK_WEIGHT",
-                                   confidence.WEAK_EVIDENCE_WEIGHT),
-        # ⚠️ 默认 true = 保持改造前行为（不放松）。实测「仅引擎负分」占 69%，
-        # 关掉它可把复核率从 90% 降到 60%（见 confidence.py 中该常量的说明）。
-        "engine_negative": setting_bool("review_engine_negative", "REVIEW_ENGINE_NEGATIVE",
-                                        confidence.REVIEW_ENGINE_NEGATIVE),
-    }
+    return db.as_dict_list(value)
+
+
+#: 阈值实现的唯一位置已移到 `confidence.thresholds()`（它本就是该模块的常量）；
+#: 这里保留旧名，调用点（`backfill` / 测试里的 `ss._confidence_thresholds()`）不变。
+_confidence_thresholds = confidence.thresholds
 
 
 def _last_assessment(rel_key: str) -> dict:
@@ -454,234 +160,6 @@ def _last_assessment(rel_key: str) -> dict:
     return row or {}
 
 
-def _fmt_score(total: int) -> str:
-    """分值带符号：+4 / -1 / 0。"""
-    return f"{int(total):+d}" if total else "0"
-
-
-def _fmt_items(items: list, cap: int = _MEM_ITEM_CAP) -> str:
-    """把命中项渲染成 ``rule_id(+2)、rule_id(-1)`` 形式（超出 cap 只列前 cap 条）。"""
-    parts = []
-    for it in items[:cap]:
-        rid = it.get("rule_id") or "?"
-        sc = it.get("score")
-        parts.append(f"{rid}({_fmt_score(sc)})" if sc is not None else str(rid))
-    if len(items) > cap:
-        parts.append(f"…等 {len(items)} 项")
-    return "、".join(parts) or "无"
-
-
-def _clip(text, cap: int = _MEM_TEXT_CAP) -> str:
-    """截断长文本（画像摘要 / 销售策略可能很长）。按字符截，避免整段吃掉预算。"""
-    s = (text or "").strip().replace("\n", " ")
-    return s if len(s) <= cap else s[:cap] + "…"
-
-
-def _render_memory(last: dict) -> tuple:
-    """渲染 ①② 两段「记忆块」（架构 §4.5.3）。
-
-    **口径要点**：①② 是"上一次评估的结论"，**不是本次证据** —— 因此：
-    - 用 ``【】`` 段标，**不带 ``#编号``** → 不参与 ``index``，模型无法把它们当证据回链（决议 M-C）；
-    - 段标里明写「仅供参考、非本次证据」，与 §4.5.6 的提示词说明呼应（双保险）；
-    - ①② 由调用方保证**永不裁剪**（超预算时照原样发送，只砍 ③⑤）。
-    """
-    if not last:
-        return "", ""
-    ts = last.get("analyzed_at")
-    when = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else str(ts or "未知")
-    raw, grade = int(last.get("raw_score") or 0), (last.get("grade") or "未定")
-    pos, neg = _as_items(last.get("positive_items")), _as_items(last.get("negative_items"))
-    pos_total = int(last.get("positive_total") or 0)
-    neg_total = int(last.get("negative_total") or 0)
-
-    prof = [f"【客户状态档案】（读回自上次评估 {when}，仅供参考、非本次证据）",
-            f" 上次等级={grade}｜上次总分={_fmt_score(raw)}｜"
-            f"上次评估消息数={last.get('msg_count') or '未知'}｜规则版本={last.get('rule_version') or '未知'}"]
-    if last.get("profile_summary"):
-        prof.append(f" 上次画像摘要：{_clip(last['profile_summary'])}")
-    if last.get("sales_strategy"):
-        prof.append(f" 上次销售策略：{_clip(last['sales_strategy'])}")
-
-    detail = [f"【上次评分明细】（上次命中项合计 +{pos_total} / {_fmt_score(neg_total)}，非本次证据）",
-              f" 上次加分：{_fmt_items(pos)}｜合计 {_fmt_score(pos_total)}",
-              f" 上次扣分：{_fmt_items(neg)}｜合计 {_fmt_score(neg_total)}"]
-    return "\n".join(prof), "\n".join(detail)
-
-
-def build_context(staff_id: str, session_id: str, limit: int = None,
-                  session_meta: dict = None, rel_key: str = None,
-                  key_history: bool = True, delta: bool = True) -> dict:
-    """上下文装配（架构 §4.5）：① 档案 + ② 上次明细 + ③ 增量 + ④ 关键历史 + ⑤ 兜底。
-
-    分工（§4.5.5）：本函数只决定「**选哪些消息**」与「**放哪些记忆块**」
-    （取数 + 合并 + 预算 + 裁剪）；清洗 / 降噪 / 编号 / 时间 / 证据回链全部交给
-    ``ctx_preprocess``，**不自己拼消息文本**。
-
-    - **①② 是"记忆块"不是"消息行"**（§4.5.3）：用【】段标、**不带 ``#编号``**、
-      故不进 ``index`` → 模型无法把它们当证据（决议 M-C：记忆能影响理解，改不了分数）；
-      且**永不裁剪**（超预算时只砍 ③⑤，宁可略超预算也不退回"只看最近 60 条"）
-    - ``delta=False``：展示壳语义「最近 N 条」（``build_conversation`` 用），
-      不掺增量、关键历史与记忆块
-    - 选择权在本函数 → 渲染时**把窗口关掉**（``window=0``），否则 ③ 的「200 条软上限」
-      会被预处理层的 60 条窗口又剪掉一次；裁剪统一由下面的预算逻辑做
-    """
-    opts = _ctx_options()
-    if limit:
-        opts = replace(opts, window=int(limit))
-    window = max(int(opts.window or 60), 1)
-    rel = rel_key or f"{staff_id}:{session_id}"
-
-    # ── 展示壳：只取最近 N 条 ────────────────────────────────────────────
-    if not delta:
-        ctx = ctx_preprocess.build_llm_context(
-            _recent_rows(staff_id, session_id, window * 3),
-            session_meta=session_meta, opts=opts)
-        st = ctx["stats"]
-        st.update({"key_source": None, "key_rules": [], "watermark": None,
-                   "seg_delta": 0, "seg_fallback": 0, "seg_profile": 0, "seg_last": 0,
-                   "tokens": _estimate_tokens(ctx["text"]),
-                   "tokens_max": 0, "budget_exceeded": False, "trim": {}})
-        return ctx
-
-    render_opts = replace(opts, window=0)          # 选择已在上层完成，预处理层不再裁剪
-
-    # ── ③ 增量消息（水位 = 上次评估的 last_msg_time；空 → 全量）──────────
-    wm = _watermark(rel)
-    d_rows = _delta_rows(staff_id, session_id, wm,
-                         setting_int("ctx_delta_max", "CTX_DELTA_MAX", 200))
-    for r in d_rows:
-        r["_seg"] = "delta"
-
-    # ── ④ 关键历史（架构 §4.4）：K2 定规则集 → 两阶段取数 → 空则退 ④′ 早期锚点 ──
-    key_rows, key_source = [], None
-    if key_history and setting_bool("ctx_key_history", "CTX_KEY_HISTORY", True):
-        max_total = setting_int("ctx_key_history_max", "CTX_KEY_HISTORY_MAX", 30)
-        rule_ids = _key_rule_ids(rel, staff_id, session_id)
-        if rule_ids:
-            key_rows = _key_history_rows(staff_id, session_id, rule_ids, max_total)
-            if key_rows:
-                key_source = "tags"
-        if not key_rows:
-            key_rows = _early_anchor_rows(
-                staff_id, session_id,
-                setting_int("ctx_cold_start_early", "CTX_COLD_START_EARLY", 10))
-            if key_rows:
-                key_source = "cold_start"
-    for r in key_rows:
-        r["_pinned"] = True                        # 关键历史不受窗口约束（stats["key"] 靠它计数）
-        r["_seg"] = "key"
-
-    rows = _dedup_rows(key_rows, d_rows)
-    ctx = ctx_preprocess.build_llm_context(rows, session_meta=session_meta, opts=render_opts)
-
-    # ── ⑤ 兜底窗口：③④ 有效条数低于阈值时补齐到「窗口」规模 ──────────────
-    # 触发阈值 `ctx_fallback_min`（默认 4 = 文档 §4.5.2 伪码的 min_kept 口径）：
-    #   水位旧（很久没评）→ ③ = 水位后全部消息，**本身已涵盖最近 60 条**，无需 ⑤；
-    #   水位新（刚评过）  → ③ 很薄，但那些"最近的消息"上一轮刚看过，结论已在 ①② 里；
-    # 而若把阈值取「窗口」(60)，则系统跑起来后 ③ 永远 < 60 → ⑤ 永远被补上 →
-    # **③ 被 ⑤ 完全吞并，「增量」名存实亡**（这正是 C-B 要解决的）。
-    # 前提是 ①② 已落地（C-C），连续性由记忆承担；若要退回保守行为，把该值设成 60 即可。
-    fb_rows = []
-    fb_min = setting_int("ctx_fallback_min", "CTX_FALLBACK_MIN", 4)
-    if ctx["stats"]["kept"] < fb_min:
-        fb_rows = _recent_rows(staff_id, session_id, window)   # 补的量仍是「窗口」规模
-        for r in fb_rows:
-            r["_seg"] = "fallback"
-        merged = _dedup_rows(rows, fb_rows)
-        if len(merged) > len(rows):
-            rows = merged
-            ctx = ctx_preprocess.build_llm_context(rows, session_meta=session_meta, opts=render_opts)
-
-    # ── ①② 记忆段（架构 §4.5.3 / C-C）：读回上次结论，前置为「记忆块」──────
-    # ①② 用【】段标、**不带 #编号** → 不参与 index，模型无法把它们当证据（决议 M-C）。
-    seg1 = seg2 = ""
-    if setting_bool("ctx_memory", "CTX_MEMORY", True):
-        seg1, seg2 = _render_memory(_last_assessment(rel))
-
-    def compose(msg_text: str) -> str:
-        """把记忆块与消息行拼成最终 text。**①② 永远在最前，且不参与任何裁剪。**"""
-        return "\n\n".join(p for p in (seg1, seg2, msg_text) if p)
-
-    # ── 预算与裁剪（架构 §4.5.4）：先整段砍 ⑤ → ④ 分组收缩 → 砍 ③ 最早 ────
-    tokens_max = setting_int("ctx_tokens_max", "CTX_TOKENS_MAX", 12000)
-    trim = {}
-    tokens = _estimate_tokens(compose(ctx["text"]))
-    if tokens > tokens_max:
-        # ⑤ 的「整段砍」只砍**⑤ 独有**的行：与 ③ 重叠的那几条在合并时已被
-        # 标记为 ``_seg="delta"``（先到先得），按 id 整批删会误伤 ③。
-        if any(r.get("_seg") == "fallback" for r in rows):
-            drop_n = sum(1 for r in rows if r.get("_seg") == "fallback")
-            rows = [r for r in rows if r.get("_seg") != "fallback"]
-            trim["d5"] = drop_n
-            ctx = ctx_preprocess.build_llm_context(rows, session_meta=session_meta, opts=render_opts)
-            tokens = _estimate_tokens(compose(ctx["text"]))
-
-        # ④ 分组收缩（架构 §4.5.4(3) 第 2 步）：同一 rule 保留**最新 1 条**，
-        # 只对「该 rule 命中 >1 条」的行动手。不需要权重口径，故 C-C 可做。
-        while tokens > tokens_max:
-            by_rule = {}
-            for r in rows:
-                for rid in (r.get("tags") or []):
-                    by_rule.setdefault(rid, []).append(r)
-            shrink = set()
-            for _rid, rs in by_rule.items():
-                if len(rs) <= 1:
-                    continue
-                rs = sorted(rs, key=lambda x: (x.get("msg_time") or 0, str(x.get("message_id") or "")))
-                shrink |= {r.get("message_id") for r in rs[:-1]}       # 每组留最新 1 条
-            # 保守：同时命中多条规则的消息不参与收缩（它属于多个组，删了会误伤别的组）
-            shrink -= {r.get("message_id") for r in rows if len(r.get("tags") or []) > 1}
-            if not shrink:
-                break
-            rows = [r for r in rows if r.get("message_id") not in shrink]
-            trim["shrunk4"] = trim.get("shrunk4", 0) + len(shrink)
-            ctx = ctx_preprocess.build_llm_context(rows, session_meta=session_meta, opts=render_opts)
-            tokens = _estimate_tokens(compose(ctx["text"]))
-
-        # ③ 从【最早】开始按批砍（架构 §4.5.4(3) 第 3 步）：最新的是本次判断最相关的。
-        # ⚠️ 文档原「第 3 步：按 rule 权重升序整组砍 ④」**已按 2026-10-14 拍板取消**（D4）：
-        #   ① `rules.json` 各档本没有 weight 字段，加它要先由业务定 14 个维度的相对重要性，
-        #      且全局权重表达不了"对 X 类客户地域更重要"这种条件性；
-        #   ② 更根本的是——**维度是不可再生资源，消息是可再生资源**。做完第 2 步（④ 每组留
-        #      最新 1 条）后，④ 最多剩「规则数」条（≤14，约 1.6k token）；而砍一批 ③（20 条
-        #      约 2.2k token）腾出的空间就**大于**砍光整个 ④。砍 ③ 只损失冗余消息，砍 ④ 却
-        #      会让某个维度彻底没证据（可能直接漏判一个加分项）。
-        #   → 故 ④ 收缩后不再动，继续砍 ③；③ 砍完仍超才如实上报 budget_exceeded。
-        while tokens > tokens_max:
-            d_sorted = sorted([r for r in rows if r.get("_seg") == "delta"],
-                              key=lambda x: (x.get("msg_time") or 0, str(x.get("message_id") or "")))
-            if not d_sorted:
-                break
-            drop_ids = {r.get("message_id") for r in d_sorted[:_TRIM_BATCH]}
-            rows = [r for r in rows if r.get("message_id") not in drop_ids]
-            trim["d3"] = trim.get("d3", 0) + len(drop_ids)
-            ctx = ctx_preprocess.build_llm_context(rows, session_meta=session_meta, opts=render_opts)
-            tokens = _estimate_tokens(compose(ctx["text"]))
-
-    ctx["text"] = compose(ctx["text"])          # 记忆块前置（①② 永不裁剪）
-
-    # ── 观测（架构 §4.6）：每段实际条数 + 预算 + 裁剪明细 ────────────────
-    # 段的归属按「先到先得」算：④ > ③ > ⑤（与 ``_dedup_rows`` 的合并顺序一致），
-    # 否则同一条消息会被两段重复计数。
-    key_ids = {r.get("message_id") for r in key_rows}
-    delta_ids = {r.get("message_id") for r in d_rows} - key_ids
-    fb_ids = {r.get("message_id") for r in fb_rows} - key_ids - {r.get("message_id") for r in d_rows}
-    kept_ids = set(ctx["index"].values())
-    st = ctx["stats"]
-    st["key_source"] = key_source
-    st["key_rules"] = sorted({t for r in key_rows for t in (r.get("tags") or [])})
-    st["watermark"] = wm
-    st["seg_delta"] = len(kept_ids & delta_ids)
-    st["seg_fallback"] = len(kept_ids & fb_ids)
-    st["seg_profile"] = 1 if seg1 else 0        # V2 的断言对象：「记忆真的被读进去」
-    st["seg_last"] = 1 if seg2 else 0
-    st["tokens"] = tokens
-    st["tokens_max"] = tokens_max
-    st["budget_exceeded"] = bool(tokens > tokens_max)
-    st["trim"] = trim
-    return ctx
-
-
 def build_conversation(staff_id: str, session_id: str, limit: int = 60) -> str:
     """取最近 limit 条消息拼成给大模型的文本（保留原签名，内部已走预处理层）。
 
@@ -692,181 +170,94 @@ def build_conversation(staff_id: str, session_id: str, limit: int = 60) -> str:
                          key_history=False, delta=False)["text"]
 
 
+def build_display_messages(staff_id: str, session_id: str, limit: int = 300) -> list:
+    """**界面展示**用的结构化消息（含媒体地址），供前端渲染气泡。
+
+    为什么不复用 ``build_conversation`` 的纯文本输出：
+    那份文本是**喂给模型**的 —— 媒体会被压成 ``[图片]`` / ``[表情]`` 占位，且 URL 被
+    **故意剥掉**（CDN 链接会过期，对语义判断也只是噪声）。人看的时候只看到 `[图片]`
+    显然不对：「给模型看」和「给人看」是两种需求，不该共用一份渲染。
+
+    返回字段：``{code, message_id, role, direction, msg_time, msgtype, type_name,
+    text, is_media, media_url, media_name}`` —— 与 ``api_chat.messages`` 同构，
+    前端可以复用同一套气泡/媒体渲染。
+    """
+    rows = _recent_rows(staff_id, session_id, int(limit or 300))
+    ctx = ctx_preprocess.build_llm_context(
+        rows, opts=replace(_ctx_options(), window=0))
+    by_id = {str(r.get("message_id")): r for r in rows}
+    out = []
+    for m in ctx.get("messages") or []:
+        row = by_id.get(str(m.get("message_id")), {})
+        media = ctx_preprocess.media_of(row)
+        out.append({
+            "code": m.get("code"),
+            "message_id": m.get("message_id"),
+            "role": m.get("role"),
+            "direction": m.get("direction"),
+            "msg_time": m.get("msg_time"),
+            "msgtype": m.get("msgtype"),
+            "type_name": m.get("type_name"),
+            "text": m.get("text"),
+            "is_media": ctx_preprocess.is_media(m.get("msgtype")),
+            "media_url": media.get("media_url") or "",
+            "media_name": media.get("media_name") or "",
+        })
+    return out
+
+
 # ============================================================ 服务
 
-#: 僵尸 run 判定阈值（分钟）：`scoring_run` 停在 running 超过这么久 → 视为进程异常退出。
-#: 必须大于最长批量耗时（170 个长会话 × ~58 秒 ≈ 2.7 小时），故取 4 小时。
-#: ⚠️ 这是**二级兜底**：一级判据是 `heartbeat_at`（见 :data:`HEARTBEAT_STALE_MINUTES`）。
-STALE_MINUTES = 240
-#: 心跳判死阈值（分钟）：长任务每次进度更新（`_bump`）刷新 `heartbeat_at`；
-#: 心跳停超过这么久 = 进程已被 kill/崩溃 → 立刻判僵尸并放行（不必等 4 小时）。
-#: ⚠️ 必须**大于单会话的最坏耗时**（3 次重试 × 120s 超时 ≈ 6 分钟，再加网络与落库开销），
-#: 否则会把活着的任务误判为死 → 两个批量并行 → 反而破坏了互斥。取 15 分钟留足余量。
-HEARTBEAT_STALE_MINUTES = 15
-
-
 def _ledger_total(rel_key: str) -> int:
-    """读客户级回写水位（D2-1）。不存在 → 0（首次回写全量）。"""
-    try:
-        row = db.query_one("SELECT written_total FROM writeback_ledger WHERE relationship_key=%s",
-                           (rel_key,))
-        return int((row or {}).get("written_total") or 0)
-    except Exception:
-        return 0
+    """读客户级回写水位（D2-1）。实现已收敛到 `writeback_repo`（水位唯一写入口）。"""
+    return writeback_repo.ledger_total(rel_key)
 
 
 def _advance_ledger(rel_key: str, staff_id: str, target_id: str, aid: int, delta: int) -> None:
-    """回写成功后推进水位（D2-1）。
-
-    ⚠️ 必须**只加已成功投递的增量**：水位是「微伴那边已经累加了多少分」的镜像，
-    多写会少回写（水位虚高 → 下次差值变 0 → 分数永远补不上），
-    少写会重复回写。两种错都会真实影响客户分数。
-    """
-    db.execute(
-        """INSERT INTO writeback_ledger
-             (relationship_key, staff_id, external_user_id, written_total,
-              last_assessment_id, last_write_at, writes)
-           VALUES (%s,%s,%s,%s,%s,now(),1)
-           ON CONFLICT (relationship_key) DO UPDATE
-             SET written_total = writeback_ledger.written_total + EXCLUDED.written_total,
-                 last_assessment_id = EXCLUDED.last_assessment_id,
-                 last_write_at = now(),
-                 writes = writeback_ledger.writes + 1,
-                 updated_at = now()""",
-        (rel_key, staff_id, target_id, int(delta), aid))
-
-
-def _audit(actor, action, target, detail=None):
-    """写审计日志（架构 §2.2 H2）。**失败绝不影响主流程**（审计是旁路观测）。"""
-    try:
-        db.execute("INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
-                   (actor, action, target, db.as_json(detail) if detail else None))
-    except Exception as e:                      # noqa: BLE001
-        print(f"[scoring] 写 audit_log 失败（不影响评分）：{e}")
+    """推进水位。实现已收敛到 `writeback_repo.advance_ledger`（与 outbox 同一份）。"""
+    writeback_repo.advance_ledger(rel_key, staff_id, target_id, aid, delta)
 
 
 def _already_written(aid: int) -> bool:
-    """该评估是否已成功回写过（供 `before_writeback` 的幂等闸）。
-
-    为什么放在逻辑层而不只靠 `UNIQUE(assessment_id)`：数据库唯一约束只保证
-    「不重复记账」，但**挡不住重复调用微伴接口**（微伴的客户评分是累加的，
-    重复投递会真的多加分）。这里显式挡在投递之前。
-
-    失败默认返回 False（宁可多投一次，也不要因为查库抖动而漏投）。
-    """
-    try:
-        return bool(db.query_one(
-            "SELECT 1 AS x FROM score_writeback WHERE assessment_id=%s AND status='ok'",
-            (aid,)))
-    except Exception:
-        return False
+    """幂等闸。实现已收敛到 `writeback_repo.already_written`。"""
+    return writeback_repo.already_written(aid)
 
 
 def _customer_writes_today(target_id: str) -> int:
-    """该客户今日已成功回写次数（供 `before_writeback` 的日配额闸，边界3）。"""
-    try:
-        row = db.query_one(
-            """SELECT count(*) AS n FROM score_writeback
-                WHERE external_user_id=%s AND status='ok'
-                  AND created_at >= date_trunc('day', now())""", (target_id,))
-        return int(row["n"]) if row else 0
-    except Exception:
-        return 0
+    """日配额闸用的计数。实现已收敛到 `writeback_repo.writes_today`。"""
+    return writeback_repo.writes_today(target_id)
 
 
 def repair_current_flags() -> dict:
-    """自愈 `is_current` 的两种破损（**幂等**，可反复调用）。
+    """自愈 `is_current` 的两种破损（**幂等**）。
 
-    背景（E2 的配套缺口）：落库时「新评估把同客户旧行标记为被取代」**只发生在插入那一刻**。
-    若那个新行**之后被删除**（测试清理、人工删数据），旧行的 `is_current` 就再也回不来
-    → 该客户在评分列表（默认过滤 `is_current`）里**彻底消失**。实测已出现 1 例。
-
-    两种破损：
-    1. 某客户**一行 current 都没有** → 把 `assessment_id` 最大的那行恢复为 current（清 `superseded_by`）
-    2. `superseded_by` 指向**已不存在的行** → 清空（悬空引用）
-
-    放在启动时调用，是刻意的：破损由**外部删除**造成，插入路径补不了，只能靠自愈。
+    ⚠️ 实现已移到 `assessment_repo.repair_current_flags()`（该表唯一写入口）；
+    这里保留同名函数是为了不动既有调用点（测试里有 32 处 `ss.repair_current_flags()`），
+    且启动自愈（`main.py`）语义不变。
     """
-    fixed = db.execute(
-        """UPDATE customer_intent_assessment a
-              SET is_current = true, superseded_by = NULL
-            WHERE NOT a.is_current
-              AND a.assessment_id = (
-                    SELECT max(b.assessment_id) FROM customer_intent_assessment b
-                     WHERE b.relationship_key = a.relationship_key)
-              AND NOT EXISTS (
-                    SELECT 1 FROM customer_intent_assessment c
-                     WHERE c.relationship_key = a.relationship_key AND c.is_current)""")
-    dangling = db.execute(
-        """UPDATE customer_intent_assessment a
-              SET superseded_by = NULL
-            WHERE a.superseded_by IS NOT NULL
-              AND NOT EXISTS (SELECT 1 FROM customer_intent_assessment b
-                               WHERE b.assessment_id = a.superseded_by)""")
+    return assessment_repo.repair_current_flags()
     return {"no_current_fixed": fixed, "dangling_cleared": dangling}
 
 
-class ScoringService:
+class ScoringService(job_service.JobService):
+    """评分批量任务。
+
+    运行状态（本进程线程 / 跨进程 DB 行 / 心跳僵尸 / 绝对超时）与进度累加
+    都在基类 `job_service.JobService` —— 与 `SyncService` **共用一份实现**，
+    两边不再各写一遍（原先已经漂移：sync 版加锁读线程、scoring 版没加）。
+    """
+
+    TABLE = "scoring_run"
+
     def __init__(self):
-        self._lock = threading.Lock()
-        self._thread = None
-        self._stop = False
+        super().__init__()
         self._run_id = None
         #: 统一任务 id（外循环 / 检查点载体，修硬伤 3）。与 `_run_id` 一一对应。
         self._task_id = None
-        self._progress = {}
 
     # ---------------- 对外接口 ----------------
 
-    def is_running(self) -> bool:
-        """是否有评分在跑。**含跨进程检测**。
-
-        为什么不能只看 ``self._thread``：后端服务、调度器、手工脚本可能跑在**不同进程**，
-        ``self._thread`` 只是本进程的状态，跨进程永远看不到 → 会出现**两个批量同时在跑**
-        （实测踩到过：脚本里的 run#22 正在跑，另起后端又能启动 run#23）。
-
-        所以再查一次 DB：有 ``status='running'`` 的记录就算在跑。
-
-        **僵尸处理（两级）**：
-          ① **心跳**：`_bump` 每次会话进度更新会刷新 `heartbeat_at`。心跳停超过
-             `job_heartbeat_stale_minutes`（默认 15 分钟）→ 进程已死 → 标 failed 并放行。
-             为什么必须加这一级：进程被 kill 时来不及改状态，记录会**永久停在 running**；
-             只靠 started_at 的 240 分钟超时，等于把系统锁死 4 小时（实测在 `sync_job` 上踩到）。
-          ② **绝对超时**：仍超过 `scoring_stale_minutes`（默认 240 分钟）的一律视为僵尸
-             （兼容没有心跳的老行）。需大于最长批量耗时。
-        DB 不可用时**宁可放行也不误拦**。
-        """
-        if self._thread is not None and self._thread.is_alive():
-            return True
-        try:
-            row = db.query_one(
-                """SELECT id,
-                          EXTRACT(EPOCH FROM (now() - started_at))   AS el,
-                          EXTRACT(EPOCH FROM (now() - heartbeat_at)) AS hb
-                     FROM scoring_run WHERE status='running' ORDER BY id DESC LIMIT 1""")
-        except Exception:
-            return False
-        if not row:
-            return False
-        stale = setting_int("scoring_stale_minutes", "SCORING_STALE_MINUTES",
-                            STALE_MINUTES) * 60
-        hb_stale = setting_int("job_heartbeat_stale_minutes", "JOB_HEARTBEAT_STALE_MINUTES",
-                               HEARTBEAT_STALE_MINUTES) * 60
-        hb = row.get("hb")
-        if hb is not None and float(hb) > hb_stale:
-            db.execute(
-                """UPDATE scoring_run SET status='failed', finished_at=now(),
-                          error=COALESCE(error, %s) WHERE id=%s AND status='running'""",
-                (f"进程异常退出：心跳已停 {int(float(hb) // 60)} 分钟"
-                 f"（阈值 {hb_stale // 60} 分钟），自动标记为失败", row["id"]))
-            return False
-        if row.get("el") is not None and float(row["el"]) > stale:
-            db.execute(
-                """UPDATE scoring_run SET status='failed', finished_at=now(),
-                          error=COALESCE(error, %s) WHERE id=%s AND status='running'""",
-                (f"进程异常退出：超过 {stale // 60} 分钟仍为 running，自动标记为失败", row["id"]))
-            return False
-        return True
+    # `is_running()` 继承自 `job_service.JobService`（跨进程 + 僵尸两级判定）
 
     def status(self) -> dict:
         with self._lock:
@@ -916,22 +307,24 @@ class ScoringService:
         if self.is_running():
             return {"ok": False, "reason": "已有评分任务在运行，请先等待完成"}
         # 互斥（修 H1）：同步正在跑时不得启动评分 —— 否则会读到「半截会话」
-        # （消息数 / 最后时间都在变，结论不可复现）。与 scheduler.guard_can_start 同一不变量。
-        import sync_service
-        if sync_service.service.is_running():
+        # （消息数 / 最后时间都在变，结论不可复现）。
+        # ⚠️ 判定走 `job_service.running_kinds()`（查库、跨进程可见），**不再 import
+        # sync_service** —— 改造前两边互相 import（靠函数内延迟 import 才没炸），
+        # 而「互斥」这个不变量本该由第三方中立处判定。
+        if "sync" in job_service.running_kinds(exclude="scoring"):
             return {"ok": False, "reason": "同步任务进行中，请先等待同步完成再评分（避免读到半截数据）"}
         if not config.LLM_API_KEY or not config.LLM_BASE_URL:
             return {"ok": False, "reason": "缺少大模型配置（LLM_BASE_URL / LLM_API_KEY）"}
 
-        max_sessions = int(max_sessions or setting_int("scoring_max_sessions",
+        max_sessions = int(max_sessions or db.setting_int("scoring_max_sessions",
                                                        "SCORING_MAX_SESSIONS", 200))
-        min_messages = int(min_messages or setting_int("scoring_min_messages",
+        min_messages = int(min_messages or db.setting_int("scoring_min_messages",
                                                        "SCORING_MIN_MESSAGES", 4))
         # ── Loop 护栏（架构 §2.2）：整轮总超时 + LLM 成本预算 ──────────────
         # 0 表示「不限」。实测教训：一次批量跑了 2.7 小时才跑完，中途无法中断 ——
         # 因为改造前只有「单会话内部重试耗时」自然累积，没有整轮总闸。
-        deadline_min = setting_int("scoring_deadline_minutes", "SCORING_DEADLINE_MINUTES", 120)
-        max_llm_calls = setting_int("scoring_max_llm_calls", "SCORING_MAX_LLM_CALLS", 500)
+        deadline_min = db.setting_int("scoring_deadline_minutes", "SCORING_DEADLINE_MINUTES", 120)
+        max_llm_calls = db.setting_int("scoring_max_llm_calls", "SCORING_MAX_LLM_CALLS", 500)
         rv = current_rule_version()
         # 闸6（架构 §5.4 / §2.7）：规则变了才需要过门禁 ——
         # 「改规则前必须跑评估集，指标不降才允许发布」。
@@ -944,12 +337,12 @@ class ScoringService:
                 WHERE status IN ('success','partial') AND rule_version IS NOT NULL
                 ORDER BY id DESC LIMIT 1""") or {}
         if (prev_rv.get("rule_version") and prev_rv["rule_version"] != rv
-                and setting_bool("eval_gate_enabled", "EVAL_GATE_ENABLED", True)):
+                and db.setting_bool("eval_gate_enabled", "EVAL_GATE_ENABLED", True)):
             try:
                 import eval_runner
                 dec = eval_runner.gate_decision(run_if_possible=False)
                 if dec.get("blocked"):
-                    _audit("system", "rule_gate_blocked", f"rule_version:{rv}",
+                    audit.record_action("system", "rule_gate_blocked", f"rule_version:{rv}",
                            {"prev": prev_rv.get("rule_version"), "diffs": dec.get("diffs")})
                     return {"ok": False,
                             "reason": f"规则版本 {prev_rv.get('rule_version')} → {rv} "
@@ -1010,11 +403,9 @@ class ScoringService:
                           "hook_coverage_sum": 0.0, "hook_invalid_total": 0,
                           # H5 单会话耗时分布
                           "session_secs": []}
-        self._thread = threading.Thread(
-            target=self._run,
-            args=(run_id, staff_ids, max_sessions, min_messages, force, rv, grades),
-            daemon=True, name=f"scoring-{run_id}")
-        self._thread.start()
+        self._spawn(self._run,
+                    (run_id, staff_ids, max_sessions, min_messages, force, rv, grades),
+                    name=f"scoring-{run_id}")
         # 审计三节点之一（架构 H2）：启动就留痕，便于追溯「谁在什么时候全量重评了」。
         # 主体由服务端推导（评审 P0-2）：这里仍在**请求上下文**内（线程刚启动、
         # contextvar 尚可见），故 `security.actor()` 拿得到认证用户名；
@@ -1025,7 +416,7 @@ class ScoringService:
             _actor = _sec.actor()
         except Exception:                       # noqa: BLE001
             _actor = triggered_by
-        _audit(_actor, "scoring_start", f"run:{run_id}",
+        audit.record_action(_actor, "scoring_start", f"run:{run_id}",
                {"triggered_by": triggered_by,
                 "kind": "full" if force else "incremental", "rule_version": rv,
                 "max_sessions": max_sessions, "min_messages": min_messages,
@@ -1084,13 +475,9 @@ class ScoringService:
             print(f"[scoring] 任务收尾失败（不影响结果）：{e}")
 
     def _bump(self, run_id, *, detail=None, **deltas):
-        with self._lock:
-            for k, v in deltas.items():
-                if v:
-                    self._progress[k] = self._progress.get(k, 0) + v
-            if detail:
-                self._progress.update(detail)
-            snap = dict(self._progress)
+        # 累加部分与 SyncService 共用基类实现（`job_service.JobService._accumulate`）；
+        # 这里只保留「本表有哪些列」这件本服务特有的事。
+        snap = self._accumulate(deltas, detail)
         db.execute(
             """UPDATE scoring_run SET session_done=%s, session_skipped=%s,
                    assessment_new=%s, writeback_ok=%s, writeback_fail=%s,
@@ -1113,10 +500,7 @@ class ScoringService:
         与 `_score_one` 原来那段 ``with self._lock:`` 自增完全等价（阶段B 图化时
         把它抽成方法，供图节点复用，保证统计口径一字不差）。
         """
-        with self._lock:
-            for k, v in deltas.items():
-                if v:
-                    self._progress[k] = self._progress.get(k, 0) + v
+        self._accumulate(deltas)
 
     def _note_facts(self, facts: dict) -> None:
         """取标签失败留痕（修 G1）。只加内存计数，随后续 ``_bump`` 写进 run detail。
@@ -1203,7 +587,7 @@ class ScoringService:
         #         ② 有新消息  ③ 未评过  ④ 规则版本变更
         #         ⑤ 最后时间（兜底，保证稳定可复现）
         # 用 `scoring_priority_order` 可一键退回老口径（默认开）。
-        if setting_bool("scoring_priority_order", "SCORING_PRIORITY_ORDER", True):
+        if db.setting_bool("scoring_priority_order", "SCORING_PRIORITY_ORDER", True):
             order_by = """
                 CASE WHEN last.grade = 'S' THEN 0
                      WHEN last.grade = 'A' THEN 1
@@ -1252,15 +636,15 @@ class ScoringService:
 
         同时把 token 用量累加进 ``_progress``（修 H5：此前完全没有成本指标）。
         """
-        attempts = max(1, setting_int("llm_retry_attempts", "LLM_RETRY_ATTEMPTS", 3))
-        temperature = setting_float("llm_temperature", "LLM_TEMPERATURE",
+        attempts = max(1, db.setting_int("llm_retry_attempts", "LLM_RETRY_ATTEMPTS", 3))
+        temperature = db.setting_float("llm_temperature", "LLM_TEMPERATURE",
                                     analyze.DEFAULT_TEMPERATURE)
-        max_tokens = setting_int("llm_max_tokens", "LLM_MAX_TOKENS", 0) or None
-        max_repairs = setting_int("rejudge_retries", "REJUDGE_RETRIES",
+        max_tokens = db.setting_int("llm_max_tokens", "LLM_MAX_TOKENS", 0) or None
+        max_repairs = db.setting_int("rejudge_retries", "REJUDGE_RETRIES",
                                   analyze.DEFAULT_MAX_REPAIRS)
         # 单次调用超时（架构 §7.3 `scoring_llm_timeout_sec`）：此前是 `llm.TIMEOUT=120`
         # **硬编码**，测试/弱网/慢模型都无法按环境调整。0 或空 → 用 llm 模块默认。
-        timeout = setting_int("llm_timeout_sec", "LLM_TIMEOUT_SEC", 0) or None
+        timeout = db.setting_int("llm_timeout_sec", "LLM_TIMEOUT_SEC", 0) or None
 
         def _on_attempt(_n, meta):
             usage = (meta or {}).get("usage") or {}
@@ -1296,41 +680,6 @@ class ScoringService:
                 raise                                  # 重试一万次也没用，直接转人工
         raise RuntimeError(f"大模型分析连续 {attempts} 次失败（临时故障）：{last_err}")
 
-    @staticmethod
-    def _engine_rule_ids(rules: dict) -> set:
-        """由规则引擎硬算、不允许大模型判定的规则（如 48h 未回复）。"""
-        return {r["rule_id"] for r in rules.get("negative_rules", [])
-                if r.get("engine") == "rule"}
-
-    @staticmethod
-    def _rule_tier_score(rules: dict, rule_id: str, default: int = 0) -> int:
-        """取某条规则首个档位的分值 —— **从规则表读，不硬编码**。
-
-        曾经把 ``negative_no_reply_2d`` 的分值写死成 ``-2``：业务若把它改成 ``-3``，
-        代码仍产出 ``-2`` → ``validate_items()`` 会把它判为**非法项静默丢弃**
-        （表现为「该扣的分没扣」，日志里只剩一条 ``invalid_items``）。故改为查表。
-        """
-        for group in ("negative_rules", "positive_rules"):
-            for r in rules.get(group, []) or []:
-                if r.get("rule_id") == rule_id:
-                    opts = r.get("options") or []
-                    if opts and opts[0].get("score") is not None:
-                        return int(opts[0]["score"])
-        return default
-
-    def _engine_negative_items(self, facts: dict, rules: dict) -> list:
-        """规则引擎补充的硬指标扣分项（不由大模型判断）。"""
-        items = []
-        if facts.get("no_reply_48h"):
-            items.append({
-                "rule_id": "negative_no_reply_2d",
-                "score": self._rule_tier_score(rules, "negative_no_reply_2d", -2),
-                "evidence": [f"距最后一条员工消息已 {facts.get('hours')} 小时无客户回复"],
-                "reason": "规则引擎：销售正常跟进后，客户连续 48 小时未回复（如客户已说明忙/晚点聊，人工可驳回）",
-            })
-        valid, _bad = rules_mod.validate_items(items, rules)
-        return valid
-
     # ---------------- 内部：回写微伴 ----------------
 
     def _writeback(self, run_id, rel_key, aid, staff_id, target_id, score, mode,
@@ -1347,10 +696,10 @@ class ScoringService:
         # 所以必须只写增量 = 本次 positive_total − 客户已回写水位。
         # 整值回写在累加语义下会让分数虚高（同一次评估被反复累加）。
         # 两个查询**条件化**：只在 live 且配额上限 > 0 时才查，避免每会话白加 DB 往返。
-        quota_run_limit = setting_int("writeback_quota_per_run", "WRITEBACK_QUOTA_PER_RUN", 0)
-        quota_cust_limit = setting_int("writeback_quota_per_customer_per_day",
+        quota_run_limit = db.setting_int("writeback_quota_per_run", "WRITEBACK_QUOTA_PER_RUN", 0)
+        quota_cust_limit = db.setting_int("writeback_quota_per_customer_per_day",
                                        "WRITEBACK_QUOTA_PER_CUSTOMER_PER_DAY", 0)
-        delta_mode = setting_bool("writeback_delta_mode", "WRITEBACK_DELTA_MODE", True)
+        delta_mode = db.setting_bool("writeback_delta_mode", "WRITEBACK_DELTA_MODE", True)
         # ④ Policy 策略门（架构 §7.4 / ADR-004，修硬伤 4）。
         # ⚠️ **只在 live 生效**：dry_run 不写外部系统、没有副作用，拦它没有意义，
         #    反而会改变默认配置下的行为（默认就是 dry_run）并把已有运维习惯打乱。
@@ -1408,17 +757,9 @@ class ScoringService:
             except Exception as e:                  # noqa: BLE001
                 print(f"[scoring] 推进回写水位失败（下次会重算差值）：{e}")
         try:
-            db.execute(
-                """INSERT INTO score_writeback
-                     (relationship_key, assessment_id, staff_id, external_user_id, score,
-                      mode, status, attempts, errcode, errmsg, response)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT (assessment_id) DO NOTHING""",
-                (rel_key, aid, staff_id, target_id, score, mode, status,
-                 1 if status in ("ok", "failed") else 0, errcode, errmsg,
-                 db.as_json(resp) if resp else None))
-            db.execute("UPDATE customer_intent_assessment SET writeback_status=%s WHERE assessment_id=%s",
-                       (status, aid))
+            writeback_repo.record_attempt(rel_key, aid, staff_id, target_id, score,
+                                          mode, status, errcode, errmsg, resp)
+            assessment_repo.set_writeback_status(aid, status)
         except Exception as e:
             print(f"[scoring] 回写记录失败：{e}")
 
@@ -1431,21 +772,14 @@ class ScoringService:
 
     def _enqueue_review(self, aid, cand, neg_items, raw_score, grade, writeback_status):
         if not neg_items:
-            db.execute("UPDATE customer_intent_assessment SET review_status='na' WHERE assessment_id=%s", (aid,))
+            assessment_repo.set_review_status(aid, "na")
             return False
         rel = f"{cand['staff_id']}:{cand['target_id']}"
-        db.execute(
-            """INSERT INTO negative_review
-                 (relationship_key, assessment_id, staff_id, staff_name, target_id,
-                  target_name, session_id, ai_negative_total, ai_negative_items,
-                  status, raw_score, grade, last_msg_time)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s)
-               ON CONFLICT (assessment_id) DO NOTHING""",
-            (rel, aid, cand["staff_id"], cand.get("staff_name"), cand["target_id"],
-             cand.get("target_name"), cand["session_id"],
-             sum(i.get("score", 0) for i in neg_items), db.as_json(neg_items),
-             raw_score, grade, cand.get("last_msg_time")))
-        db.execute("UPDATE customer_intent_assessment SET review_status='pending' WHERE assessment_id=%s", (aid,))
+        review_repo.enqueue(rel_key=rel, aid=aid, cand=cand,
+                            ai_negative_total=sum(i.get("score", 0) for i in neg_items),
+                            ai_negative_items=neg_items,
+                            raw_score=raw_score, grade=grade)
+        assessment_repo.set_review_status(aid, "pending")
         return True
 
     # ---------------- 内部：预处理层观测 ----------------
@@ -1525,7 +859,7 @@ class ScoringService:
                     WHERE staff_id = %s AND session_id = %s""",
                 (rel_staff, rel_sid)) or {}
             attempts = int(prev.get("n") or 0) + 1
-            max_attempts = setting_int("session_max_failures", "SESSION_MAX_FAILURES", 3)
+            max_attempts = db.setting_int("session_max_failures", "SESSION_MAX_FAILURES", 3)
             status = "dead" if attempts >= max_attempts else "pending"
             payload = {}
             if isinstance(err, contracts.ContractViolationError):
@@ -1590,9 +924,9 @@ class ScoringService:
                       source_run_id, contract_attempts,
                       session_confidence, review_reasons,
                       model_name, rule_checks, old_raw_score, profile_struct,
-                      task_id, policy_action)
+                      task_id, policy_action, data_as_of)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    RETURNING assessment_id""",
                 (rel, cand["staff_id"], cand.get("staff_name"), cand["target_id"],
                  cand.get("target_name"), cand["session_id"],
@@ -1615,28 +949,28 @@ class ScoringService:
                  old_raw,
                  db.as_json(res.get("profile_struct") or []),
                  # 硬伤 3/4 的落库侧：结论可追溯到「哪次任务」与「当时策略怎么判的」
-                 (run_id or None), policy_action)
+                 (run_id or None), policy_action,
+                 # P2：本次判定用的时间锚点（来自 `compute_facts`，**不在这里重取
+                 # `time.time()`** —— 从算事实到落库之间隔着一次 LLM 调用，重取会差几十秒，
+                 # 「当时为什么这么判」就对不上了）
+                 res.get("data_as_of"))
             ).fetchone()["assessment_id"]
 
             # E2（架构 §7.2）：新评估落库后，把**同一客户的旧记录**标记为被取代。
             # 为什么放在同一事务：若先插入再单独更新，中途崩溃会留下**两条 is_current=true**
             # → 列表出现重复行，正是 E2 要消除的问题。
             # 语义：只有最新一条是「当前有效」，历史行保留（可追溯客户是怎么变的）。
-            conn.execute(
-                """UPDATE customer_intent_assessment
-                      SET is_current = false, superseded_by = %s
-                    WHERE relationship_key = %s AND assessment_id < %s AND is_current""",
-                (aid, rel, aid))
+            assessment_repo.supersede_previous(conn, rel, aid)
 
             # 仅 live + 有正分才入队（dry_run / off 走同步记账，与改造前行为一致）
             if (score["positive_total"] >= 1 and mode == "live"
-                    and setting_bool("use_outbox", "USE_OUTBOX", True)):
+                    and db.setting_bool("use_outbox", "USE_OUTBOX", True)):
                 # D2-1：**入队的就是差值**，不是正分整值。
                 # 差值必须在这里算好并固化进任务 —— 出队重试时不能再算一次
                 # （水位会被别的任务推进，重算会得到不同的数）。
                 # 差值为 0（相对水位无增量）→ 不入队，省一次无意义的网络往返。
                 send = int(score["positive_total"])
-                if setting_bool("writeback_delta_mode", "WRITEBACK_DELTA_MODE", True):
+                if db.setting_bool("writeback_delta_mode", "WRITEBACK_DELTA_MODE", True):
                     send = send - _ledger_total(rel)
                 if send > 0:
                     outbox.enqueue(conn, aid, rel, cand["staff_id"], cand["target_id"],
@@ -1718,11 +1052,11 @@ class ScoringService:
         _st = ctx["stats"]
         gate = hooks.before_llm_call(
             kept=_st["kept"],
-            min_kept=setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4),
+            min_kept=db.setting_int("ctx_min_kept", "CTX_MIN_KEPT", 4),
             customer_msgs=_st.get("customer_msgs"),
-            min_customer_msgs=setting_int("ctx_min_customer_msgs", "CTX_MIN_CUSTOMER_MSGS", 1),
+            min_customer_msgs=db.setting_int("ctx_min_customer_msgs", "CTX_MIN_CUSTOMER_MSGS", 1),
             text_len=_st.get("text_len"),
-            min_effective_chars=setting_int("ctx_min_effective_chars",
+            min_effective_chars=db.setting_int("ctx_min_effective_chars",
                                             "CTX_MIN_EFFECTIVE_CHARS", 0))
         if gate.denied:
             self._note_hook(gate)
@@ -1733,13 +1067,16 @@ class ScoringService:
         self._note_facts(facts)                  # 修 G1：取标签失败留痕
         self._bump(run_id, llm_calls=1)
         res = self._llm_analyze(ctx, facts["text"], rules)
+        # P2：把这次判定用的时间锚点随 `res` 带到落库处（与图路径 `n_items` 同口径）。
+        # 引擎项就是按这个锚点算的，落库必须用同一个值。
+        res["data_as_of"] = facts.get("as_of")
 
         pos_items = res.get("positive_items") or []
         # engine=rule 的规则已在 rules.derive_items 里排除，这里再兜一层（防御契约回退）
-        engine_ids = self._engine_rule_ids(rules)
+        engine_ids = rules_mod.engine_rule_ids(rules)
         neg_items = [i for i in (res.get("negative_items") or [])
                      if i.get("rule_id") not in engine_ids]
-        neg_items += self._engine_negative_items(facts, rules)   # 规则引擎硬指标
+        neg_items += rules_mod.engine_negative_items(facts, rules)   # 规则引擎硬指标
 
         score = rules_mod.compute_score(pos_items, neg_items, rules)
         grade = rules_mod.grade_of(score["raw_score"], rules)
@@ -1829,7 +1166,7 @@ class ScoringService:
         ``use_graph_session`` 默认 False → 行为与改造前完全一致；
         开启后走 ``graph_session.run_session``，节点是旧逻辑的逐字搬运。
         """
-        if setting_bool("use_graph_session", "USE_GRAPH_SESSION", False):
+        if db.setting_bool("use_graph_session", "USE_GRAPH_SESSION", False):
             import graph_session                        # 延迟导入：不图化时零开销
             return graph_session.run_session(self, run_id, cand, rules,
                                              min_messages, mode, fetch_tags)
@@ -1849,8 +1186,8 @@ class ScoringService:
                     print(f"[scoring] 任务转 running 失败（继续评分）：{e}")
             rules = rules_mod.load_rules()
             mode = self.writeback_mode()
-            fetch_tags = setting_bool("scoring_fetch_tags", "SCORING_FETCH_TAGS", False)
-            sleep_ms = setting_int("scoring_sleep_ms", "SCORING_SLEEP_MS", 0)
+            fetch_tags = db.setting_bool("scoring_fetch_tags", "SCORING_FETCH_TAGS", False)
+            sleep_ms = db.setting_int("scoring_sleep_ms", "SCORING_SLEEP_MS", 0)
 
             self._bump(run_id, detail={"stage": "筛选候选会话"})
             cands = self._candidates(staff_ids, max_sessions, min_messages, force, rv,
@@ -1942,7 +1279,7 @@ class ScoringService:
                  db.as_json({**self._progress, **_dist, "stage": "已完成"}), run_id))
             # 外循环收尾：任务进入终态（映射见 _task_finish）
             self._task_finish(status, partial_reason)
-            _audit("system", "scoring_done", f"run:{run_id}",
+            audit.record_action("system", "scoring_done", f"run:{run_id}",
                    {"status": status, "partial_reason": partial_reason,
                     "elapsed_sec": elapsed, "session_done": self._progress.get("session_done", 0),
                     "session_skipped": self._progress.get("session_skipped", 0),
@@ -1959,7 +1296,7 @@ class ScoringService:
                        (str(e)[:2000], run_id))
             self._task_finish("failed", partial_reason=str(e)[:200])
             self._bump(run_id, detail={"stage": "失败", "error": str(e)})
-            _audit("system", "scoring_failed", f"run:{run_id}",
+            audit.record_action("system", "scoring_failed", f"run:{run_id}",
                    {"error": str(e)[:500], "error_class": type(e).__name__})
         finally:
             self._stop = False
@@ -1982,7 +1319,7 @@ class ScoringService:
         rules = rules_mod.load_rules()
         try:
             r = self._score_cand(0, cand, rules, 1, self.writeback_mode(),
-                                 setting_bool("scoring_fetch_tags", "SCORING_FETCH_TAGS", False))
+                                 db.setting_bool("scoring_fetch_tags", "SCORING_FETCH_TAGS", False))
         except Exception as e:
             return {"ok": False, "reason": f"评分失败：{e}"}
         if r == "skipped":

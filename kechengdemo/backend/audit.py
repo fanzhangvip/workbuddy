@@ -24,7 +24,6 @@
 PG 表供在线查询，JSONL 供**合规留存**：追加写、中断最多丢一行、可按天轮转、可离线校验。
 两者关系：**PG 是权威，JSONL 是副本**。
 """
-import hashlib
 import json
 import re
 import threading
@@ -35,6 +34,7 @@ from pathlib import Path
 
 import db
 import security
+from fingerprint import digest                   # noqa: F401  再导出：`audit.digest` 仍可用
 
 ROOT = Path(__file__).resolve().parent.parent
 EXPORT_DIR = ROOT / "backups" / "audit-jsonl"
@@ -83,17 +83,58 @@ def redact(value, _depth: int = 0):
     return redact(str(value), _depth + 1)
 
 
-def digest(value) -> str:
-    """结构化摘要（sha256 前 16 位）。用于比对，不落原文。"""
-    try:
-        s = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-    except Exception:
-        s = repr(value)
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def record_action(actor, action: str, target=None, detail=None) -> None:
+    """写一条**业务动作**审计（提交复核 / 发布规则 / 改配置 / 任务状态流转 …）。
+
+    与 :func:`record_tool_call` 的分工：
+      · `record_tool_call` —— **工具调用**（调了谁、参数、结果、耗时）
+      · `record_action`    —— **业务动作**（谁、对什么、做了什么、附带信息）
+
+    改造前这句 `INSERT INTO audit_log` 在 **8 个文件里写了 15 遍**（连
+    `scoring_service._audit` 与 `task_runtime._audit` 都是各封一遍的重复），
+    于是「给审计加字段」要动 8 个文件。现在收敛到这里。
+
+    ``detail`` 传 dict/list 会自动转 JSON；**失败绝不抛出** —— 审计是旁路观测，
+    不能因为它把主流程带崩（原实现就是这个语义，保持一致）。
+    """
+    try:
+        db.execute(
+            "INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
+            (actor, action, target,
+             json.dumps(detail, ensure_ascii=False) if detail is not None else None))
+    except Exception as e:                      # noqa: BLE001
+        print(f"[audit] 写 audit_log 失败（不影响主流程）：{type(e).__name__}: {e}")
+
+
+def record_action_in(conn, actor, action: str, target=None, detail=None) -> None:
+    """**事务内**写业务动作审计 —— 用调用方的事务，**失败即抛**。
+
+    ## 为什么要它与 `record_action` 并存
+
+    `record_action` 的语义是「旁路观测：失败绝不抛出」，因为绝大多数审计是**副产品**
+    （提交复核、改配置），它不该把主流程带崩。但有一类写入不是副产品：
+    **改评估集的标注内容**（金标准）。它必须满足「改了必留痕」——
+    2026-10-15 实测踩到过反面：21 行标注在 07:49 被整体替换成 AI 输出，
+    而 `audit_log` 里查不到任何对应记录（当时的审计还有 `total <= 30` 这种门槛），
+    只能靠事后反推时间线才查出来。
+
+    所以这里刻意与 `record_action` **反向**：
+
+    · 用**调用方的事务**（`conn`）→ 与那次业务写入**同生共死**：写审计失败 → 整体回滚，
+      "写不进去就不许改"；反过来业务写失败也不会留下孤儿审计。
+    · **失败抛出**（不吞异常）→ 由调用方的事务边界处理。
+
+    这是对审计模块既有原则的**有意例外**，不是疏漏：改金标准这件事宁可失败，
+    也不许静默改掉。使用场景只有 `eval_case_repo` 的写入口。
+    """
+    conn.execute(
+        "INSERT INTO audit_log (actor, action, target, detail) VALUES (%s,%s,%s,%s)",
+        (actor, action, target,
+         json.dumps(detail, ensure_ascii=False) if detail is not None else None))
 
 
 def record_tool_call(*, tool: str, params=None, actor_id: str | None = None,
@@ -338,7 +379,7 @@ def tier_days(tier: str) -> int:
     """读某档保留天数（app_setting > .env > 默认）。0 = 不清理。"""
     import scoring_service as ss                       # 延迟导入避免循环依赖
     key, env = _TIER_KEYS[tier]
-    return ss.setting_int(key, env, _TIER_DEFAULTS[tier])
+    return db.setting_int(key, env, _TIER_DEFAULTS[tier])
 
 
 def tiers() -> dict:

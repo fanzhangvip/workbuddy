@@ -1,0 +1,46 @@
+# Caddy 反代配置（HTTPS 终结）
+#
+# 为什么用 Caddy 而不是 nginx：
+#   `tls internal` 会在首次启动时**自动生成内部 CA 并签发证书** ——
+#   对一个内网单机工具来说，这省掉了"申请域名 → 签发 → 续期"的全套运维。
+#
+# 两种用法
+#   ① 内网/本机（默认）：访问 https://localhost:8443
+#      客户端会提示证书不受信 —— 因为签发者是 Caddy 的内部 CA。信任方式：
+#        docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
+#      把 caddy-root.crt 导入系统/浏览器的受信任根证书即可。
+#   ② 有真实域名：把下面站点地址换成你的域名（如 scoring.example.com），
+#      删掉 `tls internal`，Caddy 会自动申请 Let's Encrypt 证书
+#      （需要 80/443 可达 + 域名解析到本机）。
+
+{
+	# 关掉管理 API（容器内不需要，少一个暴露面）
+	admin off
+	# 日志走 stdout，交给 docker logs 收集
+	log {
+		output stdout
+		format console
+	}
+}
+
+https://localhost:8443 {
+	# 自签内部 CA。换成真实域名时删掉这一行。
+	tls internal
+
+	encode zstd gzip
+
+	# 安全响应头（内网工具也顺手加上，成本为零）
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "no-referrer"
+	}
+
+	# 应用：0.0.0.0:8848 在 compose 网络内的服务名
+	reverse_proxy app:8848 {
+		# 让后端能拿到真实客户端信息（审计里"谁在什么机器上访问"）
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

@@ -15,11 +15,11 @@
   3. 页面内「导出Excel」按钮（企微组件自带）在自动化环境下不产出文件，
      故不依赖它；直接抓 getchatdata 即可。
 
-前提: PROFILE 目录里已登录过微伴（首次需人工扫码一次）。
+前提: 浏览器 profile 目录（`BROWSER_PROFILE_DIR`）里已登录过微伴（首次需人工扫码一次）。
+⚠️ 只能在宿主机跑 —— 容器里没有 Chrome（见 `wb_bootstrap.browser_env`）。
 """
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -32,11 +32,11 @@ from playwright.sync_api import sync_playwright
 from ww_chatdata import TYPE_NAME      # 与权威映射统一（原脚本私有映射 4/5/7/8 错位，已弃用）
 
 ROOT = Path(__file__).resolve().parent
-# 浏览器与临时目录改为可配置（换机器 / 换用户名不再需要改代码）
-CHROME = (os.environ.get("CHROME_PATH")
-          or r"C:\Program Files\Google\Chrome\Application\chrome.exe")
-PROFILE = (os.environ.get("BROWSER_PROFILE_DIR")
-           or str(Path.home() / ".workbuddy" / "browser-profiles" / "wb-session"))
+# 浏览器路径 / profile / 启动方式**统一由 wb_bootstrap 管理**（单一来源）：
+# 这里原本又抄了一份 `CHROME = ... or r"C:\Program Files\..."` + 一份 `Popen`，
+# 于是"Chrome 装在哪 / 容器里能不能弹"要在两处各修一遍（AGENTS.md 的复用硬规则）。
+from wb_bootstrap import CDP_PORT, BrowserUnavailable, browser_env, launch_chrome  # noqa: E402
+
 TMP = os.environ.get("WB_TMP_DIR") or str(ROOT / ".workbuddy" / "tmp")
 
 
@@ -94,16 +94,23 @@ def main():
             pass
 
     os.makedirs(TMP, exist_ok=True)
-    subprocess.Popen([
-        CHROME, "--remote-debugging-port=9222", f"--user-data-dir={PROFILE}",
-        "--no-first-run", "--no-default-browser-check", "--no-sandbox",
-        "--disable-session-crashed-bubble", "--window-size=1400,950", target,
-    ])
+    benv = browser_env()
+    if not benv["available"]:
+        print(f"❌ 无法弹浏览器：{benv['reason']}")
+        print(f"   {benv['hint']}")
+        return 2
+    try:
+        # 统一入口：与扫码登录/保活用同一套 CHROME 解析、同一 CDP 端口、同一 PID 记录
+        launch_chrome(target)
+    except BrowserUnavailable as e:
+        print(f"❌ 无法弹浏览器：{e.reason}")
+        print(f"   {e.hint}")
+        return 2
     with sync_playwright() as p:
         browser = None
         for _ in range(40):
             try:
-                browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
                 break
             except Exception:
                 time.sleep(2)

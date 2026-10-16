@@ -1,7 +1,10 @@
 <script setup>
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, fmtTime, fmtClock, fmtRelative, dayLabel } from '../api'
+import {
+  api, fmtTime, fmtClock, fmtRelative, dayLabel,
+  isInlineImage, mediaCard, mediaKindOf, mediaText,
+} from '../api'
 
 const route = useRoute()
 
@@ -141,15 +144,15 @@ function avatarOf(m) {
 }
 
 // 媒体消息：是否媒体、类型名由后端统一下发（ctx_preprocess），
-// 前端只负责展示（emoji 图标与富渲染属纯展示，不重复维护映射）。
+// 前端只负责展示 —— 「哪个类型出图、哪个出卡片」的分类规则**不在这里**，
+// 统一在 `api.js` 的 mediaKindOf / isInlineImage / mediaCard（两个渲染处共用一个知识）。
 function mediaKind(m) {
-  return m.is_media && m.media_url && !m._imgFail ? 'kind-' + m.msgtype : ''
+  return m.is_media && m.media_url && !m._imgFail ? 'kind-' + mediaKindOf(m) : ''
 }
-const MEDIA_LABEL = { 2: '🖼 图片', 3: '😄 表情', 6: '🎤 语音', 7: '🎬 视频', 8: '📎 文件' }
 function msgText(m) {
-  if (m.is_media) {
-    return `${MEDIA_LABEL[m.msgtype] || '附件'}（媒体链接有时效，点击尝试打开）`
-  }
+  // ⚠️ 中文名一律用接口下发的 `type_name`（唯一事实源 `ww_chatdata.TYPE_NAME`），
+  // 前端不要再抄一份 msgtype → 中文名映射。
+  if (m.is_media) return mediaText(m, !!m.media_url)
   return m.content || '〔正文未取到〕'
 }
 function imgFail(m) { m._imgFail = true }
@@ -204,7 +207,7 @@ onMounted(async () => {
 
       <div class="filters">
         <input v-model="sessionQ" class="input" placeholder="搜索客户昵称 / 备注…" />
-        <div class="filter-row">
+        <div class="inline-row">
           <select v-model="sessionType" class="select">
             <option value="ext_user">客户会话</option>
             <option value="room">群聊</option>
@@ -293,39 +296,23 @@ onMounted(async () => {
                 </div>
 
                 <div class="bubble" :class="[m.direction, mediaKind(m)]">
-                  <!-- 图片 -->
-                  <template v-if="m.msgtype === 2 && m.media_url && !m._imgFail">
+                  <!-- 图片 / 表情：直接出图 -->
+                  <template v-if="isInlineImage(m) && m.media_url && !m._imgFail">
                     <a :href="m.media_url" target="_blank" rel="noreferrer">
-                      <img class="msg-img" :src="m.media_url" alt="图片" @error="imgFail(m)" />
+                      <img :class="mediaKindOf(m) === 'emoji' ? 'msg-emoji' : 'msg-img'"
+                           :src="m.media_url" :alt="m.type_name || '媒体'" @error="imgFail(m)" />
                     </a>
                   </template>
-                  <!-- 表情 -->
-                  <template v-else-if="m.msgtype === 3 && m.media_url && !m._imgFail">
-                    <img class="msg-emoji" :src="m.media_url" alt="表情" @error="imgFail(m)" />
-                  </template>
-                  <!-- 语音 -->
-                  <template v-else-if="m.msgtype === 6 && m.media_url">
+                  <!-- 语音 / 视频 / 文件：可点卡片（图标与动作词见 api.js 的 mediaCard） -->
+                  <template v-else-if="m.is_media && m.media_url">
                     <a class="media-card" :href="m.media_url" target="_blank" rel="noreferrer">
-                      🎤 {{ m.media_name || '语音消息' }} <span class="muted">点击播放</span>
-                    </a>
-                  </template>
-                  <!-- 视频 -->
-                  <template v-else-if="m.msgtype === 7 && m.media_url">
-                    <a class="media-card" :href="m.media_url" target="_blank" rel="noreferrer">🎬 视频文件 点击打开</a>
-                  </template>
-                  <!-- 文件 -->
-                  <template v-else-if="m.msgtype === 8 && m.media_url">
-                    <a class="media-card" :href="m.media_url" target="_blank" rel="noreferrer">
-                      📎 {{ m.media_name || '文件' }} <span class="muted">点击下载</span>
+                      {{ mediaCard(m).icon }} {{ mediaCard(m).name }}
+                      <span class="muted">{{ mediaCard(m).action }}</span>
                     </a>
                   </template>
                   <!-- 文本 / 其它 / 媒体无链接的回退 -->
                   <template v-else>
-                    <a v-if="m.is_media && m.media_url"
-                       class="media-card" :href="m.media_url" target="_blank" rel="noreferrer">
-                      {{ msgText(m) }}
-                    </a>
-                    <span v-else style="white-space:pre-wrap">{{ msgText(m) }}</span>
+                    <span style="white-space:pre-wrap">{{ msgText(m) }}</span>
                   </template>
                 </div>
 
@@ -388,7 +375,6 @@ onMounted(async () => {
 .sp-item-text { min-width: 0; }
 
 .filters { padding: 10px 12px; display: grid; gap: 8px; border-bottom: 1px solid var(--border); }
-.filter-row { display: flex; gap: 8px; align-items: center; }
 .ck { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); white-space: nowrap; cursor: pointer; }
 .ck input { accent-color: var(--brand); }
 .sess-meta { padding: 8px 14px; font-size: 12px; display: flex; justify-content: space-between; }
@@ -441,8 +427,8 @@ onMounted(async () => {
 .bubble.recv { border-top-left-radius: 3px; }
 .bubble.send { background: var(--brand); color: #fff; border-top-right-radius: 3px; }
 .bubble.send a, .bubble.send .muted { color: rgba(255, 255, 255, .82); }
-.bubble.kind-2, .bubble.kind-3 { background: transparent; box-shadow: none; padding: 0; }
-.bubble.kind-2.send, .bubble.kind-3.send { background: transparent; }
+.bubble.kind-image, .bubble.kind-emoji { background: transparent; box-shadow: none; padding: 0; }
+.bubble.kind-image.send, .bubble.kind-emoji.send { background: transparent; }
 
 .msg-img { max-width: 260px; max-height: 320px; border-radius: 9px; display: block; box-shadow: var(--shadow); }
 .msg-emoji { width: 76px; height: 76px; object-fit: contain; }

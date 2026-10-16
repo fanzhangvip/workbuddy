@@ -12,13 +12,12 @@ LangSmith 暂不启用：只提供 ``redact_for_langsmith()`` 作为将来上报
 本项目**绝不设置** ``LANGCHAIN_*`` / ``LANGSMITH_*`` 环境变量（默认不外发）。
 """
 import functools
-import hashlib
-import json
 import time
 import traceback
 
 import config
 import db
+from fingerprint import digest
 
 # 允许写进 trace 的结构字段白名单（不含任何自由文本）
 _SAFE_KEYS = ("outcome", "aid", "wb_status", "needs_review", "review_enqueued", "error")
@@ -51,19 +50,6 @@ def enabled() -> bool:
     _ENABLED_CACHE["at"] = now
     _ENABLED_CACHE["val"] = val
     return val
-
-
-def digest(value) -> str:
-    """规范化摘要：排序键 + 不转义非 ASCII + fallback repr → sha256[:16]。
-
-    用「哈希」而非原文，是为了能比对「两次运行这一步的输入是否一致」，
-    同时不把聊天内容写进 trace 表。
-    """
-    try:
-        s = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-    except Exception:
-        s = repr(value)
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 
 
 def _project(state: dict) -> dict:

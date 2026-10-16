@@ -20,19 +20,15 @@
 
 ⚠️ 全部用合成数据/打桩，不真调 LLM；跑完清理；断言不依赖生产现状。
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
 
 import analyze                    # noqa: E402
 import api_scoring                # noqa: E402
@@ -47,13 +43,9 @@ import retention                  # noqa: E402
 import rules as rules_mod         # noqa: E402
 import scoring_service as ss      # noqa: E402
 
-PASSED, FAILED = [], []
 _REL = "B234TEST:subject"
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 #: 测试专用 session_id —— 用于隔离 eval_case（回流的样本会带走**真实** staff_id，
@@ -72,7 +64,7 @@ def _cleanup():
                 "score_writeback", "customer_intent_assessment"):
         db.execute(f"DELETE FROM {tbl} WHERE relationship_key LIKE %s", ("%B234TEST%",))
     db.execute("DELETE FROM eval_case WHERE session_id LIKE %s", ("_b234test%",))
-    db.execute("DELETE FROM session_failure WHERE staff_id = %s", ("B234TEST",))
+    delete_rows("session_failure", staff_id="B234TEST")
     # audit_log：被间接触发的代码会用**自己的 actor** 写审计（如 meta_loop），
     # 按 actor 前缀删不干净 → 统一按「测试开始时间」删（通用做法，踩过）
     if _AUDIT_MAX:
@@ -155,7 +147,7 @@ def test_e2_selfheal():
                                             _res()["positive_items"], [], "off")
         # 模拟「新行被外部删除」：留下旧行非 current、superseded_by 悬空
         # ⚠️ 这里**故意不修** —— 本用例就是要复现破损再验证自愈（不要在此加 repair）
-        db.execute("DELETE FROM customer_intent_assessment WHERE assessment_id=%s", (a2,))
+        delete_rows("customer_intent_assessment", assessment_id=a2)
         rows = db.query("""SELECT is_current, superseded_by FROM customer_intent_assessment
                             WHERE relationship_key LIKE %s""", ("%B234TEST_E2H",))
         check("★ 复现破损：该客户一行 current 都没有",
@@ -287,7 +279,7 @@ def test_idempotency():
     key = "b234test-key-1"
     try:
         _cleanup()
-        db.execute("DELETE FROM request_guard WHERE request_key=%s", (key,))
+        delete_rows("request_guard", request_key=key)
 
         def fn():
             calls["n"] += 1
@@ -307,7 +299,7 @@ def test_idempotency():
 
         # 失败不留幂等记录（让重试有机会成功）
         key2 = "b234test-key-2"
-        db.execute("DELETE FROM request_guard WHERE request_key=%s", (key2,))
+        delete_rows("request_guard", request_key=key2)
         try:
             idempotency.run_once(key2, "t.fail", lambda: (_ for _ in ()).throw(RuntimeError("x")))
         except RuntimeError:
@@ -509,6 +501,12 @@ def test_e5_meta_loop():
             {"grade": "D", "priority": "", "advice": ""}, True, [], [], [], "off")
         db.execute("UPDATE customer_intent_assessment SET verification_status='rejected' "
                    "WHERE assessment_id=%s", (aid,))
+        # 先取基线：`rule_fp_ranking()` 是按 rule_id 对**全库**已完成复核做聚合，
+        # 库里本来就有真实复核记录 → 只能断言「增量」，见下方断言处的说明。
+        _before = [x for x in ml.rule_fp_ranking()["rules"]
+                   if x["rule_id"] == "negative_low_cooperation"]
+        b_fp = _before[0]["false_positives"] if _before else 0
+        b_ai = _before[0]["ai_hits"] if _before else 0
         rid = db.query_one(
             """INSERT INTO negative_review
                  (relationship_key, assessment_id, staff_id, session_id,
@@ -523,7 +521,12 @@ def test_e5_meta_loop():
         check("★ AI 命中但人工否掉 → 计入误报（false_positives）",
               hit and hit[0]["false_positives"] >= 1, str(hit[:1]))
         check("误报率计算正确（fp/ai_hits）",
-              hit and hit[0]["fp_rate"] == round(1.0, 4), str(hit[:1]))
+              # ⚠️ 不能断言 `fp_rate == 1.0`：`rule_fp_ranking()` 是按 rule_id
+              # **对全库所有已完成复核**做聚合，库里本来就有真实复核记录
+              # （实测 17 条 done，其中 4 条命中本规则）→ 比率必然是 0.x。
+              # 正确的测法是**测增量**：基线 + 本用例插入的这 1 条。
+              hit and hit[0]["fp_rate"] == round((b_fp + 1) / (b_ai + 1), 4),
+              f"before(fp={b_fp},ai={b_ai}) after={hit[:1]}")
         bf = ml.backflow_reviews(kind="regression")
         check("★ 改判过的复核被回流成 eval_case", bf["created"] >= 1, str(bf["created"]))
         case = db.query_one("SELECT case_id, source, expected_items FROM eval_case "

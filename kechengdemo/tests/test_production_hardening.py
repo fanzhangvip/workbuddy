@@ -10,25 +10,23 @@
 
 需要 PostgreSQL（5433）。测试自己造数据并按 id 清理，不碰业务数据。
 """
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 import os
 import sys
 import time
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(BASE, "backend"))
-sys.path.insert(0, BASE)
+from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
 
 import audit                 # noqa: E402
 import db                    # noqa: E402
 import policy                # noqa: E402
 import task_runtime as tr    # noqa: E402
 
-PASSED, FAILED = [], []
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 # ============================================================ 硬伤 4 · Policy
@@ -74,7 +72,7 @@ def test_policy_record():
     if did:
         row = db.query_one("SELECT * FROM policy_decision WHERE decision_id=%s", (did,))
         check("阈值快照已落库", (row or {}).get("thresholds") is not None)
-        db.execute("DELETE FROM policy_decision WHERE decision_id=%s", (did,))
+        delete_rows("policy_decision", decision_id=did)
 
 
 # ============================================================ 硬伤 5 · 审计
@@ -133,7 +131,7 @@ def test_tool_audit_db():
     check("★ 导出文件里无密钥明文", ver.get("ok") is True, str(ver.get("hits"))[:200])
     check("分档保留期可读（audit 档）", isinstance(audit.tier_days("audit"), int))
     check("四档都有定义", set(audit.tiers()) == {"observe", "idempotency", "audit", "task"})
-    db.execute("DELETE FROM tool_audit WHERE idempotency_key=%s", (key,))
+    delete_rows("tool_audit", idempotency_key=key)
 
 
 # ============================================================ 硬伤 3 · 外循环
@@ -196,10 +194,10 @@ def test_task_lifecycle():
               str(new["cost_calls"]))
         check("续跑返回已完成的步骤名", r["done_steps"] == ["session:a:1"],
               str(r["done_steps"]))
-        db.execute("DELETE FROM task_step WHERE task_id=%s", (r["task_id"],))
-        db.execute("DELETE FROM task WHERE task_id=%s", (r["task_id"],))
-    db.execute("DELETE FROM task_step WHERE task_id=%s", (tid,))
-    db.execute("DELETE FROM task WHERE task_id=%s", (tid,))
+        delete_rows("task_step", task_id=r["task_id"])
+        delete_rows("task", task_id=r["task_id"])
+    delete_rows("task_step", task_id=tid)
+    delete_rows("task", task_id=tid)
 
 
 def test_stale_recovery_and_approval():

@@ -14,31 +14,23 @@
   · **接入后行为逐字不变**：把改造前 `_writeback` 的 if-else 复刻成参考实现，
     与 hook 的 reason→status 映射**逐组合**对比（9 组全等）
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
 
 import db                        # noqa: E402
 import hooks                     # noqa: E402
 import rules as rules_mod        # noqa: E402
 import scoring_service as ss     # noqa: E402
 
-PASSED, FAILED = [], []
 
 
-def check(name, cond, detail=""):
-    (PASSED if cond else FAILED).append(name)
-    print(("  PASS  " if cond else "  FAIL  ") + name + (f"  {detail}" if detail else ""))
 
 
 # ============================================================ 0. 纯函数（不碰 DB）
@@ -78,7 +70,7 @@ def test_pure_functions():
                 hooks.db = real_db
 
     # 静态检查（防将来有人不小心引入依赖）：hooks 只应 import 标准库
-    src = open(os.path.join(_ROOT, "backend", "hooks.py"), encoding="utf-8").read()
+    src = open(os.path.join(ROOT, "backend", "hooks.py"), encoding="utf-8").read()
     imports = [ln.strip() for ln in src.split("\n")
                if ln.lstrip().startswith(("import ", "from "))]
     forbidden = [ln for ln in imports
@@ -291,7 +283,7 @@ def test_writeback_integration():
     try:
         for mode, expect in (("off", "skipped"), ("dry_run", "dry_run")):
             for aid in (rid, rid + 1):
-                db.execute("DELETE FROM score_writeback WHERE assessment_id=%s", (aid,))
+                delete_rows("score_writeback", assessment_id=aid)
             svc = ss.service
             svc._progress = {}
             st = svc._writeback(0, "t:rel", rid, "t_staff", "t_target", 3, mode, False)
@@ -300,7 +292,7 @@ def test_writeback_integration():
             check(f"mode={mode} → 落库 status={expect}", row and row["status"] == expect,
                   str(row))
         # live 模式但已写过 → 被幂等闸拦下（不再投递）
-        db.execute("DELETE FROM score_writeback WHERE assessment_id=%s", (rid + 2,))
+        delete_rows("score_writeback", assessment_id=rid + 2)
         db.execute("""INSERT INTO score_writeback (relationship_key, assessment_id, staff_id,
                           external_user_id, score, mode, status)
                       VALUES ('t:rel', %s, 't_staff', 't_target', 3, 'live', 'ok')""", (rid + 2,))
@@ -312,7 +304,7 @@ def test_writeback_integration():
                            (rid + 2,))["n"] == 1)
     finally:
         for aid in (rid, rid + 1, rid + 2):
-            db.execute("DELETE FROM score_writeback WHERE assessment_id=%s", (aid,))
+            delete_rows("score_writeback", assessment_id=aid)
 
 
 # ============================================================ 7. 接入点：before_persist 生效
@@ -352,7 +344,7 @@ def test_settings():
               if s.key.startswith("writeback_quota_")),
           str([(s.key, s.type) for s in reg.SETTINGS if s.key.startswith("writeback_quota_")]))
     check("默认 0 = 不限（不改变既有行为）",
-          ss.setting_int("writeback_quota_per_run", "WRITEBACK_QUOTA_PER_RUN", 0) == 0)
+          db.setting_int("writeback_quota_per_run", "WRITEBACK_QUOTA_PER_RUN", 0) == 0)
 
 
 # ============================================================

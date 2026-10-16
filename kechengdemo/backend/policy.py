@@ -49,8 +49,8 @@ def thresholds() -> dict:
     """当前阈值（app_setting > .env > 默认）。"""
     import scoring_service as ss                       # 延迟导入避免循环依赖
     return {
-        "auto": ss.setting_float("policy_auto_min", "POLICY_AUTO_MIN", DEFAULT_AUTO_MIN),
-        "confirm": ss.setting_float("policy_confirm_min", "POLICY_CONFIRM_MIN",
+        "auto": db.setting_float("policy_auto_min", "POLICY_AUTO_MIN", DEFAULT_AUTO_MIN),
+        "confirm": db.setting_float("policy_confirm_min", "POLICY_CONFIRM_MIN",
                                     DEFAULT_CONFIRM_MIN),
         "blocking": list(DEFAULT_BLOCKING),
         "confirm_risk_level": CONFIRM_RISK_LEVEL,

@@ -17,19 +17,15 @@
 
 ⚠️ 全部用合成数据 + 打桩 weiban（**绝不真调微伴**）；跑完清理；断言不依赖生产现状。
 """
-# 统一输出编码（修 P2-2）：默认 GBK 控制台下，断言名里的 ↔ → 等字符会触发
-# UnicodeEncodeError —— 看起来像测试失败，其实是环境问题。
-import sys as _sys
-if hasattr(_sys.stdout, "reconfigure"):
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
+#: 测试分层（`tests/run_all.py` 解析本行；忘了声明会被拒绝执行）
+#: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
+TIER = "t1"
+
 
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "backend"))
+from _harness import ROOT, check, summary  # noqa: E402
 
 import db                          # noqa: E402
 import grade_tag as gt             # noqa: E402
@@ -38,21 +34,11 @@ import weiban                      # noqa: E402
 
 _REL = "GTAGTEST_STAFF:GTAGTEST_CUST"
 _AID = 999100001
-_TOTAL = 0
-_FAILED = 0
 #: 测试开始时的 audit_log 水位（用 id 而不是行数/时间戳 —— 踩过）
 _AUDIT_MAX = 0
 _TAG_IDS = {"S": "tag_S", "A": "tag_A", "B": "tag_B", "C": "tag_C", "D": "tag_D"}
 
 
-def check(name, cond, extra=""):
-    global _TOTAL, _FAILED
-    _TOTAL += 1
-    if cond:
-        print(f"  ok   {name}")
-    else:
-        _FAILED += 1
-        print(f"  FAIL {name}  {extra}")
 
 
 def _cleanup():
@@ -511,9 +497,7 @@ def main():
         test_persist_integration()
     finally:
         _cleanup()
-    print(f"\n===== {_TOTAL - _FAILED}/{_TOTAL} 通过 =====")
-    return 1 if _FAILED else 0
-
+    return summary()
 
 if __name__ == "__main__":
     sys.exit(main())

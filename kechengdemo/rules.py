@@ -268,6 +268,54 @@ def grade_of(raw_score: int, rules: dict) -> dict:
     return {"grade": "D", "priority": "暂停", "advice": ""}
 
 
+# ---------------- 引擎硬指标（不由大模型判断） ----------------
+# 原先这三个住在 `ScoringService` 里（`_engine_rule_ids` 是 staticmethod、
+# `_engine_negative_items` 是实例方法但**不用任何实例状态**）。它们属于**规则引擎**
+# 的职责，不属于「跑批任务」的职责；而 `eval_runner` 为了调它们得去拿
+# `scoring_service.service` —— 那正是 eval_runner ↔ scoring_service 那组环的一半。
+
+def engine_rule_ids(rules: dict) -> set:
+    """由规则引擎硬算、不允许大模型判定的规则（如 48h 未回复）。"""
+    return {r["rule_id"] for r in rules.get("negative_rules", [])
+            if r.get("engine") == "rule"}
+
+
+def rule_tier_score(rules: dict, rule_id: str, default: int = 0) -> int:
+    """取某条规则首个档位的分值 —— **从规则表读，不硬编码**。
+
+    曾经把 ``negative_no_reply_2d`` 的分值写死成 ``-2``：业务若把它改成 ``-3``，
+    代码仍产出 ``-2`` → ``validate_items()`` 会把它判为**非法项静默丢弃**
+    （表现为「该扣的分没扣」，日志里只剩一条 ``invalid_items``）。故改为查表。
+    """
+    for group in ("negative_rules", "positive_rules"):
+        for r in rules.get(group, []) or []:
+            if r.get("rule_id") == rule_id:
+                opts = r.get("options") or []
+                if opts and opts[0].get("score") is not None:
+                    return int(opts[0]["score"])
+    return default
+
+
+def engine_negative_items(facts: dict, rules: dict) -> list:
+    """规则引擎补充的硬指标扣分项（不由大模型判断）。
+
+    ⚠️ 只处理「销售正常跟进、客户连续 48 小时未回复」这一条硬指标；
+    它**不会**因为销售单方面群发而加分 —— 需求 4.2 明确要求
+    「销售主动发送但客户未回复时，消息必须入库、可更新上下文，
+    但不应仅因销售单方面群发而大幅提高客户分数」。
+    """
+    items = []
+    if facts.get("no_reply_48h"):
+        items.append({
+            "rule_id": "negative_no_reply_2d",
+            "score": rule_tier_score(rules, "negative_no_reply_2d", -2),
+            "evidence": [f"距最后一条员工消息已 {facts.get('hours')} 小时无客户回复"],
+            "reason": "规则引擎：销售正常跟进后，客户连续 48 小时未回复（如客户已说明忙/晚点聊，人工可驳回）",
+        })
+    valid, _bad = validate_items(items, rules)
+    return valid
+
+
 def rules_brief_for_prompt(rules: dict) -> str:
     """把规则表转成给大模型看的精简文本。
 
