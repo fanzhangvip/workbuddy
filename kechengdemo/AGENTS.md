@@ -8,7 +8,13 @@ This is a Chinese-language WeCom (企微) customer-intent scoring system: a Fast
 - Root modules — shared logic imported by both backend and scripts: `weiban.py`, `ww_chatdata.py`, `rules.py`, `contracts.py`, `confidence.py`, `config.py`, `analyze.py`.
 - `frontend/` — Vue 3 + Vite app. Views live in `frontend/src/views/`, shared UI in `frontend/src/components/` (e.g. `ChatBubbles.vue`), reusable composables in `frontend/src/composables/` (e.g. `usePolling.js`), routing in `router.js`; HTTP calls plus shared display helpers (bubble parsing, media classification, formatters) live in `api.js`.
 - `tests/` — standalone script-style tests. `导出/` and `backups/` are runtime artifacts and are git-ignored.
-- Requirement/spec documents are the `客户意向评分_*.md` files; treat `客户意向评分_架构设计说明书.md` as the source of truth.
+- **本仓库只有两份文档**：`客户意向评分_架构设计说明书.md`（**唯一事实源**）与 `客户意向识别系统需求文档.md`（原始需求，只增不改）。
+- **不许再新增 `.md`。** 调研 / 方案 / 评审 / 盘点 / 待办 / 使用说明一律写进架构说明书的对应章节
+  （用法见该文档第十五章「文档约定」）；`AGENTS.md` 是唯一例外。
+  **改文档必须同时删掉被取代的过时段落** —— 它描述**现状**，不描述历史（历史在 git 里）。
+  为什么要这条硬规则：2026-10-16 一次清理删掉了 27 份文档（合计 1.1 万行），它们两两重叠、
+  还互相矛盾，最坏的一种是"文档承诺了、代码里没有"（审批队列空转、字段从没被写过）——
+  读者的信任就是这么被消耗掉的。
 
 ## Build, Test, and Development Commands
 

@@ -133,6 +133,10 @@ def n_judge(svc, state: SessionState) -> dict:
     """大模型判定。对应旧 L524-525（llm_calls 在调用前 +1，失败也算一次调用）。"""
     svc._bump(state["run_id"], llm_calls=1)
     res = svc._llm_analyze(state["ctx"], state["facts"]["text"], state["rules"])
+    # 与串行路径 `_score_one` 同口径：模型自报置信度被夹取也要计数（否则两条路径
+    # 的观测量会漂 —— `test_graph_session_parity` 正是在盯这类不一致）
+    if res.get("confidence_clamped"):
+        svc._inc(confidence_clamped=1)
     return {"res": res}
 
 

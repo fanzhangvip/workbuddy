@@ -473,6 +473,9 @@ def analyze(conversation: str, facts: str, rules: dict, *,
         model_name=(_meta or {}).get("model") or config.LLM_MODEL,
         # 闸2（架构 §7.2）：逐维度原始表态落库（契约已校验，这里只是把它留下来）
         rule_checks=[rc.model_dump() for rc in judgment.rule_checks],
+        # 静默夹取要留痕（2026-10-16）：模型自报置信度越界/非法时 `contracts` 会夹值
+        # 并在**不进 schema** 的字段上打标；这里带进结果，批量评分据此累加进度计数。
+        confidence_clamped=bool(getattr(judgment, "confidence_clamped", False)),
         current_date=current_date,
         analyzed_at=int(time.time()),
         contract_attempts=attempts,

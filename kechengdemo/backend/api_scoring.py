@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api/scoring", tags=["scoring"])
 
 # ---------------- 运行控制 ----------------
 
-@router.post("/start")
+@router.post("/start", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def start(payload: dict = Body(default={})):
     """启动评分任务。
 
@@ -47,7 +47,7 @@ def start(payload: dict = Body(default={})):
         triggered_by="manual"))
 
 
-@router.post("/stop")
+@router.post("/stop", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def stop():
     return service.stop()
 
@@ -281,9 +281,13 @@ def grade_tags_align(payload: dict = Body(default={})):
                                 remove_all_others=bool(payload.get("remove_all_others"))))
 
 
-@router.post("/grade-tags/drain")
+@router.post("/grade-tags/drain", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def grade_tags_drain(payload: dict = Body(default={})):
-    """手动跑一次标签 outbox（排障用；正常由 scheduler 每 30s 自动跑）。"""
+    """手动跑一次标签 outbox（排障用；正常由 scheduler 每 30s 自动跑）。
+
+    ⚠️ 它是**会写外部系统**的路径（`grade_tag_mode=live` 时真改微伴标签），
+    与 `align` / `sync` 同档，因此要求 operator 起步（此前无守卫：只读账号也能触发）。
+    """
     return grade_tag.drain(limit=int(payload.get("limit") or 50))
 
 
@@ -505,18 +509,33 @@ def _apply_settings(payload: dict):
     # ⚠️ 白名单**不再手写** —— 与读侧同源（`settings_registry.WRITABLE`）。
     # 改造前这里是 46 项手写元组、读侧另有 62 行手工取值，两份清单靠约定同步：
     # 新增配置只改一侧就会「改了不生效」或「改完看不见」（评审 P2-10）。
+    #
+    # ⚠️ 写侧**必须校验**（2026-10-16）：注册表里明明有 `type` 与边界声明，但此前
+    #    一律直接落库 —— `ctx_window_size=0`、`llm_max_tokens=-1`、
+    #    `data_retention_days=-30` 都能存进去（多数是安全降级，但没理由留着）。
+    #    校验与读侧同源：`settings_registry.validate(key, value)`（一处实现，所有键受益）。
+    rejected = []
     for key, skey in settings_registry.WRITABLE:
         if key in payload:
+            ok, val = settings_registry.validate(key, payload[key])
+            if not ok:
+                rejected.append(val)
+                continue
             old = db.get_setting(skey)
-            db.set_setting(skey, payload[key])
+            db.set_setting(skey, val)
             # 值没变则不留痕（避免「点一次保存刷一堆无意义记录」）
-            if str(old) != str(payload[key]):
+            if str(old) != str(val):
                 audit.record_action(
                     security.actor(), "set_setting", skey,
                     {"key": skey,
                      "old": None if old is None else str(old),
-                     "new": None if payload[key] is None else str(payload[key])})
+                     "new": None if val is None else str(val)})
                 changed.append(skey)
+    if rejected:
+        # 合法键先落库（不让一处填错把整次保存废掉），把不合法的键**明说** —— 静默忽略
+        # 会让用户以为"保存成功了"，然后纳闷为什么没生效。
+        return {"ok": False, "changed": changed, "rejected": rejected,
+                "reason": "；".join(rejected), **get_settings()}
     # 早会时刻 / 保留期 改了要**立即生效**（否则得重启后端，用户会以为设置没生效）
     if any(k in changed for k in ("scoring_morning_cron", "data_retention_days")):
         try:
@@ -697,3 +716,38 @@ def audit_stats():
 def policy_stats(days: int = 30):
     """策略分流观测：三档占比 + 原因分布（回答「复核队列为什么这么大」）。"""
     return policy.stats(days=days)
+
+
+# ---------------- 回写对账（结果未知的行，必须人工判定"到底写没写"）----------------
+
+@router.get("/writeback/reconcile")
+def writeback_reconcile_list(limit: int = 50):
+    """待人工对账的分数回写。
+
+    这些行的共同点是**结果未知**：请求发出去了（超时 / 断连 / 进程被杀），
+    但没拿到微伴的回话。微伴评分是**累加且不可撤销**的，所以系统**不自动重投**
+    （重投就可能多加一次分），而是停在这里等人工用「读回客户当前累计分」判定。
+    """
+    import outbox
+    return {"items": outbox.pending_reconcile(limit=limit)}
+
+
+@router.post("/writeback/reconcile",
+             dependencies=[Depends(api_guard.require("operator", "admin"))])
+def writeback_reconcile(payload: dict = Body(default={})):
+    """人工对账结论：`{"assessment_id": 123, "written": true|false, "note": "..."}`。
+
+    · `written=true`  → 补记账 + 推进水位（不推的话下次差值会把这笔分**再写一遍**）；
+    · `written=false` → 回到待投递（允许重投）。
+
+    两者都写审计。判据建议：读回客户当前累计分（`weiban.list_external_users`）与
+    水位比对 —— 这正是那个函数被称作"对账手段"的用途。
+    """
+    aid = payload.get("assessment_id")
+    if not aid:
+        return {"ok": False, "reason": "缺少 assessment_id"}
+    import outbox
+    return idempotency.run_once(payload.get("request_key"), f"writeback.reconcile.{aid}",
+                                lambda: outbox.reconcile(
+                                    int(aid), written=bool(payload.get("written")),
+                                    note=(payload.get("note") or "").strip()))

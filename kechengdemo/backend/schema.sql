@@ -375,6 +375,13 @@ CREATE TABLE IF NOT EXISTS writeback_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_due ON writeback_outbox (status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_outbox_rel ON writeback_outbox (relationship_key);
+-- 结果未知、禁止自动重投（2026-10-16）：微伴评分为**累加语义、不可撤销**，
+-- 所以「HTTP 已发出但没拿到结果」（超时 / 断连 / 进程被杀）**不能重投** ——
+-- 重投就是再多加一次分。这类行置 needs_reconcile=true 并停投，等人工用
+-- `weiban.list_external_users` 读回客户当前累计分后判定「到底写没写」。
+ALTER TABLE writeback_outbox ADD COLUMN IF NOT EXISTS needs_reconcile BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_outbox_reconcile ON writeback_outbox (needs_reconcile)
+    WHERE needs_reconcile;
 
 -- ---------------- 本地链路追踪（阶段 B，默认关闭，由 trace_enabled 打开）----------------
 -- 只存「结构指纹」与计数，绝不落聊天正文（PII 与体积控制）。
@@ -629,7 +636,7 @@ CREATE TABLE IF NOT EXISTS grade_tag_outbox (
 CREATE INDEX IF NOT EXISTS idx_grade_tag_due ON grade_tag_outbox (next_attempt_at) WHERE status IN ('pending','failed');
 
 -- ============================================================================
--- 生产化加固（ARCHITECTURE.md v1.1）
+-- 生产化加固（见《客户意向评分_架构设计说明书.md》第十章 数据模型）
 --   · 工具调用审计（五问）      → tool_audit
 --   · 策略判定留痕              → policy_decision
 --   · 任务运行时（外循环）      → task / task_step / approval_request

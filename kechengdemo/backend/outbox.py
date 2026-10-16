@@ -119,8 +119,12 @@ def mark_result(assessment_id, ok, errcode=None, errmsg=None, resp=None, conn=No
 
 def _claim(conn, limit: int) -> list:
     """抢占到期任务：先回收「投递中断」的行，再把到期行标记为 sending。"""
+    # ⚠️ 这里与标签队列**刻意不同**：微伴评分是**累加、不可撤销**的，卡在 sending
+    #    说明"请求发出去了但结果不知道" → 重投等于赌一把再多加一次分。所以置 dead
+    #    并要求人工对账（`reconcile()`），而不是回 failed 自动重投。
     db.reclaim_stuck_sending(conn, "writeback_outbox", STUCK_SECONDS,
-                             " [投递中断，已回收]")
+                             " [投递中断：结果未知，禁止自动重投，需人工对账]",
+                             unknown_outcome=True)
     with conn.cursor() as cur:
         cur.execute(
             """SELECT outbox_id, assessment_id, relationship_key, staff_id, target_id,
@@ -128,6 +132,7 @@ def _claim(conn, limit: int) -> list:
                  FROM writeback_outbox
                 WHERE status IN ('pending', 'failed')
                   AND next_attempt_at <= now()
+                  AND NOT needs_reconcile
                 ORDER BY next_attempt_at ASC, outbox_id ASC
                 LIMIT %s
                 FOR UPDATE SKIP LOCKED""",
@@ -188,42 +193,61 @@ def _defer(conn, row, seconds: int, note: str) -> None:
         (note, int(seconds), row["outbox_id"]))
 
 
-def _policy_hold(row) -> bool:
-    """该评估是否被 Policy 判定为「**不能自动投递**」（需确认 / 需人工）。
+def _unknown_outcome(err: BaseException) -> bool:
+    """这次投递失败是否**结果未知**（请求可能已经到达微伴）。
 
-    返回 True 表示：保持 pending 等待人工，**不要投递**。
+    为什么必须区分（本函数的全部价值）：
+    微伴「客户评分」是**累加**、没有覆盖/回滚接口。若请求其实已经写入、只是我们
+    没拿到结果（超时、连接被重置、进程被杀），**重投就是多加一次分**，且事后无法
+    撤销。所以只有"对端明确回话"的失败才允许自动重投。
 
-    读的是 `customer_intent_assessment.policy_action` —— 与同步路径同一个判据来源，
-    避免"同步一套、异步另一套"的两套真相。
-    查不到（历史数据 / 列未写）时返回 False：**宁可照旧投递，也不要因为查不到就把
-    待回写任务永久卡住**（这正是 G6 要避免的"永久丢失"的另一种形态）。
+    判据（保守优先——拿不准就算未知）：
+    · `HttpFailure` 带 `status`：对端明确给了 HTTP 状态码 → **明确失败**，可重投；
+    · 业务 errcode（"接口返回错误 errcode="）：对端明确拒绝 → 明确失败，可重投；
+    · 其余异常（网络错误/超时/断连/JSON 解析中途断）→ **结果未知**，禁止自动重投。
+    """
+    try:
+        import http_client
+        if isinstance(err, http_client.HttpFailure):
+            if getattr(err, "status", None):
+                return False
+            return "接口返回错误 errcode=" not in str(err)
+    except Exception:                                   # noqa: BLE001
+        pass
+    return True
 
-    **人工放行（2026-10-16 接线）**：`approval_request` 里同一 `assessment_id`
-    已有 `approved` 的请求 → 返回 False（放行投递）。
 
-    为什么必须补这一段：改造前这里是"挂起等人工"，但**没有任何地方能把人工的结论
-    送回来** —— `approval_request` 只有测试在写。表现是：策略拦下的回写会**永远**
-    躺在 pending 里，既没投递、也没人知道要去处理，等于静默丢弃（比投递失败更坏，
-    因为 `score_writeback` 里连一行失败记录都没有）。
+def _policy_gate(row) -> str:
+    """按策略判定决定这条待办怎么处置。返回 ``deliver`` / ``hold`` / ``review``。
 
-    驳回（`rejected`）**不算放行**：那是"人工明确说过不写"。此时若行还在 pending，
-    由 `api_scoring` 的审批收尾把它置 `dead`（终态），不再反复延后。
+    | 策略 | 处置 | 为什么 |
+    |---|---|---|
+    | `auto` | `deliver` | 允许自动写 |
+    | `confirm` | `hold` | 等人工签字，批准即投递（审批队列） |
+    | `human` | `review` | **不进自动链路**：待办置 dead，先完成复核/重评再重评出新结论 |
+
+    「`human` 也发审批、批准就能写」与设计相矛盾（human 的定义是"只进人工复核"），
+    而且会让低置信度的错判只要有人点一下就能写进微伴。现在它直接停投并说清原因。
     """
     try:
         import policy
         pa = (db.query_one(
             "SELECT policy_action FROM customer_intent_assessment WHERE assessment_id=%s",
             (row["assessment_id"],)) or {}).get("policy_action")
-        if not (bool(pa) and pa != policy.AUTO):
-            return False
-        appr = db.query_one(
-            """SELECT status FROM approval_request
-                WHERE assessment_id = %s AND status IN ('approved','rejected')
-                ORDER BY request_id DESC LIMIT 1""", (row["assessment_id"],))
-        return (appr or {}).get("status") != "approved"
+        if not pa or pa == policy.AUTO:
+            return "deliver"
+        if pa == policy.CONFIRM:
+            appr = db.query_one(
+                """SELECT status FROM approval_request
+                    WHERE assessment_id = %s AND status IN ('approved','rejected')
+                    ORDER BY request_id DESC LIMIT 1""", (row["assessment_id"],))
+            if (appr or {}).get("status") == "approved":
+                return "deliver"
+            return "hold"
+        return "review"                                  # human
     except Exception as e:                      # noqa: BLE001
         print(f"[outbox] 读取策略判定失败（按可投递处理）：{e}")
-        return False
+        return "deliver"
 
 
 def drain(limit: int = 50) -> dict:
@@ -266,7 +290,18 @@ def drain(limit: int = 50) -> dict:
         # 只拦同步不拦异步 = 策略是个摆设（自欺程度比没有更糟）。
         # 处置同 `off`：**延后而不是作废**（保持 pending，等人工确认后仍可投递），
         # 这样 G6「回写不会永久丢失」的不变量依然成立。
-        if _policy_hold(row):
+        gate = _policy_gate(row)
+        if gate == "review":
+            # `human`：不进自动链路 —— 直接停投（终态），并说清"下一步该做什么"，
+            # 而不是让它挂在 pending 里等一个永远不会来的确认。
+            with db.tx() as conn:
+                _record(conn, row, "dead", False, int(row["attempts"]),
+                        dead=True,
+                        errmsg="策略判定为需人工复核：本条不自动写入。"
+                               "请先完成复核/改判并重评该客户，新结论达标后会自动入队")
+            stats["review_hold"] = stats.get("review_hold", 0) + 1
+            continue
+        if gate == "hold":
             # 挂起的同时**保证审批队列里有它**（幂等）：改造前只挂起不登记，
             # 于是"等人工确认"永远等不到 —— 没人知道该确认谁。
             try:
@@ -290,6 +325,7 @@ def drain(limit: int = 50) -> dict:
         errcode = errmsg = None
         resp = None
         ok = False
+        unknown = False
         try:
             resp = weiban.add_customer_score(row["staff_id"], external_user_id=row["target_id"],
                                              score=int(row["score"]), use_header_token=True)
@@ -298,6 +334,21 @@ def drain(limit: int = 50) -> dict:
             ok = errcode == 0
         except Exception as e:
             errmsg = f"{type(e).__name__}: {e}"
+            unknown = _unknown_outcome(e)
+
+        if unknown and not ok:
+            # **结果未知**（超时/断连/进程被杀）：请求可能已经写进微伴了。
+            # 微伴评分累加且不可撤销 → **绝不自动重投**，置 dead + 待人工对账。
+            with db.tx() as conn:
+                _record(conn, row, "dead", False, attempts, errcode,
+                        f"{errmsg}｜⚠️ 结果未知（请求可能已送达）：已停投，需人工对账",
+                        resp, dead=True)
+                conn.execute(
+                    "UPDATE writeback_outbox SET needs_reconcile=true WHERE outbox_id=%s",
+                    (row["outbox_id"],))
+            stats["unknown"] = stats.get("unknown", 0) + 1
+            continue
+
         dead = (not ok) and attempts >= int(row["max_attempts"])
 
         with db.tx() as conn:
@@ -312,3 +363,59 @@ def drain(limit: int = 50) -> dict:
             stats["failed"] += 1
 
     return stats
+
+
+# ============================================================ 人工对账（结果未知的行）
+
+def pending_reconcile(limit: int = 50) -> list:
+    """列出**结果未知、已停投**的待办（等人工判定"到底写没写"）。"""
+    return db.query(
+        """SELECT o.outbox_id, o.assessment_id, o.relationship_key, o.staff_id,
+                  o.target_id, o.score, o.attempts, o.last_errmsg, o.updated_at,
+                  a.grade, a.target_name, a.policy_action
+             FROM writeback_outbox o
+             LEFT JOIN customer_intent_assessment a ON a.assessment_id = o.assessment_id
+            WHERE o.needs_reconcile
+            ORDER BY o.updated_at DESC LIMIT %s""", (max(1, min(int(limit or 50), 200)),))
+
+
+def reconcile(assessment_id: int, *, written: bool, note: str = "") -> dict:
+    """人工对账结论：这条"结果未知"的回写**到底写进微伴了没有**。
+
+    为什么必须由人判定：微伴评分是累加、无覆盖接口，且**没有幂等键**——系统无法
+    自己回答"我刚才那次调用生效了吗"。唯一可靠的判据是**读回客户当前累计分**
+    （`weiban.list_external_users()`，这也正是它被文档称作"对账手段"的用途）。
+
+    · ``written=True``  → 补记账：score_writeback 置 ok、**推进水位**（不推就会在下次
+      重算差值时把这笔分再写一遍）、outbox 置 done、清 needs_reconcile；
+    · ``written=False`` → 确认没写：outbox 退回 pending（允许重投），清 needs_reconcile。
+
+    两种情况都写审计（谁判的、依据什么）。
+    """
+    row = db.query_one(
+        """SELECT * FROM writeback_outbox WHERE assessment_id=%s""", (assessment_id,))
+    if not row:
+        return {"ok": False, "reason": f"待办不存在：assessment_id={assessment_id}"}
+    if not row.get("needs_reconcile"):
+        return {"ok": False, "reason": "该待办不在「待对账」状态，无需对账"}
+    if written:
+        with db.tx() as conn:
+            _record(conn, row, "ok", True, int(row["attempts"]),
+                    errmsg=f"人工对账：确认已写入｜{note}"[:300])
+            conn.execute(
+                "UPDATE writeback_outbox SET needs_reconcile=false WHERE outbox_id=%s",
+                (row["outbox_id"],))
+    else:
+        db.execute(
+            """UPDATE writeback_outbox
+                  SET status='pending', needs_reconcile=false, next_attempt_at=now(),
+                      last_errmsg=%s, updated_at=now()
+                WHERE outbox_id=%s""",
+            (f"人工对账：确认**未**写入，恢复投递｜{note}"[:300], row["outbox_id"]))
+    import audit
+    import security
+    audit.record_action(security.actor(), "writeback_reconcile", f"assessment:{assessment_id}",
+                        {"written": bool(written), "score": int(row["score"] or 0),
+                         "relationship_key": row["relationship_key"], "note": note})
+    return {"ok": True, "assessment_id": assessment_id, "written": bool(written),
+            "score": int(row["score"] or 0)}

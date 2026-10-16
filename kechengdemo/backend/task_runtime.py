@@ -17,7 +17,7 @@
   L2 任务循环 —— **本模块**：任务怎么开始、每步走到哪、挂了怎么续
   L3 业务闭环 —— 采集 → 判定 → 行动 → 验证 → 学习
 
-## 两条不变量（违反即缺陷，见 ARCHITECTURE.md §6.7）
+## 两条不变量（违反即缺陷，见《客户意向评分_架构设计说明书.md》第十三章 INV-5 / INV-6）
 
   INV-5  终态（succeeded/partial/failed/cancelled）**不得再迁出**
   INV-6  同一 task 的 `seq` 严格递增；`last_step_seq` = 最后一个 succeeded 的 seq

@@ -15,6 +15,22 @@ export function onUnauthorized(handler) {
   if (handler && !_unauthorizedHandlers.includes(handler)) _unauthorizedHandlers.push(handler)
 }
 
+/**
+ * 生成一个**幂等键**，给"会写外部系统 / 不可逆"的动作用。
+ *
+ * 后端早就有 `request_key` 幂等（`idempotency.run_once`，start / settings /
+ * rules-publish / retention-purge / baseline / approval / task-resume 都支持），
+ * 但**前端从来没传过** —— 于是那套保护在界面上等于不存在：
+ * 网络重试、代理重发、用户手抖双击都可能真执行两次。
+ *
+ * 用法：**一次动作一个 key，重试复用、成功即弃**
+ * （`keyFor('publish')` 失败后仍返回同一个 key → 后端直接回放首次结果）。
+ */
+export function newRequestKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  return `k-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 http.interceptors.response.use(
   (r) => r,
   (err) => {
@@ -85,6 +101,11 @@ export const api = {
   scoringRulesPublish: (payload) => http.post('/scoring/rules/publish', payload).then(r => r.data),
   scoringRetention: (days) => http.get('/scoring/retention', { params: { days } }).then(r => r.data),
   scoringRetentionPurge: (payload) => http.post('/scoring/retention/purge', payload).then(r => r.data),
+  // 回写对账（结果未知的行：请求发出去了但没拿到微伴回话，禁止自动重投）
+  scoringWritebackReconcileList: (limit = 50) =>
+    http.get('/scoring/writeback/reconcile', { params: { limit } }).then(r => r.data),
+  scoringWritebackReconcile: (payload) =>
+    http.post('/scoring/writeback/reconcile', payload).then(r => r.data),
   // D2-1 等级标签（独立于分数回写）
   scoringGradeTags: () => http.get('/scoring/grade-tags').then(r => r.data),
   scoringGradeTagSync: (payload) => http.post('/scoring/grade-tags/sync', payload).then(r => r.data),

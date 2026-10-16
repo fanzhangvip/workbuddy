@@ -470,6 +470,11 @@ usePolling(refresh, 8000)
           </span>
           <span v-if="gate.baseline_set_at" class="muted">基线设于 {{ gate.baseline_set_at }}</span>
         </div>
+        <!-- 门禁的**完整理由**要能看到（原先只显示"通过/阻断/尚无基线"这个结论）。
+             现在它还会带上"本轮 N 条样本未跑成 → 指标不完整"这类关键提示。 -->
+        <div v-if="gate?.reason" class="alert warn" style="margin-top:12px;font-size:12px">
+          {{ gate.reason }}
+        </div>
         <div v-if="evStatus.running" class="alert warn" style="margin-top:12px">
           评估进行中：{{ evStatus.done }}/{{ evStatus.total }}
           <span v-if="evStatus.current">· 当前样本 #{{ evStatus.current }}</span>
@@ -518,7 +523,15 @@ usePolling(refresh, 8000)
                   {{ String(r.finished_at || r.started_at || '').replace('T', ' ').slice(0, 16) }}
                 </td>
                 <td class="muted">{{ r.rule_version || '-' }}</td>
-                <td class="mono">{{ r.case_ok }}/{{ r.case_total }}</td>
+                <td class="mono">
+                  {{ r.case_ok }}/{{ r.case_total }}
+                  <!-- 未跑成的样本（模型/契约异常）此前与"被跳过"混在一起、界面上完全看不到，
+                       而它会让有效样本变少 → 门禁容差变宽。这里单独标出来。 -->
+                  <span v-if="r.metrics?.case_error" class="tag red" style="margin-left:4px"
+                        :title="`${r.metrics.case_error} 条样本未跑成（模型/契约异常），不在指标分母里`">
+                    失败 {{ r.metrics.case_error }}
+                  </span>
+                </td>
                 <td class="mono">{{ fmtMetric('rule_f1', r.metrics?.rule_f1) }}</td>
                 <td>
                   <span v-if="r.gate_passed === null || r.gate_passed === undefined" class="muted"

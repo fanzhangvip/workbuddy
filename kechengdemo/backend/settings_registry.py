@@ -42,6 +42,9 @@ class Setting:
     desc: str = ""                 #: 中文说明
     risk: str = ""                 #: 非空表示「高风险/写外部系统」相关，前端可据此加提醒
     api: str = ""                  #: `GET /settings` 响应里的键名；空 = 同 `key`
+    min: float | None = None       #: 数值下界（写侧校验用；None = 不校验）
+    max: float | None = None       #: 数值上界
+    positive: bool = False         #: 为真时要求 > 0（如"上限""条数"这类 0 无意义的值）
 
     @property
     def api_key(self) -> str:
@@ -59,15 +62,15 @@ class Setting:
 SETTINGS: tuple = (
     # ---------------- 评分范围与行为 ----------------
     Setting("scoring_max_sessions", "SCORING_MAX_SESSIONS", INT, 200, "scoring",
-            "单轮评分最多处理多少会话（0 = 不限）", api="max_sessions"),
+            "单轮评分最多处理多少会话（0 = 不限）", api="max_sessions", min=0),
     Setting("scoring_min_messages", "SCORING_MIN_MESSAGES", INT, 4, "scoring",
-            "参与评分的最少消息数", api="min_messages"),
+            "参与评分的最少消息数", api="min_messages", min=0),
     Setting("scoring_fetch_tags", "SCORING_FETCH_TAGS", BOOL, False, "scoring",
             "评分时是否拉取客户自定义字段/标签（用于到课、完课判定）", api="fetch_tags"),
     Setting("scoring_deadline_minutes", "SCORING_DEADLINE_MINUTES", INT, 120, "scoring",
-            "单轮评分的墙钟上限，超时优雅退出（架构 G3/G4）", api="deadline_minutes"),
+            "单轮评分的墙钟上限，超时优雅退出（架构 G3/G4）", api="deadline_minutes", min=0),
     Setting("scoring_max_llm_calls", "SCORING_MAX_LLM_CALLS", INT, 500, "scoring",
-            "单轮评分最多调用多少次模型（0 = 不限，护栏 G3）", api="max_llm_calls"),
+            "单轮评分最多调用多少次模型（0 = 不限，护栏 G3）", api="max_llm_calls", min=0),
     Setting("scoring_priority_order", "SCORING_PRIORITY_ORDER", BOOL, True, "scoring",
             "候选会话是否按优先级排序（先评高分/活跃客户）", api="priority_order"),
     Setting("scoring_morning_cron", "SCORING_MORNING_CRON", STR, "", "scoring",
@@ -77,37 +80,37 @@ SETTINGS: tuple = (
             "主增量同步 + 分析：每日触发时刻 HH:MM（**空 = 关闭**）。"
             "需求 4.2 要求覆盖 19:30 的销售主动发送及其后的客户互动"),
     Setting("sync_main_window_minutes", "SYNC_MAIN_WINDOW_MINUTES", INT, 20, "schedule",
-            "主任务的执行窗口（分钟）：窗口内跑同步，到点优雅收尾（0 = 不限）"),
+            "主任务的执行窗口（分钟）：窗口内跑同步，到点优雅收尾（0 = 不限）", min=1),
     Setting("sync_compensate_cron", "SYNC_COMPENSATE_CRON", STR, "03:30", "schedule",
             "48 小时补偿同步 + 分析：每日触发时刻 HH:MM（**空 = 关闭**）。"
             "修复接口入库延迟 / 网络失败 / 任务中断导致的漏处理"),
     Setting("sync_compensate_lookback_hours", "SYNC_COMPENSATE_LOOKBACK_HOURS", INT, 48,
             "schedule",
             "补偿任务的回看窗口（小时）：**抛开水位**重拉最近 N 小时，"
-            "兜住「消息迟到入库 → msg_time 小于水位 → 增量永远取不到」"),
+            "兜住「消息迟到入库 → msg_time 小于水位 → 增量永远取不到」", min=1),
     Setting("daily_run_analysis", "DAILY_RUN_ANALYSIS", BOOL, True, "schedule",
             "日常任务：同步跑完后**自动接着跑分析**（关掉则只同步）"),
     Setting("sync_overlap_minutes", "SYNC_OVERLAP_MINUTES", INT, 15, "schedule",
             "增量同步的重叠回看窗口（分钟，需求 4.3）："
-            "`start_time = 水位 − 该值`，兜住乱序/迟到入库的消息（重复由唯一键幂等吸收）"),
+            "`start_time = 水位 − 该值`，兜住乱序/迟到入库的消息（重复由唯一键幂等吸收）", min=0),
     Setting("sync_session_page_cap", "SYNC_SESSION_PAGE_CAP", INT, 20000, "schedule",
             "会话列表翻页条数上限（每员工每类型）。撞到就停并**在任务详情里记明**"
-            "（改造前是静默截断：超过上限的旧会话永远拉不到）；调大它会线性增加第一遍耗时"),
+            "（改造前是静默截断：超过上限的旧会话永远拉不到）；调大它会线性增加第一遍耗时", positive=True),
     Setting("writeback_approval_expires_minutes", "WRITEBACK_APPROVAL_EXPIRES_MINUTES",
             INT, 0, "scoring",
             "回写审批的有效期（分钟，0 = 不过期）。策略判定为 confirm/human 的客户回写"
             "会进审批队列等人工签字；超过有效期后**拒绝再签**（当时的分数/会话/阈值"
-            "都已经变了），并把该请求就地标成 expired"),
+            "都已经变了），并把该请求就地标成 expired", min=0),
     Setting("public_class_grade_scope", "PUBLIC_CLASS_GRADE_SCOPE", STR, "S,A", "scoring",
             "公开课复核覆盖的等级范围（逗号分隔）"),
 
     # ---------------- 模型调用 ----------------
     Setting("llm_timeout_sec", "LLM_TIMEOUT_SEC", INT, 0, "llm",
-            "单次 LLM 调用超时秒数（0 = 用 llm 模块默认 120s）"),
+            "单次 LLM 调用超时秒数（0 = 用 llm 模块默认 120s）", min=0),
     Setting("llm_temperature", "LLM_TEMPERATURE", FLOAT, 0.0, "llm",
             "采样温度（评分判定场景应为 0，保证可复现）"),
     Setting("llm_max_tokens", "LLM_MAX_TOKENS", INT, 0, "llm",
-            "单次输出上限（0 = 用代码默认 8192；**勿调小**，真实会话会被截断）"),
+            "单次输出上限（0 = 用代码默认 8192；**勿调小**，真实会话会被截断）", min=0),
     Setting("llm_retry_attempts", "LLM_RETRY_ATTEMPTS", INT, 3, "llm",
             "临时故障重试次数（不含契约修复）"),
     Setting("rejudge_retries", "REJUDGE_RETRIES", INT, None, "llm",
@@ -126,9 +129,9 @@ SETTINGS: tuple = (
     Setting("writeback_delta_mode", "WRITEBACK_DELTA_MODE", BOOL, True, "writeback",
             "微伴评分为累计语义 → 只写差值。**开 live 前不要关**", risk="high"),
     Setting("writeback_quota_per_run", "WRITEBACK_QUOTA_PER_RUN", INT, 0, "writeback",
-            "单轮回写次数上限（0 = 不限；架构 边界3）", risk="high"),
+            "单轮回写次数上限（0 = 不限；架构 边界3）", risk="high", min=0),
     Setting("writeback_quota_per_customer_per_day", "WRITEBACK_QUOTA_PER_CUSTOMER_PER_DAY",
-            INT, 0, "writeback", "单客户单日回写上限（0 = 不限；文档建议 3）", risk="high"),
+            INT, 0, "writeback", "单客户单日回写上限（0 = 不限；文档建议 3）", risk="high", min=0),
 
     # ---------------- 等级标签（D2-1，独立链路） ----------------
     Setting("grade_tag_mode", "GRADE_TAG_MODE", STR, "off", "grade_tag",
@@ -142,7 +145,7 @@ SETTINGS: tuple = (
 
     # ---------------- 上下文预处理 ----------------
     Setting("ctx_window_size", "CTX_WINDOW_SIZE", INT, 60, "ctx",
-            "兜底窗口条数上限"),
+            "兜底窗口条数上限", min=1),
     Setting("ctx_drop_msgtypes", "CTX_DROP_MSGTYPES", STR, "31,9", "ctx",
             "丢弃的消息类型（31=撤回，9=名片）"),
     Setting("ctx_drop_pure_url", "CTX_DROP_PURE_URL", BOOL, True, "ctx",
@@ -170,11 +173,11 @@ SETTINGS: tuple = (
     Setting("ctx_memory", "CTX_MEMORY", BOOL, True, "ctx",
             "①② 记忆段总开关（读回上次结论；**不改分**）"),
     Setting("ctx_fallback_min", "CTX_FALLBACK_MIN", INT, 4, "ctx",
-            "⑤ 兜底窗口触发阈值（③④ 有效条数低于它就补窗口）"),
+            "⑤ 兜底窗口触发阈值（③④ 有效条数低于它就补窗口）", min=0),
 
     # ---------------- 置信度与复核（架构 第六章 E4） ----------------
     Setting("confidence_review_min", "CONFIDENCE_REVIEW_MIN", FLOAT, None, "confidence",
-            "会话置信度低于它 → 转人工（默认按真实分布标定）"),
+            "会话置信度低于它 → 转人工（默认按真实分布标定）", min=0, max=1),
     Setting("confidence_boundary_delta", "CONFIDENCE_BOUNDARY_DELTA", INT, None,
             "confidence", "距等级边界多少分以内视为「边界样本」"),
     Setting("confidence_flip_steps", "CONFIDENCE_FLIP_STEPS", INT, None, "confidence",
@@ -200,9 +203,9 @@ SETTINGS: tuple = (
             "发布规则前必须先跑一轮评估集（两步发布）。**默认关** = 与改造前一致："
             "发布时同步现跑（十几分钟的长请求）"),
     Setting("eval_gate_fresh_minutes", "EVAL_GATE_FRESH_MINUTES", INT, 30, "eval",
-            "跑分结果超过这个分钟数就不复用于门禁（防「拿改规则之前的指标比基线」）"),
+            "跑分结果超过这个分钟数就不复用于门禁（防「拿改规则之前的指标比基线」）", min=1),
     Setting("eval_min_cases_per_rule", "EVAL_MIN_CASES_PER_RULE", INT, 3, "eval",
-            "每条规则在评估集里至少应有几条样本（低于它就提示「改坏了也测不出来」；0 = 不提示）"),
+            "每条规则在评估集里至少应有几条样本（低于它就提示「改坏了也测不出来」；0 = 不提示）", min=0),
     Setting("eval_regression_cron", "EVAL_REGRESSION_CRON", STR, "09:00", "eval",
             "定期回归的时刻（**每周一**执行，格式 HH:MM；空 = 关闭）"),
     Setting("eval_regression_limit", "EVAL_REGRESSION_LIMIT", INT, 0, "eval",
@@ -218,7 +221,7 @@ SETTINGS: tuple = (
 
     # ---------------- 数据保留（边界4） ----------------
     Setting("data_retention_days", "DATA_RETENTION_DAYS", INT, 0, "retention",
-            "运行观测类数据的保留天数（**0 = 不清理**；保留多久是业务决策）"),
+            "运行观测类数据的保留天数（**0 = 不清理**；保留多久是业务决策）", min=0),
 )
 
 #: 写侧白名单的**唯一来源**：`(API 键名, app_setting 键名)`。
@@ -249,5 +252,54 @@ def by_group() -> dict:
     for s in SETTINGS:
         out.setdefault(s.group, []).append(s)
     return out
+
+
+#: API 键名 / app_setting 键名 → Setting（写侧校验与读侧取值共用同一张表）
+_BY_ANY_KEY: dict = {}
+for _s in SETTINGS:
+    _BY_ANY_KEY[_s.key] = _s
+    _BY_ANY_KEY[_s.api_key] = _s
+
+
+def validate(key: str, value) -> tuple:
+    """写侧校验：返回 ``(ok, 规范化后的值 or 错误原因)``。
+
+    ## 为什么要有它（2026-10-16）
+
+    注册表里明明写着每一项的 `type` / 默认值，但写侧（`api_scoring._apply_settings`
+    的通用循环）**一个都不校验**：`data_retention_days=-1`、`llm_timeout_sec=0`、
+    `ctx_window_size=0`、`sync_session_page_cap=-5` 全都能存进库。
+
+    多数情况下这是**安全降级**（保留期 ≤0 → 不清理；窗口 0 → 内容不足 → 该会话跳过
+    而不是误判），但"能把自己配坏"没理由留着 —— 校验信息本来就现成。
+
+    只做**类型与范围**校验（不做业务语义判断）：
+    · INT / FLOAT：能解析成数 + `positive` / `min` / `max` 声明的边界；
+    · BOOL：接受 true/false/1/0/yes/no/on/off；
+    · STR：原样。
+    """
+    s = _BY_ANY_KEY.get(key)
+    if not s:
+        return False, f"未知配置项：{key}"
+    try:
+        if s.type == BOOL:
+            v = str(value).strip().lower()
+            if v in ("1", "true", "yes", "on"):
+                return True, True
+            if v in ("0", "false", "no", "off", ""):
+                return True, False
+            return False, f"{key} 需要布尔值（true/false）"
+        if s.type == STR:
+            return True, ("" if value is None else str(value))
+        n = int(str(value).strip()) if s.type == INT else float(str(value).strip())
+        if s.positive and n <= 0:
+            return False, f"{key} 必须大于 0（收到 {n}）"
+        if s.min is not None and n < s.min:
+            return False, f"{key} 不能小于 {s.min}（收到 {n}）"
+        if s.max is not None and n > s.max:
+            return False, f"{key} 不能大于 {s.max}（收到 {n}）"
+        return True, n
+    except (TypeError, ValueError):
+        return False, f"{key} 需要{'整数' if s.type == INT else '数字'}（收到 {value!r}）"
 
 

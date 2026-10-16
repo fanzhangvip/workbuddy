@@ -21,6 +21,7 @@ import re
 from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 import ctx_preprocess
 
@@ -133,21 +134,38 @@ class JudgmentOut(BaseModel):
     customer_profile: List[ProfileField] = Field(default_factory=list)
     # 模型自报置信度：仅留档，**不参与任何决策**（决策用覆盖率与规则命中）
     model_confidence: float = 0.5
+    #: 该字段被**夹取过**（越界/非法值）—— 观测用。
+    #: 用 `SkipJsonSchema` **刻意不进 JSON schema**：模型看不到它（提示词里的 schema
+    #: 一个字都不变），但代码能读到"这次模型又输出了脏值"。
+    confidence_clamped: SkipJsonSchema[bool] = False
 
     @field_validator("customer_profile_summary", "sales_strategy", mode="before")
     @classmethod
     def _none_to_empty(cls, v: Any) -> Any:
         return "" if v is None else v
 
-    @field_validator("model_confidence", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _clamp_confidence(cls, v: Any) -> float:
-        """越界不报错，直接夹到 [0,1] —— 这个字段不参与决策，不值得为它触发一次重试。"""
+    def _clamp_confidence(cls, data: Any) -> Any:
+        """越界/非法**不报错**（这不参与决策，不值得为它触发一次修复重试），
+        但**必须留痕**（2026-10-16）。
+
+        此前这里是纯静默夹取：非法值直接变成 0.5 —— 于是「模型自报置信度」这一列的
+        统计口径会被悄悄拉偏，而且没有任何地方能看到"模型又输出了脏值"。
+        现在把事实记在 `confidence_clamped`（不进 schema，模型看不到），
+        由 `analyze` 带进结果、批量评分累加进进度。
+        """
+        if not isinstance(data, dict) or "model_confidence" not in data:
+            return data
+        raw = data["model_confidence"]
         try:
-            f = float(v)
+            f = float(raw)
         except (TypeError, ValueError):
-            return 0.5
-        return min(1.0, max(0.0, f))
+            return {**data, "model_confidence": 0.5, "confidence_clamped": True}
+        if f < 0.0 or f > 1.0:
+            return {**data, "model_confidence": min(1.0, max(0.0, f)),
+                    "confidence_clamped": True}
+        return data
 
     def checked_rule_ids(self) -> List[str]:
         """模型表态过的 rule_id（含重复，去重在调用方做）。"""
@@ -208,6 +226,9 @@ class AssessmentOut(BaseModel):
     profile_summary: str = ""
     sales_strategy: str = ""
     model_confidence: float = 0.0
+    #: 模型自报置信度**被夹取过**（越界/非法值）—— 纯观测标记：
+    #: 不参与任何决策，但让"模型又输出了脏值"这件事可计数、可告警。
+    confidence_clamped: bool = False
     #: E3（架构 §2.3）：结构化画像（8 槽位 + 逐槽位证据编号）。
     #: `profile_summary` 降级为「自由文本补充」，结构化字段才是可查询、可对比的那一份。
     profile_struct: List[dict] = Field(default_factory=list)

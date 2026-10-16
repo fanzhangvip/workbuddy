@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 // `toEpoch`：后端的 datetime 是字符串，`fmtTime`/`fmtRelative` 只吃秒级数字 ——
 // 不转就会渲染成 `NaN-NaN-NaN`（见 api.js 里的说明）。
-import { api, fmtTime, fmtRelative, gradeTag, MODE_CN, toEpoch } from '../api'
+import { api, fmtTime, fmtRelative, gradeTag, MODE_CN, toEpoch, newRequestKey } from '../api'
 import ChatBubbles from '../components/ChatBubbles.vue'
 import Pager from '../components/Pager.vue'
 import { useAsyncAction } from '../composables/useAsyncAction'
@@ -39,6 +39,29 @@ const arch = ref({ llm_timeout_sec: 0, data_retention_days: 0, eval_gate_enabled
 const saList = ref({ count: 0, items: [], scope: ['S', 'A'] })
 const gate = ref(null)
 const retention = ref(null)
+
+// ---------------- 幂等键（危险动作防重复执行） ----------------
+// 一个动作一个 key：失败保留（重试=同一 key，后端直接回放首次结果），成功即弃。
+const _actionKeys = ref({})
+function keyFor(name) {
+  if (!_actionKeys.value[name]) _actionKeys.value[name] = newRequestKey()
+  return _actionKeys.value[name]
+}
+function keyDone(name) { delete _actionKeys.value[name] }
+
+// ---------------- 治理参数表单：轮询不许覆盖用户正在输入的值 ----------------
+// `refresh()` 每 3–15 秒会把服务端的设置写回 `arch`，此前**无条件覆盖** ——
+// 用户在「数据保留（天）／超时／最少发言」里输入新值，3 秒后被库里旧值覆盖，
+// 点"保存"保存的还是旧值（表现就是"改了不生效"）。
+// 现在：服务端快照保存在 `_archLoaded`；表单与快照一致才采纳新值，用户改过就**不动它**。
+const archLoaded = ref('')
+const archDirty = ref(false)
+function _archSnapshot(obj) {
+  const o = {}
+  for (const k of Object.keys(arch.value)) if (k in obj) o[k] = obj[k]
+  return o
+}
+
 async function refresh() {
   try {
     const [s, m, r, l, sc, st] = await Promise.all([
@@ -48,7 +71,15 @@ async function refresh() {
     status.value = s; metrics.value = m; runs.value = r.items || []
     list.value = { items: l.items || [], total: l.total || 0 }
     schedule.value = sc; settings.value = st
-    for (const k of Object.keys(arch.value)) if (k in st) arch.value[k] = st[k]
+    const srv = _archSnapshot(st)
+    const mine = _archSnapshot(arch.value)
+    if (!archLoaded.value || JSON.stringify(mine) === archLoaded.value) {
+      Object.assign(arch.value, srv)          // 没改过 → 跟服务端走
+      archLoaded.value = JSON.stringify(srv)
+      archDirty.value = false
+    } else {
+      archDirty.value = true                  // 有未保存修改 → 绝不覆盖
+    }
     if (scInterval.value === null && sc?.scoring) scInterval.value = sc.scoring.interval_minutes ?? 0
   } catch (e) { error.value = '后端未就绪：' + e.message }
 }
@@ -120,6 +151,10 @@ async function saveArch() {
   await act(async () => {
     const r = await api.scoringSetSettings({ ...arch.value })
     if (!r.ok) { error.value = r.reason || '保存失败'; return }
+    // 保存成功 → 表单与服务端对齐（轮询可以重新接管它）
+    archLoaded.value = JSON.stringify(_archSnapshot({ ...arch.value }))
+    archDirty.value = false
+    msg.value = (r.changed || []).length ? `已保存 ${r.changed.length} 项设置` : '已保存（值未变化）'
     refresh()
   })
 }
@@ -169,6 +204,43 @@ async function loadGradeTags() {
 const approvals = ref([])
 const approvalNote = ref({})
 
+// ---------------- 待对账的分数回写 ----------------
+// 这些行**结果未知**：请求发出去了（超时/断连/进程被杀），但没拿到微伴的回话。
+// 微伴评分累加且不可撤销 → 后端**不自动重投**，等人工判定"到底写没写"。
+// 判据：读回客户当前累计分（weiban.list_external_users）与水位比对。
+const reconciling = ref([])
+
+async function loadReconcile() {
+  try {
+    reconciling.value = (await api.scoringWritebackReconcileList(50)).items || []
+    clearFail('reconcile')
+  } catch (e) { noteFail('reconcile', '回写对账队列', e) }
+}
+
+async function decideReconcile(row, written) {
+  const amount = row.score ?? '-'
+  if (written && !window.confirm(
+    `确认这条回写**已经写进微伴**？\n\n`
+    + `· 客户 ${row.target_name || row.target_id}｜本次 ${amount} 分\n`
+    + '· 系统会**补记账并推进水位**（不推进的话，下次差值会把这笔分再写一遍）\n'
+    + '· 请先读回微伴里该客户的当前累计分再确认\n\n确认已写入吗？')) return
+  if (!written && !window.confirm(
+    `确认这条回写**没有写进微伴**？\n\n`
+    + '· 待办会恢复为"待投递"，下一轮 outbox 排空会重投\n'
+    + '· 若其实已经写进去了，重投会**再多加一次分**（不可撤销）\n\n确认未写入吗？')) return
+  await act(async () => {
+    const r = await api.scoringWritebackReconcile({
+      assessment_id: row.assessment_id, written: !!written,
+      note: `界面人工对账（${written ? '已写入' : '未写入'}）`,
+      request_key: keyFor(`reconcile_${row.assessment_id}`),
+    })
+    if (!r.ok) { error.value = r.reason || '对账失败'; return }
+    keyDone(`reconcile_${row.assessment_id}`)
+    msg.value = written ? '已按「已写入」收口：补记账并推进水位' : '已按「未写入」收口：恢复待投递'
+    await Promise.all([loadReconcile(), refresh()])
+  })
+}
+
 async function loadApprovals() {
   try {
     approvals.value = (await api.scoringApprovals('pending', 50)).items || []
@@ -194,7 +266,9 @@ async function decideApproval(a, approve) {
   await act(async () => {
     const r = await api.scoringApprovalDecide(a.request_id, {
       approved: approve, note: approvalNote.value[a.request_id] || '',
+      request_key: keyFor(`approve_${a.request_id}`),
     })
+    if (r.ok) keyDone(`approve_${a.request_id}`)
     if (!r.ok) { error.value = r.reason || '审批失败'; return }
     msg.value = r.note_text || (approve ? '已批准' : '已驳回')
     approvalNote.value[a.request_id] = ''
@@ -285,7 +359,8 @@ async function publishRules() {
     + '· 规则版本变化会让**已评估会话重新进入候选**（下一轮评分收敛）；\n'
     + '· 不发布的话，日常评分会被门禁挡住且**只打一行日志**。\n\n确定发布吗？')) return
   await act(async () => {
-    const r = await api.scoringRulesPublish({})
+    const r = await api.scoringRulesPublish({ request_key: keyFor('publish') })
+    if (r.ok) keyDone('publish')
     if (!r.ok) { error.value = r.reason || '发布失败'; return }
     const dec = r.gate || {}
     msg.value = `已发布` + (r.published?.rule_version ? ` v${r.published.rule_version}` : '')
@@ -302,7 +377,8 @@ async function publishRulesForce() {
     + '· 门禁说"指标下降"时，强制发布等于**明知有回退也让新规则上线**；\n'
     + '· 这次操作会写进审计（可事后追责），并把原因记在门禁结果里。\n\n确定强制发布吗？')) return
   await act(async () => {
-    const r = await api.scoringRulesPublish({ force: true })
+    const r = await api.scoringRulesPublish({ force: true, request_key: keyFor('publish_force') })
+    if (r.ok) keyDone('publish_force')
     msg.value = r.ok ? '已强制发布（已写审计）' : (r.reason || '发布失败')
     await Promise.all([loadRulesInfo(), loadGate(), refresh()])
   })
@@ -321,7 +397,8 @@ async function purgeRetention() {
     + '· 业务结论表（评估结论 / 复核 / 回写账本 / 评估集）**永不按天数清理**；\n'
     + '· 删除不可恢复 —— 上方的行数是预演结果，可先看清楚再执行。\n\n确定执行吗？')) return
   await act(async () => {
-    const r = await api.scoringRetentionPurge({ days })
+    const r = await api.scoringRetentionPurge({ days, request_key: keyFor('purge') })
+    if (r.ok) keyDone('purge')
     if (!r.ok) { error.value = r.reason || '清理失败'; return }
     const n = Object.values(r.deleted || {}).reduce((s, v) => s + (v || 0), 0)
     msg.value = `已清理 ${n} 行观测数据（${Object.keys(r.deleted || {}).length} 张表）`
@@ -361,7 +438,7 @@ async function syncGradeTags(createMissing) {
   if (createMissing && !window.confirm(
     '会在微伴后台**真实创建**缺失的等级标签（组：' + gtGroup.value + '）。\n\n确定继续吗？')) return
   await act(async () => {
-    const r = await api.scoringGradeTagSync({ create_missing: !!createMissing, dry_run: !createMissing })
+    const r = await api.scoringGradeTagSync({ request_key: keyFor('tag_sync'), create_missing: !!createMissing, dry_run: !createMissing })
     if (!r.ok) { error.value = r.reason || '同步失败'; return }
     const found = Object.keys(r.found || {})
     msg.value = `标签同步：已找到 ${found.length} 个（${found.join('/') || '无'}）`
@@ -381,7 +458,7 @@ async function alignGradeTags(apply) {
     + '· 不会删除其它标签（remove_all_others=false）；\n'
     + '· 标签模式必须是 live，否则会被后端拒绝。\n\n确定执行吗？')) return
   await act(async () => {
-    const r = await api.scoringGradeTagAlign({ limit: 200, dry_run: !apply,
+    const r = await api.scoringGradeTagAlign({ request_key: keyFor('align'), limit: 200, dry_run: !apply,
                                                remove_all_others: false })
     msg.value = r.ok
       ? (apply ? `对齐执行：扫描 ${r.scanned} 位，已改 ${r.changed ?? r.to_change} 位`
@@ -441,6 +518,7 @@ onMounted(() => {
   loadStaffs(); loadSaReview(); loadGate(); loadRetention(); loadGradeTags()
   // 新接线的四条：回写审批 / 批次任务 / 审计留痕 / 规则版本信息
   loadApprovals(); loadTasks(); loadAudit(); loadRulesInfo()
+  loadReconcile()          // 待人工对账的分数回写（结果未知的行）
 })
 // 有任务在跑 → 3 秒（要看进度）；空闲 → 15 秒（数据几乎不变，省掉大量无谓查询）。
 // 页面不可见时 `usePolling` 直接停（切回来立刻补一次）—— 这两条合起来把"挂着不动也
@@ -710,6 +788,10 @@ usePolling(refresh, 3000, { idle: 15000, idleWhen: () => !running.value })
                       title="门禁阻断但仍要上线时用（写审计）">强制发布</button>
               <button class="btn ghost" @click="purgeRetention" :disabled="busy"
                       title="按保留期清理运行观测表（不可恢复）">执行保留期清理</button>
+              <!-- 轮询不覆盖未保存的修改：这里把状态说出来，避免"改了没生效"的误解 -->
+              <span v-if="archDirty" class="tag orange" style="font-size:11px">
+                治理参数有未保存的修改（轮询不会覆盖）
+              </span>
             </div>
 
             <div class="alert info" style="font-size:12px" v-if="gate">
@@ -732,10 +814,44 @@ usePolling(refresh, 3000, { idle: 15000, idleWhen: () => !running.value })
           </div>
         </div>
 
+        <!-- ============ 待对账的回写（结果未知） ============
+             请求发出去了、但没拿到微伴回话（超时/断连/进程被杀）。微伴评分累加且不可
+             撤销，所以**不自动重投** —— 重投就可能多加一次分。人工读回客户当前累计分后
+             在这里收口：确认已写入 → 补记账并推进水位；确认未写入 → 恢复待投递。 -->
+        <div v-if="reconciling.length" class="card">
+          <div class="card-head">
+            待对账的回写
+            <span class="tag red" style="margin-left:8px">{{ reconciling.length }} 条（已停投）</span>
+            <span class="muted" style="margin-left:auto;font-size:11.5px">
+              结果未知：禁止自动重投，需读回微伴累计分后人工判定
+            </span>
+          </div>
+          <div class="card-body" style="display:grid;gap:10px">
+            <div v-for="r in reconciling" :key="r.outbox_id" style="border-bottom:1px solid var(--border);padding-bottom:10px">
+              <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+                <b style="font-size:12.5px">{{ r.target_name || r.target_id }}</b>
+                <span class="tag" style="margin-left:4px">本次 {{ r.score }} 分</span>
+                <span v-if="r.grade" class="tag" :class="gradeTag(r.grade)" style="margin-left:4px">{{ r.grade }}</span>
+                <span class="muted" style="font-size:11.5px">尝试 {{ r.attempts }} 次</span>
+                <span class="muted" style="font-size:11.5px">{{ fmtTime(toEpoch(r.updated_at)) }}</span>
+              </div>
+              <div class="muted" style="font-size:11px;margin-top:2px">{{ r.last_errmsg }}</div>
+              <div style="display:flex;gap:8px;margin-top:6px">
+                <button class="btn sm primary" :disabled="busy" @click="decideReconcile(r, true)">
+                  确认已写入（补记账 + 推水位）
+                </button>
+                <button class="btn sm" :disabled="busy" @click="decideReconcile(r, false)">
+                  确认未写入（恢复投递）
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- ============ 回写审批队列 ============
-             策略判定 confirm / human 的客户回写不自动写微伴，而是排在这里等人工签字。
-             `outbox` 里那条待办会一直保持 pending（G6：宁可留着也不静默丢），
-             批准即放行、驳回即置终态 —— 这是"需人工二次确认后才写入"的真实兑现处。 -->
+             策略判定 `confirm` 的客户回写不自动写微伴，而是排在这里等人工签字：
+             批准即放行、驳回即置终态。`human`（低置信度）**不进这里** —— 它停投并
+             要求先完成复核/改判，避免"点一下批准就把 0.1 置信度的结论写进微伴"。 -->
         <div class="card">
           <div class="card-head">
             回写审批队列

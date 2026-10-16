@@ -7,7 +7,7 @@
 
 它记的是「这一轮跑分是拿哪条基线比出来的」。改造前基线只写进 `detail` 这个 JSON，
 于是"这轮和谁比的"只能翻 JSON；而列一直空着，读 schema 的人会以为它被填了。
-（`客户意向评分_回归门禁与评分正确性_设计方案.md` 把这条列为 D3 的验收点之一。）
+（《客户意向评分_架构设计说明书.md》第八章 8.6 门禁三结果与两步发布把「这一轮拿哪条基线比」列为可追溯项。）
 
 ## ② `scoring_rule.effective_at` —— 从建表起没人读过
 
@@ -30,6 +30,7 @@ from _harness import check, summary  # noqa: E402
 import db                     # noqa: E402
 import eval_runner as er      # noqa: E402
 import api_scoring            # noqa: E402
+import audit                  # noqa: E402
 
 KEY = er.BASELINE_RUN_KEY
 KIND = "__test_none__"
@@ -68,6 +69,64 @@ def main():
         check("生效时间与库里这一版规则的 max(effective_at) 一致",
               r.get("rule_version") and rv and r["rule_version"] == rv["v"]
               and r.get("rule_count", 0) > 0, f"{r.get('rule_version')} / {r.get('rule_count')}")
+
+        # ---------------- ③ 门禁必须披露"有多少样本没跑成"（2026-10-16） ----------------
+        # 场景：一轮跑分里模型/契约异常导致部分样本被排除在指标外（`case_error`）。
+        # 此前这个数字在系统里**没有任何出口** —— 有效样本变少会让门禁容差变宽，
+        # 保护被悄悄放松却不报警。现在：门禁 reason 里明说，占比 ≥20% 时不予判定。
+        import analyze as _an
+        import rules as _rules
+        _rv = _rules.load_rules().get("rule_version")
+        _pv = _an.PROMPT_VERSION
+        base_run2 = db.query_one(
+            """INSERT INTO eval_run (kind, rule_version, prompt_version, case_total, case_ok,
+                                     metrics, status, elapsed_sec, finished_at)
+               VALUES ('__test_base__',%s,%s,10,10,%s,'success',1,now())
+               RETURNING id""",
+            (_rv, _pv, db.as_json({"rule_f1": 0.5}),))["id"]
+        made.append(base_run2)
+        db.set_setting(KEY, str(base_run2))
+        now_run = db.query_one(
+            """INSERT INTO eval_run (kind, rule_version, prompt_version, case_total, case_ok,
+                                     metrics, status, elapsed_sec, finished_at)
+               VALUES ('__test_now__',%s,%s,10,6,%s,'success',1,now())
+               RETURNING id""",
+            (_rv, _pv, db.as_json({"rule_f1": 0.5, "case_total": 10, "case_valid": 6,
+                                   "case_skipped": 1, "case_error": 3}),))["id"]
+        made.append(now_run)
+        dec = er.gate_decision(eval_run_id=now_run, run_if_possible=False)
+        check("★ 门禁结论里说明「N 条样本未跑成、指标不完整」",
+              "未跑成" in (dec.get("reason") or "") and dec.get("case_error") == 3,
+              str(dec.get("reason"))[:120])
+        check("未跑成占比 ≥20% → 不予判定（不拿残缺指标下结论）",
+              dec.get("decidable") is False, f"decidable={dec.get('decidable')}")
+        # 只有 1 条失败（10%）时：仍然判定，但必须披露
+        now_run2 = db.query_one(
+            """INSERT INTO eval_run (kind, rule_version, prompt_version, case_total, case_ok,
+                                     metrics, status, elapsed_sec, finished_at)
+               VALUES ('__test_now__',%s,%s,10,9,%s,'success',1,now())
+               RETURNING id""",
+            (_rv, _pv, db.as_json({"rule_f1": 0.5, "case_total": 10, "case_valid": 9,
+                                   "case_error": 1}),))["id"]
+        made.append(now_run2)
+        dec2 = er.gate_decision(eval_run_id=now_run2, run_if_possible=False)
+        check("★ 少量失败仍判定，但 reason 里照样披露",
+              dec2.get("decidable") is True and "未跑成" in (dec2.get("reason") or ""),
+              f"decidable={dec2.get('decidable')}｜{str(dec2.get('reason'))[:90]}")
+
+        # ---------------- ④ 整轮评估异常要落库 + 审计（此前只写进程内状态） ----------------
+        er._record_failed_run("__test_failed__", "RuntimeError: 模拟整轮异常")
+        fr = db.query_one("""SELECT id, status, error FROM eval_run
+                              WHERE kind='__test_failed__' ORDER BY id DESC LIMIT 1""")
+        if fr:
+            made.append(fr["id"])
+        check("★ 整轮异常也落一条 eval_run(status='failed')",
+              bool(fr) and fr["status"] == "failed" and "模拟整轮异常" in (fr["error"] or ""),
+              str(fr))
+        au = db.query_one("""SELECT count(*) AS n FROM audit_log
+                              WHERE action='eval_run_failed' AND target=%s""",
+                          (f"run:{fr['id']}" if fr else "run:0",))
+        check("并有审计留痕（谁/何时/为什么）", bool(au) and au["n"] >= 1, str(au))
     finally:
         if old is None:
             db.execute("DELETE FROM app_setting WHERE key=%s", (KEY,))

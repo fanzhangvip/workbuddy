@@ -34,6 +34,7 @@ def stats():
 @router.get("/staffs")
 def staffs(q: str = "", only_with_session: int = 0, limit: int = 500,
            session_type: str = ""):
+    limit = max(1, min(int(limit or 2000), 2000))   # 上限护栏：limit 是用户可控入参，不夹会一次拉爆内存
     """员工列表（默认只返回有会话的，按最近活跃排序）。
 
     ``session_type``（修 2026-10-16）：**只影响展示的计数**，不影响"这个员工出不出现在列表里"。
@@ -78,6 +79,7 @@ _SESSION_COLS = """
 @router.get("/sessions")
 def sessions(staff_id: str = Query(...), session_type: str = "",
              q: str = "", has_msg: int = 0, limit: int = 200, offset: int = 0):
+    limit = max(1, min(int(limit or 500), 500))   # 上限护栏：limit 是用户可控入参，不夹会一次拉爆内存
     """某员工的会话列表。``has_msg=1`` 只看已同步到消息的会话。
 
     返回两个总数（修 2026-10-16，供前端区分空状态）：
@@ -136,6 +138,7 @@ def session_detail(staff_id: str, session_id: str):
 def messages(staff_id: str, session_id: str, limit: int = 60,
              before_time: int = 0, after_time: int = 0, q: str = "",
              before_id: str = ""):
+    limit = max(1, min(int(limit or 200), 200))   # 上限护栏：limit 是用户可控入参，不夹会一次拉爆内存
     """会话消息（默认返回最新 limit 条，按时间正序）。
 
     ``before_time`` + ``before_id``（修 2026-10-16）：**向上翻页的复合游标**。
@@ -185,6 +188,7 @@ def messages(staff_id: str, session_id: str, limit: int = 60,
 
 @router.get("/search")
 def search(q: str = Query(...), staff_id: str = "", limit: int = 50):
+    limit = max(1, min(int(limit or 200), 200))   # 上限护栏：limit 是用户可控入参，不夹会一次拉爆内存
     """按正文全文搜索（pg_trgm 加速的 ILIKE）。"""
     if not q.strip():
         return {"items": []}
@@ -207,6 +211,7 @@ def search(q: str = Query(...), staff_id: str = "", limit: int = 50):
 
 @router.get("/sessions/recent")
 def recent_sessions(limit: int = 50, session_type: str = "ext_user"):
+    limit = max(1, min(int(limit or 200), 200))   # 上限护栏：limit 是用户可控入参，不夹会一次拉爆内存
     """全公司最近有消息的会话（首页总览用）。"""
     sql = """
         SELECT c.staff_id, c.session_id, c.name, c.remark, c.session_type,

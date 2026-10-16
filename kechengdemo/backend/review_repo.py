@@ -33,9 +33,14 @@ def enqueue(*, rel_key: str, aid: int, cand: dict, ai_negative_total: int,
 
 
 def submit(rid: int, *, human_items: list, human_total: int, note: str,
-           reviewer: str) -> int:
-    """人工提交打分：落人工项 / 合计 / 备注 / 处理人，状态置 `done`。"""
-    return db.execute(
+           reviewer: str, conn=None) -> int:
+    """人工提交打分：落人工项 / 合计 / 备注 / 处理人，状态置 `done`。
+
+    ``conn``：由调用方传入事务连接（复核提交要「队列 done + 结论修正」原子落库，
+    否则中途崩溃会出现「队列说做完了、结论还是 pending」）。
+    """
+    _run = conn.execute if conn is not None else db.execute
+    return _run(
         """UPDATE negative_review SET human_negative_items=%s, human_negative_total=%s,
                human_note=%s, reviewer=%s, status='done', reviewed_at=now(), updated_at=now()
              WHERE id=%s""",

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""代码评审报告 v1 的缺陷修复回归（P0/P1/P2 批次）—— 需要 PostgreSQL 5433。
+"""一次代码评审（P0/P1/P2 批次）的缺陷修复回归 —— 需要 PostgreSQL 5433。
 
     .venv/Scripts/python.exe tests/test_bugfix_p0p1.py
 

@@ -37,7 +37,7 @@ class RulesInvalidError(ValueError):
 def validate_rules(rules: dict) -> list:
     """返回违规清单（空列表 = 合法）。**纯函数**，便于对样例规则做测试。
 
-    对应 ARCHITECTURE.md §6.7：
+    对应《客户意向评分_架构设计说明书.md》第十三章（运行时不变式）：
       INV-12  `grade_thresholds` 的 min 严格递减且覆盖分数下界；`score_bounds.min < max`
       INV-13  同一规则的 option 分值互不相同；`polarity` 由分组决定（**不得写在规则体里**）；
               `engine='rule'` 的规则不出现在 `llm_rule_ids()`

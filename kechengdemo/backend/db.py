@@ -223,7 +223,8 @@ def setting_bool(key: str, env_key: str, default: bool = False) -> bool:
 QUEUE_TABLES = frozenset({"writeback_outbox", "grade_tag_outbox"})
 
 
-def reclaim_stuck_sending(conn, table: str, stuck_seconds: int, note: str) -> None:
+def reclaim_stuck_sending(conn, table: str, stuck_seconds: int, note: str,
+                          unknown_outcome: bool = False) -> None:
     """把卡在 ``sending`` 超时的行收回成 ``failed``（在**同一个事务**里调用）。
 
     为什么必须有这一步：进程被 kill 时，已经标成 ``sending`` 的行没人负责 ——
@@ -232,9 +233,22 @@ def reclaim_stuck_sending(conn, table: str, stuck_seconds: int, note: str) -> No
     UPDATE（连 `COALESCE(last_errmsg,'')` 都一样），改一处必忘另一处。
 
     :param table: 只接受白名单里的队列表（杜绝把表名当参数拼 SQL）。
+    :param unknown_outcome: **结果未知**（投递中断：进程被杀 / 网络断）时置
+        ``dead`` + ``needs_reconcile=true`` 而**不重投**。只对**不可撤销**的队列表用
+        （`writeback_outbox`：微伴评分是累加语义，重投 = 多加一次分）；标签队列
+        （`grade_tag_outbox`）是覆盖语义，重投无害，保持 ``failed`` 可重试。
     """
     if table not in QUEUE_TABLES:
         raise ValueError(f"未知队列表：{table}")
+    if unknown_outcome:
+        conn.execute(
+            f"""UPDATE {table}
+                   SET status='dead', needs_reconcile=true, updated_at=now(),
+                       last_errmsg = COALESCE(last_errmsg, '') || %s
+                 WHERE status='sending'
+                   AND updated_at < now() - make_interval(secs => %s)""",
+            (note, int(stuck_seconds)))
+        return
     conn.execute(
         f"""UPDATE {table}
                SET status='failed', next_attempt_at=now(), updated_at=now(),

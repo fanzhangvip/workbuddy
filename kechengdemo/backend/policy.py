@@ -92,20 +92,25 @@ def decide(*, session_confidence, review_reasons=None, risk_level: int = 1,
         out_reasons.append("blocking_review_reason")
         out_reasons += [f"reason:{r}" for r in hit_blocking]
 
+    # ⚠️ 顺序即语义（2026-10-16 修正）：**低置信度优先于"高风险/阻断原因"**。
+    # 之前 `out_reasons` 先判，于是 conf=0.1 且高风险会得到 `confirm` —— 也就是
+    # "有人点一下批准就能把一条 0.1 置信度的结论写进微伴"，与 human 的定义
+    # （"只进人工复核，不进自动链路"）自相矛盾。
     if conf is None:
         out_reasons.append("no_confidence")
         action = HUMAN
+    elif float(conf) < confirm_min:
+        out_reasons.append("confidence_low")
+        action = HUMAN
     elif out_reasons:
+        # 置信度够，但有高风险动作或阻断性复核原因 → 必须人工二次确认
         action = CONFIRM
     elif float(conf) >= auto_min:
         out_reasons.append("confidence_high")
         action = AUTO
-    elif float(conf) >= confirm_min:
+    else:
         out_reasons.append("confidence_mid")
         action = CONFIRM
-    else:
-        out_reasons.append("confidence_low")
-        action = HUMAN
 
     return {"action": action, "action_reasons": out_reasons, "thresholds": th}
 

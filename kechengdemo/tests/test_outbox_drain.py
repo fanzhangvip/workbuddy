@@ -97,7 +97,12 @@ def main():
         set_mode("live")
 
         def boom(staff_id, external_user_id="", score=0, **kw):
-            raise RuntimeError("HTTP 503：微伴暂不可用")
+            # ⚠️ 必须抛 `HttpFailure(status=503)`（对端**明确回话**了）才算"明确失败"。
+            # 抛裸 RuntimeError/TimeoutError 属于**结果未知**：累加语义下重投可能多加一次分，
+            # 因此会被 `outbox` 判成"停投 + 待人工对账"（见
+            # `tests/test_writeback_unknown_and_correction.py` 的对应断言）。
+            import http_client
+            raise http_client.HttpFailure("HTTP 503 微伴暂不可用", retryable=True, status=503)
 
         weiban.add_customer_score = boom
         mk_outbox(a2, score=4)

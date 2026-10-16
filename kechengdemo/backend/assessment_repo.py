@@ -117,18 +117,23 @@ def set_review_status(aid: int, status: str) -> int:
         (status, aid))
 
 
-def mark_review_done(aid: int, verification_status: str) -> int:
+def mark_review_done(aid: int, verification_status: str, *, conn=None) -> int:
     """人工复核提交：状态置 `done` + 落**人工验证状态**（E4）。
 
     `verification_status` 三种语义必须分开，不能合成一个布尔：
       · `verified`  人工确认且与模型一致
       · `corrected` 人工改判过（meta-loop 的误报样本来源）
       · `rejected`  人工认为不该扣分
+
+    ``conn``：复核提交要「队列 done + 结论状态 + 分数修正」三处**原子**落库，
+    否则中途崩溃会留下「队列说做完了、结论仍 pending」这种可读但矛盾的状态。
     """
-    return db.execute(
-        """UPDATE customer_intent_assessment
-              SET review_status='done', verification_status=%s WHERE assessment_id=%s""",
-        (verification_status, aid))
+    sql = ("""UPDATE customer_intent_assessment
+                 SET review_status='done', verification_status=%s WHERE assessment_id=%s""",
+           (verification_status, aid))
+    if conn is not None:
+        return conn.execute(*sql)
+    return db.execute(*sql)
 
 
 # ---------------- 写：历史回填（backfill / rollback 专用） ----------------
@@ -156,3 +161,56 @@ def set_review_semantics(conn, aid: int, *, needs_human_review, review_reasons) 
               SET needs_human_review=%s, review_reasons=%s
             WHERE assessment_id=%s""",
         (needs_human_review, review_reasons, aid))
+
+
+def apply_human_correction(aid: int, *, human_negative_total: int,
+                           human_items: list = None, actor: str = "manual",
+                           conn=None) -> dict:
+    """把**人工复核的改判**落到这条结论上：重算扣分合计、总分与等级（可审计）。
+
+    ## 为什么需要它
+
+    复核提交原来只写 `negative_review`（人工扣分）+ `assessment.verification_status`
+    （verified/corrected/rejected），**结论行的 raw_score / grade 一个字都不改**。
+    于是"人工改判"只对以后的规则有用（回流成评估样本），对这个客户**毫无纠正**：
+    微伴上的分数与等级标签仍然是 AI 的错判。复核的价值有一半没落地。
+
+    ## 边界（刻意如此）
+
+    · **纯本地确定性重算**，不重跑模型、不碰外部系统：`raw = positive_total + 人工负分`，
+      再按 `rules.json` 的上下限截断、按 `grade_thresholds` 定级；
+    · **不动** `negative_items`（那是**AI 当时的判定**，误报率/误报排行要靠 ai↔human
+      的差值算）——人工结论存在 `negative_review.human_negative_items`；
+    · **不动** `last_msg_time` / `rule_version`（否则会触发增量重评，把一个"修正动作"
+      变成"重新推理"）；
+    · **不动回写水位与账本**：`positive_total` 不变 → 下次差值不变 → 不会重复累加。
+      已写进微伴的分数不会被撤回（微伴无覆盖接口），修正后由下一轮同步/对齐收敛。
+    """
+    row = db.query_one(
+        """SELECT assessment_id, relationship_key, positive_total, raw_score, grade,
+                  negative_total, is_current
+             FROM customer_intent_assessment WHERE assessment_id=%s""", (aid,))
+    if not row:
+        return {"ok": False, "reason": f"结论不存在：{aid}"}
+    import rules as rules_mod
+    r = rules_mod.load_rules()
+    lo = int((r.get("score_bounds") or {}).get("min", -999))
+    hi = int((r.get("score_bounds") or {}).get("max", 999))
+    neg = int(human_negative_total or 0)
+    new_raw = max(lo, min(hi, int(row["positive_total"] or 0) + neg))
+    new_grade = (rules_mod.grade_of(new_raw, r) or {}).get("grade") or "D"
+    before = {"raw_score": row["raw_score"], "grade": row["grade"],
+              "negative_total": row["negative_total"]}
+    sql = """UPDATE customer_intent_assessment
+                SET raw_score=%s, grade=%s, negative_total=%s
+              WHERE assessment_id=%s"""
+    params = (new_raw, new_grade, neg, aid)
+    if conn is not None:
+        conn.execute(sql, params)
+    else:
+        db.execute(sql, params)
+    return {"ok": True, "assessment_id": aid,
+            "before": before,
+            "after": {"raw_score": new_raw, "grade": new_grade, "negative_total": neg},
+            "changed": bool(before["raw_score"] != new_raw or before["grade"] != new_grade),
+            "actor": actor, "human_items": human_items or []}

@@ -140,8 +140,6 @@ def submit(payload: dict = Body(default={})):
     reported = payload.get("reviewer")
     reviewer = security.actor()
 
-    review_repo.submit(rid, human_items=valid, human_total=total, note=note,
-                       reviewer=reviewer)
     # E4（架构 §7.2 / §6.3）：人工验证状态落列 —— 此前**这一列建了但没有任何写入方**，
     # 于是「模型算的置信度」与「人到底认同没有」永远分不清。
     # 三种结果语义不同，必须分开：
@@ -155,11 +153,29 @@ def submit(payload: dict = Body(default={})):
         vstatus = "verified"
     else:
         vstatus = "corrected"
-    assessment_repo.mark_review_done(r["assessment_id"], vstatus)
+    # ⚠️ 三处写在**同一个事务**里（2026-10-16）：复核队列落人工结论、结论行落
+    #    review_status/verification_status、以及（改判时）重算后的分数与等级。
+    #    分开写的话，中途崩溃会留下「队列说做完了、结论还是 pending」这种
+    #    可读但矛盾的状态；而且看板的「待复核 / 已完成复核」两个口径会长期对不上。
+    correction = {}
+    with db.tx() as conn:
+        review_repo.submit(rid, human_items=valid, human_total=total, note=note,
+                           reviewer=reviewer, conn=conn)
+        assessment_repo.mark_review_done(r["assessment_id"], vstatus, conn=conn)
+        # ⚠️ 改判要**真的修正这个客户**（2026-10-16）：此前复核提交只写复核队列与
+        #    verification_status，结论行的 raw_score/grade 一个字都不改 —— 于是
+        #    「人工改判」只对以后的规则有用，客户在微伴上的分数与等级标签仍是 AI 的错判。
+        #    这里用人工结论**本地确定性重算**总分与等级（不重跑模型、不碰外部系统、
+        #    不动回写水位）；`verified`（人工与 AI 一致）不需要改，直接跳过。
+        if vstatus in ("corrected", "rejected"):
+            correction = assessment_repo.apply_human_correction(
+                r["assessment_id"], human_negative_total=total, human_items=valid,
+                actor=reviewer, conn=conn)
     audit.record_action(reviewer, "review_submit", str(rid), security.actor_detail(
                     reported, human_negative_total=total, items=valid,
                     ai_negative_total=r["ai_negative_total"],
-                    verification_status=vstatus, note=note))
+                    verification_status=vstatus, note=note,
+                    correction=correction))
     # E5 meta-loop：改判过的复核**立刻回流评估集**（人工判断是最贵的资源，不该只用一次）。
     # 失败不影响复核提交本身 —— 回流是「后续改进」，不是「本次结论」。
     backflow = {}
@@ -170,7 +186,8 @@ def submit(payload: dict = Body(default={})):
         except Exception as e:
             backflow = {"error": f"{type(e).__name__}: {e}"}
     return {"ok": True, "human_negative_total": total, "verification_status": vstatus,
-            "invalid_items": bad, "status": "done", "backflow": backflow}
+            "invalid_items": bad, "status": "done", "backflow": backflow,
+            "correction": correction}
 
 
 # ---------------- 修改状态 ----------------

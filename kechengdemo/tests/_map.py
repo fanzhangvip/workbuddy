@@ -22,11 +22,12 @@ _BY_NAME = {
     "rules.py": ["test_rules_validation", "test_contracts", "test_confidence"],
     "rules.json": ["test_rules_validation", "test_contracts", "test_eval_runner",
                    "test_engine_window_and_anchor"],
-    "contracts.py": ["test_contracts", "test_stage_a_acceptance"],
+    "contracts.py": ["test_contracts", "test_stage_a_acceptance", "test_eval_observability"],
     "analyze.py": ["test_contracts", "test_prompt_trust_boundary", "test_llm_client",
                    "test_stage_a_acceptance"],
     "confidence.py": ["test_confidence"],
-    "policy.py": ["test_production_hardening", "test_grade_tag"],
+    "policy.py": ["test_production_hardening", "test_grade_tag",
+                 "test_writeback_unknown_and_correction"],
 
     # ---------------- 上下文与评分 ----------------
     "scoring_context.py": ["test_cb_delta_and_budget", "test_ca_key_history",
@@ -37,7 +38,7 @@ _BY_NAME = {
     "scoring_service.py": ["test_loop_guard", "test_run_with_graph", "test_hooks",
                            "test_g0_hardening", "test_graph_session_parity",
                            "test_observability", "test_scoring_start_gate_blocked"],
-    "graph_session.py": ["test_graph_session_parity", "test_run_with_graph",
+    "graph_session.py": ["test_eval_observability", "test_graph_session_parity", "test_run_with_graph",
                          "test_graph_skip_and_failure", "test_hooks",
                          "test_engine_window_and_anchor"],
     "hooks.py": ["test_hooks", "test_loop_guard"],
@@ -53,18 +54,22 @@ _BY_NAME = {
     # ---------------- 评估集与门禁 ----------------
     "eval_runner.py": ["test_eval_runner", "test_cb_delta_and_budget",
                        "test_scoring_start_gate_blocked", "test_engine_window_and_anchor",
-                       # baseline_id 落库 + 「0 条样本」检查移进锁内
-                       "test_eval_baseline_written"],
+                       # baseline_id 落库 + 「0 条样本」检查移进锁内 + 门禁披露 case_error
+                       "test_eval_baseline_written",
+                       # metrics() 把「跳过」与「没跑成」分开
+                       "test_eval_observability"],
     "eval_case_repo.py": ["test_eval_runner", "test_eval_write_guard"],
     "meta_loop.py": ["test_eval_runner"],
-    "review_repo.py": ["test_eval_runner"],
-    "assessment_repo.py": ["test_eval_runner", "test_backfill"],
+    "review_repo.py": ["test_eval_runner", "test_writeback_unknown_and_correction"],
+    "assessment_repo.py": ["test_eval_runner", "test_backfill",
+                         "test_writeback_unknown_and_correction"],
     "backfill.py": ["test_backfill"],
 
     # ---------------- 回写与标签 ----------------
     # ⚠️ 两张表的名字很接近但**不是一回事**：上面是 `outbox`（分数回写待办），
     #    `grade_tag.py` 是标签链路。审批放行改的是前者。
     "outbox.py": ["test_outbox_drain", "test_g6_outbox_survives_watermark",
+                 "test_writeback_unknown_and_correction",
                   "test_writeback_approval"],
     "writeback_repo.py": ["test_outbox_drain", "test_g6_outbox_survives_watermark",
                           "test_writeback_approval"],
@@ -84,7 +89,8 @@ _BY_NAME = {
               "test_eval_runner"],
     "schema.sql": ["test_schema_and_defaults", "test_hooks", "test_eval_runner",
                    "test_writeback_approval"],
-    "settings_registry.py": ["test_settings_registry"],
+    "settings_registry.py": ["test_settings_registry",
+                            "test_writeback_unknown_and_correction"],
     "security.py": ["test_security", "test_rbac", "test_login_session"],
     "auth_service.py": ["test_login_session", "test_browser_capability"],
     "audit.py": ["test_observability", "test_trace_span", "test_eval_write_guard"],
@@ -106,7 +112,7 @@ _BY_NAME = {
     "PartialLoadBanner.vue": ["test_frontend_call_chains"],
     "usePolling.js": ["test_scoring_ui_guardrails"],
     "api_eval.py": ["test_eval_runner", "test_eval_baseline_written"],
-    "api_review.py": ["test_eval_runner"],
+    "api_review.py": ["test_eval_runner", "test_writeback_unknown_and_correction"],
     "api_scoring.py": ["test_eval_runner", "test_production_hardening",
                        "test_eval_baseline_written"],
     "api.js": ["test_frontend_call_chains"],

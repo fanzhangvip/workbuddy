@@ -83,7 +83,7 @@ def main():
         # ---------------- ① 挂起：策略说"要人工确认" ----------------
         aid = _mk("confirm")
         check("★ 策略 confirm 的回写被挂起（不自动投递）",
-              outbox._policy_hold(_row(aid)) is True)
+              outbox._policy_gate(_row(aid)) == "hold")
 
         # ---------------- ② 登记审批：幂等、不阻塞批次 ----------------
         r1 = _ask(aid)
@@ -100,13 +100,13 @@ def main():
         r2 = _ask(aid)
         check("★ 幂等：同一条评估不重复建请求",
               r2.get("reused") is True and r2["request_id"] == r1["request_id"])
-        check("待审期间仍然挂起（批准前不投递）", outbox._policy_hold(_row(aid)) is True)
+        check("待审期间仍然挂起（批准前不投递）", outbox._policy_gate(_row(aid)) == "hold")
 
         # ---------------- ③ 批准 → 放行投递 ----------------
         d = tr.decide_approval(r1["request_id"], approve=True, note="同意")
         check("批准成功", d.get("ok") is True)
         check("★ 批准后不再挂起（下一轮 drain 会投递）",
-              outbox._policy_hold(_row(aid)) is False)
+              outbox._policy_gate(_row(aid)) == "deliver")
         n = writeback_repo.release_on_approve(aid)
         row = _row(aid)
         check("★ 放行时把 next_attempt_at 拉回现在（否则要再等最多 10 分钟）",
@@ -115,14 +115,17 @@ def main():
         check("★ 已决请求不会被二次处理", d2.get("ok") is False)
 
         # ---------------- ④ 驳回 → 待办置终态 ----------------
-        aid2 = _mk("human", score=7)
+        # 用 `confirm` 的行来验「驳回 ≠ 放行」：驳回后闸门仍是 hold（不放行）。
+        # （`human` 走的是另一条路 —— 闸门直接是 review、待办停投，见
+        #  `test_writeback_unknown_and_correction.py`。）
+        aid2 = _mk("confirm", score=7)
         r3 = _ask(aid2, score=7)
         tr.decide_approval(r3["request_id"], approve=False, note="证据不足")
         closed = writeback_repo.close_on_reject(aid2, note="证据不足")
         check("★ 驳回把待办置死（不再反复延后、也不投递）",
               closed == 1 and _row(aid2)["status"] == "dead", str(_row(aid2)["status"]))
         check("★ 驳回**不算放行**（人工明确说过不写）",
-              outbox._policy_hold(_row(aid2)) is True
+              outbox._policy_gate(_row(aid2)) == "hold"
               and db.query_one("SELECT status FROM approval_request WHERE request_id=%s",
                                (r3["request_id"],))["status"] == "rejected")
 

@@ -33,7 +33,8 @@ const rows = ref([])               // 人工打分行
 const note = ref('')
 const reviewer = ref(localStorage.getItem('reviewer') || '工作人员')
 // busy / error / msg 由 composable 提供（模板里的 `busy` 用法不变）
-const { busy, error, run } = useAsyncAction()
+// `msg`：成功/中性提示的统一出口（改判修正结果、批量结果都走它）
+const { busy, error, msg, run } = useAsyncAction()
 async function refresh() {
   try {
     const [s, l] = await Promise.all([
@@ -135,6 +136,20 @@ async function submit() {
       review_id: current.value.review.id, items, note: note.value, reviewer: reviewer.value,
     })
     if (!res.ok) { error.value = res.reason || '提交失败'; return }
+    // 改判（corrected / rejected）会**立刻修正这条结论**的扣分合计、总分与等级
+    // （本地确定性重算，不重跑模型）。把变化说出来 —— 否则用户不知道"改判到底起没起作用"。
+    const c = res.correction || {}
+    if (c.ok && c.changed) {
+      msg.value = `已按人工结论修正：分数 ${c.before.raw_score} → ${c.after.raw_score}`
+        + `，等级 ${c.before.grade} → ${c.after.grade}`
+        + '（写进微伴的分数不会撤回：微伴评分只能累加，下次差值/标签对齐会收敛）'
+    } else if (c.ok === false) {
+      msg.value = `已提交，但结论修正失败：${c.reason}`
+    } else {
+      msg.value = res.verification_status === 'verified'
+        ? '已提交：与 AI 结论一致，结论无需修正'
+        : '已提交'
+    }
     await refresh(); await open({ id: current.value.review.id })
   })
 }
@@ -308,6 +323,8 @@ usePolling(refresh, 5000)
               <button class="btn" :disabled="busy" @click="setStatus('pending')">退回未打分</button>
             </div>
             <div v-if="error" class="alert err">{{ error }}</div>
+            <!-- 改判结果 / 批量结果（v2 起统一走 msg） -->
+            <div v-if="msg" class="alert ok" style="font-size:12.5px">{{ msg }}</div>
             <div v-if="current.review.status === 'done'" class="alert ok" style="font-size:12px">
               已完成于 {{ fmtTime(toEpoch(current.review.reviewed_at)) }}
               · 人工扣分 {{ current.review.human_negative_total }}

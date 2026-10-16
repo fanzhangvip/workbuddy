@@ -744,7 +744,11 @@ class ScoringService(job_service.JobService):
             #    却没有任何地方能确认它（`approval_request` 那时只有测试在写）。
             #    现在把它登记进审批队列：评分中心的「回写审批」卡片能看到、能批准/驳回。
             #    只登记、**不阻塞批次**（task_id 留空）—— 卡住的是一条客户回写，不是整轮评分。
-            if policy_denied:
+            # ⚠️ 只有 `confirm`（"人工确认后可写"）才登记审批；`human`（"只进人工复核"）
+            #    不登记 —— 否则审批队列成了绕过复核的旁路：低置信度的结论只要有人点
+            #    一下批准就能写进微伴。`human` 的处置交给 outbox：停投 + 说明下一步
+            #    （先复核/改判并重评该客户）。
+            if policy_denied and policy_action == policy.CONFIRM:
                 try:
                     task_runtime.request_writeback_approval(
                         assessment_id=aid, relationship_key=rel_key, staff_id=staff_id,
@@ -898,6 +902,10 @@ class ScoringService(job_service.JobService):
                  attempts, status))
         except Exception as e:                        # 记失败本身失败，绝不能拖垮整轮
             print(f"[scoring] 写入失败明细时出错：{e}")
+            # ⚠️ 二次故障也要有数字（2026-10-16）：`session_failure` 写不进去时此前
+            #    只有一行 print —— 运维看不出"这轮有多少失败明细丢了"。计数随 `_bump`
+            #    落进 `scoring_run.detail`（与 `tool_failures` 同一套路）。
+            self._inc(failure_record_errors=1)
 
     # ---------------- 内部：落库（assessment + outbox 同一事务）----------------
 
@@ -1090,6 +1098,10 @@ class ScoringService(job_service.JobService):
         self._note_facts(facts)                  # 修 G1：取标签失败留痕
         self._bump(run_id, llm_calls=1)
         res = self._llm_analyze(ctx, facts["text"], rules)
+        # 模型自报置信度被夹取（越界/非法）也要有数字：此前是纯静默改写，
+        # 统计口径会被悄悄拉偏而没人知道（2026-10-16）。
+        if res.get("confidence_clamped"):
+            self._inc(confidence_clamped=1)
         # P2：把这次判定用的时间锚点随 `res` 带到落库处（与图路径 `n_items` 同口径）。
         # 引擎项就是按这个锚点算的，落库必须用同一个值。
         res["data_as_of"] = facts.get("as_of")

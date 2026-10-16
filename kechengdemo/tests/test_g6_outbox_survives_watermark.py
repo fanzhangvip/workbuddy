@@ -68,32 +68,65 @@ def pick_unscored_candidate():
 
 
 def cleanup(staff_id, session_id):
-    db.execute("""DELETE FROM writeback_outbox WHERE assessment_id IN
-                  (SELECT assessment_id FROM customer_intent_assessment
-                    WHERE source_run_id = %s)""", (RUN_ID,))
-    db.execute("""DELETE FROM negative_review WHERE assessment_id IN
-                  (SELECT assessment_id FROM customer_intent_assessment
-                    WHERE source_run_id = %s)""", (RUN_ID,))
-    # ⚠️ D2-1 之后回写成功会推进 `writeback_ledger`（**新增写副作用**）→ 必须同步清。
-    # 两种删法都要：① 按 assessment 关联；② **按客户关系键** ——
-    # 因为上一轮清理可能已把 assessment 删了（`last_assessment_id` 成了悬空引用），
-    # 只按 ① 会残留水位，导致下一轮「差值=0 → 不入队」把用例弄挂（实测踩到）。
-    db.execute("""DELETE FROM writeback_ledger WHERE last_assessment_id IN
-                    (SELECT assessment_id FROM customer_intent_assessment
-                      WHERE source_run_id = %s)""", (RUN_ID,))
-    db.execute("""DELETE FROM writeback_ledger WHERE relationship_key IN
-                    (SELECT c.staff_id || ':' || c.target_id FROM chat_session c
-                      WHERE c.staff_id = %s AND c.session_id = %s)""",
-               (staff_id, session_id))
-    db.execute("""DELETE FROM score_writeback WHERE assessment_id IN
-                  (SELECT assessment_id FROM customer_intent_assessment
-                    WHERE source_run_id = %s)""", (RUN_ID,))
+    """按 **run_id + 本次造出来的关系键** 清干净（2026-10-16 修正）。
+
+    原实现对 `writeback_ledger` / `session_failure` 是按**当前候选的 staff_id/
+    session_id** 删的 —— 候选一变（换数据集、库被重拉），上一轮留下的行就永远删不掉。
+    实测后果：生产库里攒下 1 行「live+ok 却无 assessment、无水位」的回写记录，把
+    **评分中心的「回写成功」看板**污染成 1，还让水位对账类检查误报；另有 51 行
+    打桩 `tool_audit`（假 HTTP 503）混进审计统计。
+
+    现在：① 先**捕获**本次 run 造出来的 assessment_id 与关系键，再按它们删（顺序不能反）；
+    ② `tool_audit` 按**打桩用的 task_id**（= RUN_ID）删；③ 结尾 `assert_no_residue()`
+    自检 —— 以后再漏就当场红，而不是安静地污染生产库。
+    """
+    rows = db.query("""SELECT assessment_id, relationship_key
+                         FROM customer_intent_assessment WHERE source_run_id=%s""", (RUN_ID,))
+    a_ids = [r["assessment_id"] for r in rows]
+    rels = sorted({r["relationship_key"] for r in rows if r["relationship_key"]})
+    # 兼容「上一轮已把 assessment 删掉、只剩悬空水位」的老残留：候选会话的关系键也算上
+    if staff_id and session_id:
+        r = db.query_one("""SELECT c.staff_id || ':' || c.target_id AS rel FROM chat_session c
+                             WHERE c.staff_id=%s AND c.session_id=%s""", (staff_id, session_id))
+        if r and r["rel"] and r["rel"] not in rels:
+            rels.append(r["rel"])
+    for tbl, col in (("writeback_outbox", "assessment_id"),
+                     ("negative_review", "assessment_id"),
+                     ("score_writeback", "assessment_id"),
+                     ("grade_tag_outbox", "assessment_id"),
+                     ("writeback_ledger", "last_assessment_id"),
+                     ("grade_tag_ledger", "last_assessment_id")):
+        if a_ids:
+            db.execute(f"DELETE FROM {tbl} WHERE {col} = ANY(%s)", (a_ids,))
+    if rels:
+        db.execute("DELETE FROM writeback_ledger WHERE relationship_key = ANY(%s)", (rels,))
+        db.execute("DELETE FROM grade_tag_ledger WHERE relationship_key = ANY(%s)", (rels,))
+    db.execute("DELETE FROM session_failure WHERE run_id=%s", (RUN_ID,))
+    db.execute("DELETE FROM tool_audit WHERE task_id=%s", (RUN_ID,))
     delete_rows("customer_intent_assessment", source_run_id=RUN_ID)
     # E2 自愈：删掉「被取代的新行」会让旧行永久失去 current → 补修（幂等）
     try: ss.repair_current_flags()
     except Exception: pass
-    db.execute("DELETE FROM session_failure WHERE staff_id=%s AND session_id=%s",
-               (staff_id, session_id))
+
+
+def assert_no_residue():
+    """收尾自检：跑在真实库上的测试必须**证明自己没留东西**。"""
+    left = {
+        "assessment": db.query_one(
+            "SELECT count(*) n FROM customer_intent_assessment WHERE source_run_id=%s",
+            (RUN_ID,))["n"],
+        "孤儿回写行": db.query_one("""
+            SELECT (SELECT count(*) FROM writeback_outbox o WHERE NOT EXISTS
+                      (SELECT 1 FROM customer_intent_assessment a WHERE a.assessment_id=o.assessment_id))
+                 + (SELECT count(*) FROM score_writeback w WHERE NOT EXISTS
+                      (SELECT 1 FROM customer_intent_assessment a WHERE a.assessment_id=w.assessment_id)) AS n""")["n"],
+        "打桩审计": db.query_one("SELECT count(*) n FROM tool_audit WHERE task_id=%s",
+                                (RUN_ID,))["n"],
+        "会话失败": db.query_one("SELECT count(*) n FROM session_failure WHERE run_id=%s",
+                                (RUN_ID,))["n"],
+    }
+    check("★ 跑完不留残留（生产库不被测试污染）",
+          all(v == 0 for v in left.values()), str(left))
 
 
 # ============================================================ 阶段二：独立进程
@@ -197,6 +230,7 @@ def main():
               str([x["status"] for x in wb2]))
     finally:
         cleanup(cand["staff_id"], cand["session_id"])
+        assert_no_residue()
         if _ORIG_DECIDE is not None:            # 还原 Policy 判定的打桩
             import policy
             policy.decide = _ORIG_DECIDE

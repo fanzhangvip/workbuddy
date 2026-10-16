@@ -142,7 +142,7 @@ def test_writable_equivalence():
         ("job_heartbeat_stale_minutes", "job_heartbeat_stale_minutes"),
         ("scoring_stale_minutes", "scoring_stale_minutes"),
         # 日常任务（需求 4.2）：什么时间同步、什么时候接着分析 —— 必须能在后台配，
-        # 否则「改成 20:00 / 03:30」就得改代码重启（见 ARCHITECTURE ADR-014）。
+        # 否则「改成 20:00 / 03:30」就得改代码重启（见架构设计说明书 第十二章 ADR-014）。
         ("sync_main_cron", "sync_main_cron"),
         ("sync_main_window_minutes", "sync_main_window_minutes"),
         ("sync_compensate_cron", "sync_compensate_cron"),

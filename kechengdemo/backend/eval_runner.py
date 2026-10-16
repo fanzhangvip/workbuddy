@@ -383,10 +383,21 @@ def metrics(pairs: list, engine_ids=None) -> dict:
     TP2 = FP2 = FN2 = 0                 # 排除引擎项后的 TP/FP/FN
     eng_drift = eng_seen = 0
     grade_ok = cases_with_fp = valid = 0
+    # ⚠️ 「被跳过」与「没跑成」必须分开（2026-10-16）：
+    #   · skipped —— 有效条数不足，生产链路本来也会跳过 → 合理排除
+    #   · error   —— 模型/契约异常（限流、连续不合契约、网络）→ **必须单独计数**
+    # 此前两者都是 `actual_grade is None`，一句 `continue` 一起被剔除出指标分母，
+    # 于是"模型抽风"静默变成"这轮样本少了几条"：`case_valid` 缩水 → 门禁容差
+    # （`max(2%, 1/有效样本数)`）变宽 → 保护被悄悄削弱，且没有任何告警。
+    skipped = errors = 0
     miss_detail = defaultdict(int)
 
     for p in pairs:
-        if p.get("actual_grade") is None:      # 该样本被跳过（有效条数不足）
+        if p.get("actual_grade") is None:
+            if (p.get("reason") or "") == "error":
+                errors += 1
+            else:
+                skipped += 1
             continue
         valid += 1
         e, a = _item_map(p.get("expected_items")), _item_map(p.get("actual_items"))
@@ -418,6 +429,7 @@ def metrics(pairs: list, engine_ids=None) -> dict:
     n = valid or 1
     out = {
         "case_total": len(pairs), "case_valid": valid,
+        "case_skipped": skipped, "case_error": errors,
         "tp": TP, "fp": FP, "fn": FN,
         "precision": round(precision, 4),
         "recall": round(recall, 4),
@@ -506,6 +518,20 @@ def alerts() -> dict:
                           "detail": d})
 
     # ② 单规则误报率超阈（复用 meta_loop 的既有口径，不重算）
+    # ②′ 最近一次跑分里有多少样本**根本没跑成**（模型/契约异常被排除在指标外）
+    m_last = last.get("metrics") or {}          # psycopg 直接把 JSONB 返成 dict
+    ce = int(m_last.get("case_error") or 0)
+    if ce:
+        total = int(m_last.get("case_total") or 0)
+        ratio = (ce / total) if total else 1.0
+        items.append({
+            "level": "err" if ratio >= 0.2 else "warn", "kind": "eval_case_errors",
+            "message": (f"最近一次跑分（#{last.get('id')}）有 {ce}/{total} 条样本**未跑成**"
+                        f"（模型/契约异常）—— 这些样本不在指标分母里，指标代表性下降"),
+            "detail": {"run_id": last.get("id"), "case_error": ce, "case_total": total,
+                       "case_valid": m_last.get("case_valid"),
+                       "case_skipped": m_last.get("case_skipped")}})
+
     try:
         import meta_loop
         for a in (meta_loop.rule_fp_ranking().get("alerts") or []):
@@ -750,7 +776,33 @@ def gate_decision(kind: str = "", limit: int = 0, run_if_possible: bool = True,
         out["reason"] += (f"；⚠️ 覆盖提示：{len(cw['no_sample'])} 条规则**无样本**、"
                           f"{len(cw['below_min'])} 条不足 {cw['min_cases']} 条 —— "
                           f"这些规则改坏了也测不出来")
+
+    # ⚠️ 「有多少样本根本没跑成」必须出现在门禁结论里（2026-10-16）：
+    #    模型/契约异常既不进 F1、也不进 case_valid —— 那等于**悄悄把保护放松**：
+    #    有效样本越少，容差 `max(2%, 1/有效样本数)` 越宽。此前这个数字在系统里
+    #    没有任何出口（只在 `eval_run.detail.cases[].reason` 里躺着）。
+    m_now = out.get("metrics") or {}
+    case_error = int(m_now.get("case_error") or 0)
+    case_total = int(m_now.get("case_total") or 0)
+    if case_error:
+        out["case_error"] = case_error
+        out["case_skipped"] = int(m_now.get("case_skipped") or 0)
+        out["reason"] += (f"；⚠️ 本轮有 **{case_error} 条样本未跑成**（模型/契约异常，"
+                          f"分母只剩 {int(m_now.get('case_valid') or 0)}/{case_total} 条）"
+                          f" —— 指标不完整，不代表质量没退步")
+        # 大量失败时连"判定"都不该做：拿残缺指标下结论比不判更危险
+        if case_total and case_error >= max(2, int(case_total * CASE_ERROR_UNDECIDABLE_RATIO)):
+            out["decidable"] = False
+            out["blocked"] = False
+            out["reason"] += (f"；未跑成比例 ≥ {int(CASE_ERROR_UNDECIDABLE_RATIO * 100)}% "
+                              f"→ **无法判定**（放行但不代表通过），请重跑一轮")
     return out
+
+
+#: 未跑成的样本占比达到多少就**不予判定**（而不是拿残缺指标下结论）。
+#: 20% 是刻意保守：样本 27 条时约等于 5 条失败 —— 到那个程度，
+#: F1/grade_acc 已经不反映真实水平，此时"放行"必须明说是"没判定"，不能伪装成"通过"。
+CASE_ERROR_UNDECIDABLE_RATIO = 0.20
 
 
 #: 基线指向哪次跑分（`app_setting` 键）。**刻意不注册进 `settings_registry`**：
@@ -880,7 +932,9 @@ def run_sync(kind: str = "", limit: int = 0, on_progress=None, check_drift: bool
         pairs.append({"expected_items": c.get("expected_items"),
                       "actual_items": got.get("items"),
                       "expected_grade": c.get("expected_grade"),
-                      "actual_grade": got.get("grade")})
+                      "actual_grade": got.get("grade"),
+                      # 带上原因：`metrics()` 要用它区分「跳过」与「没跑成」
+                      "reason": got.get("reason")})
         details.append({"case_id": c["case_id"], "staff_id": c["staff_id"],
                         "session_id": c["session_id"], "expected_grade": c.get("expected_grade"),
                         "actual_grade": got.get("grade"), "expected_raw": c.get("expected_raw_score"),
@@ -930,6 +984,37 @@ def run_sync(kind: str = "", limit: int = 0, on_progress=None, check_drift: bool
     with _LOCK:
         _STATE.update({"result": out, "elapsed_sec": elapsed})
     return out
+
+
+def _record_failed_run(kind: str, err: str) -> None:
+    """整轮评估异常也要落一条 `eval_run(status='failed')` + 审计（2026-10-16）。
+
+    为什么：后台跑评估时若 `run_sync` 抛异常（DB/样本读取、线程内的意外），
+    此前只在内存里留了 `_STATE["error"]` —— **重启即失、库里零记录**，
+    连"这轮跑过并失败了"都查不到。项目对批量的既定纪律是"失败要有载体"
+    （`sync_job`/`scoring_run`/`session_failure` 都落库），评估不该例外。
+    """
+    try:
+        rv = pv = None
+        try:
+            rv = rules_mod.load_rules().get("rule_version")
+            import analyze as _an
+            pv = getattr(_an, "PROMPT_VERSION", None)
+        except Exception:                             # noqa: BLE001  版本取不到也要留痕
+            pass
+        row = db.query_one(
+            """INSERT INTO eval_run (kind, rule_version, prompt_version, case_total, case_ok,
+                                     metrics, status, error, elapsed_sec, finished_at)
+               VALUES (%s,%s,%s,0,0,NULL,'failed',%s,0,now()) RETURNING id""",
+            (kind or None, rv, pv, (err or "")[:2000]))
+        try:
+            import audit
+            audit.record_action("system", "eval_run_failed", f"run:{row['id']}",
+                                {"kind": kind, "error": (err or "")[:500]})
+        except Exception as e2:                       # noqa: BLE001
+            print(f"[eval] 落审计失败（跑分失败行已记）：{e2}")
+    except Exception as e:                            # noqa: BLE001
+        print(f"[eval] ⚠️ 连失败记录都写不进去：{type(e).__name__}: {e}｜原始错误：{err}")
 
 
 def _no_cases_reason(kind: str, include_prefilled: bool) -> str:
@@ -985,8 +1070,14 @@ def start(kind: str = "", limit: int = 0, include_prefilled: bool = False) -> di
             run_sync(kind, limit, on_progress=_prog,
                      include_prefilled=include_prefilled)
         except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
             with _LOCK:
-                _STATE["error"] = f"{type(e).__name__}: {e}"
+                _STATE["error"] = msg
+            # ⚠️ 整轮异常也必须留痕（2026-10-16）：此前只写进程内 `_STATE["error"]`
+            #    —— 重启即失、不落 `eval_run`、不写审计。若异常发生在插 `eval_run`
+            #    行之前（DB/样本读取出错），这一轮在**库里完全没有记录**，
+            #    与项目纪律"失败要有载体"（sync_job / scoring_run / session_failure）不一致。
+            _record_failed_run(kind, msg)
         finally:
             with _LOCK:
                 _STATE["running"] = False
