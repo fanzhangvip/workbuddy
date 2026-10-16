@@ -22,8 +22,6 @@
     · 规则版本变化自动触发全量重评
     · 增量水位：assessment.last_msg_time 与会话 last_msg_time 比较
 """
-import json
-import math
 import time
 import traceback
 from dataclasses import replace
@@ -50,7 +48,6 @@ import task_runtime                 # noqa: E402  任务运行时（外循环，
 import writeback_repo               # noqa: E402  回写记账与水位唯一写入口（P3）
 from job_service import HEARTBEAT_STALE_MINUTES, STALE_MINUTES   # noqa: F401 再导出
 from scoring_context import (          # noqa: E402  再导出：调用点不变
-    READABLE as _READABLE, MSG_COLS as _MSG_COLS,
     build_context, compute_facts, ctx_options as _ctx_options,
     recent_rows as _recent_rows)
 
@@ -65,10 +62,6 @@ import weiban                       # noqa: E402
 #: 整轮护栏判定（G3 超时 / G4 预算）—— 本体在 `hooks`，此处 re-export 仅为兼容既有调用方
 #: （`_run`、`tests/test_loop_guard.py` 都直接引用 ``ss.guard_reason``）。
 guard_reason = hooks.guard_reason
-
-KNOWN_TAGS_ATTENDED = ("到课", "完课", "已上课", "已到课", "已完课")
-SLEEP_BETWEEN_CALLS = 0.0           # 秒；由 config 覆盖
-
 
 # ============================================================ 规则版本
 
@@ -228,6 +221,23 @@ def _customer_writes_today(target_id: str) -> int:
     return writeback_repo.writes_today(target_id)
 
 
+def _pending_writeback_score(aid: int, fallback: int) -> int:
+    """这条评估**待投递**的分数（差值），读不到就退回正分整值。
+
+    审批卡片上要显示"放行后会给客户加多少分"。同步路径入队时已经把差值**固化**
+    进 `writeback_outbox.score`（出队重试不再重算，否则水位被别的任务推进后会算出不同的数），
+    所以这里读那一行才是准的；读不到（未入队：配额/未开启 outbox）就用正分当参考值。
+    """
+    try:
+        row = db.query_one(
+            "SELECT score FROM writeback_outbox WHERE assessment_id=%s", (aid,))
+        if row and row.get("score") is not None:
+            return int(row["score"])
+    except Exception as e:                          # noqa: BLE001
+        print(f"[scoring] 读待投递分数失败（用正分代替）：{type(e).__name__}: {e}")
+    return int(fallback or 0)
+
+
 def repair_current_flags() -> dict:
     """自愈 `is_current` 的两种破损（**幂等**）。
 
@@ -236,7 +246,6 @@ def repair_current_flags() -> dict:
     且启动自愈（`main.py`）语义不变。
     """
     return assessment_repo.repair_current_flags()
-    return {"no_current_fixed": fixed, "dangling_cleared": dangling}
 
 
 class ScoringService(job_service.JobService):
@@ -683,7 +692,7 @@ class ScoringService(job_service.JobService):
     # ---------------- 内部：回写微伴 ----------------
 
     def _writeback(self, run_id, rel_key, aid, staff_id, target_id, score, mode,
-                   review_needed, policy_action=None):
+                   policy_action=None):
         """正分回写微伴（幂等：一次评估只写一次）。
 
         阶段B 起，live 模式**只同步试一次**：失败不再原地退避 3 次（最坏拖 5.6s/会话），
@@ -730,6 +739,20 @@ class ScoringService(job_service.JobService):
             # policy_confirm / policy_human 不在 hooks 的原因表里 → 这里给中文文案
             errmsg = _POLICY_WB_CN.get(
                 decision.reason, hooks.REASON_CN.get(decision.reason, decision.reason))
+            # ⚠️ 「需人工二次确认后才写入」必须有人工确认的**入口**（2026-10-16 接线）：
+            #    策略拦下的回写原来只是"跳过" —— 而 outbox 那条待办会一直挂着等确认，
+            #    却没有任何地方能确认它（`approval_request` 那时只有测试在写）。
+            #    现在把它登记进审批队列：评分中心的「回写审批」卡片能看到、能批准/驳回。
+            #    只登记、**不阻塞批次**（task_id 留空）—— 卡住的是一条客户回写，不是整轮评分。
+            if policy_denied:
+                try:
+                    task_runtime.request_writeback_approval(
+                        assessment_id=aid, relationship_key=rel_key, staff_id=staff_id,
+                        external_user_id=target_id,
+                        score=_pending_writeback_score(aid, score),
+                        reason=f"策略判定 {decision.reason}")
+                except Exception as e:              # noqa: BLE001
+                    print(f"[scoring] 登记回写审批失败（回写仍被拦）：{type(e).__name__}: {e}")
         else:  # live：单次投递，重试交给 outbox
             try:
                 # 工具调用审计（五问）：参数脱敏后落 tool_audit + JSONL（修硬伤 5）
@@ -1141,7 +1164,7 @@ class ScoringService(job_service.JobService):
 
         # 分流①：正分回写微伴
         wb = self._writeback(run_id, rel, aid, staff_id, cand["target_id"],
-                             score["positive_total"], mode, bool(neg_items),
+                             score["positive_total"], mode,
                              policy_action=pol["action"])
 
         # 分流②：负分进人工复核队列

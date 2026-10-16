@@ -78,13 +78,11 @@ def expected_columns() -> tuple:
         tables.setdefault(name, set()).update(cols)
 
     # 依次吸收 ALTER TABLE ADD COLUMN（一条 ALTER 可含多个 ADD COLUMN）
-    n_alter = 0
     for m in _ALTER_RE.finditer(sql):
         name, body = m.group(1), m.group(2)
         added = _ADD_COL_RE.findall(body)
         if added:
             tables.setdefault(name, set()).update(c.lower() for c in added)
-            n_alter += 1
 
     n_create = len(re.findall(r"CREATE\s+TABLE", sql, re.I))
     unparsed = max(0, n_create - len([t for t in tables]))

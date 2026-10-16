@@ -14,11 +14,10 @@
 #: t0 = 纯逻辑：不碰 PG / 网络 ｜ t1 = 需要本地 PostgreSQL(5433) ｜ t2 = 真实外部依赖（真模型 / 真微伴企微 / Chrome）—— 默认不跑
 TIER = "t1"
 
-import os
 import sys
 import time
 
-from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
+from _harness import FAILED, PASSED, check, delete_rows  # noqa: E402
 
 import audit                 # noqa: E402
 import db                    # noqa: E402

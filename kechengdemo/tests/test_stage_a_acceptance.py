@@ -20,10 +20,10 @@
 TIER = "t2"
 
 
-import os
 import sys
+import time
 
-from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
+from _harness import FAILED, PASSED, check, delete_rows  # noqa: E402
 
 import db                                     # noqa: E402
 import rules as rules_mod                     # noqa: E402
@@ -53,16 +53,28 @@ def find_hit_candidate():
 
     为什么必须循环：命中与否取决于模型与会话内容 —— 单次挑选可能 0 命中，
     而 0 命中的会话**无法验证证据回链**（实测踩到过一次，那会让验收假失败）。
+
+    **每个候选都打印耗时**（2026-10-16 加）：这个测试的墙钟 = 候选数 × 每次真实调用
+    的延迟，而延迟完全由模型侧决定。改造前 `run_all.py` 里记着"实测 1861s / 2909s"，
+    但按当时的跑分记录反推（每次会话恰好 1 次调用、16~30 秒/会话），6 个候选最坏也就
+    3 分钟 —— 那个数字**不可复现**，应该是当时模型侧极慢所致。留下逐候选耗时，
+    下次再出现"很慢"就能一眼看出慢在哪一步，而不是继续猜。
     """
     engine_ids = {r["rule_id"] for r in rules_mod.load_rules().get("negative_rules", [])
                   if r.get("engine") == "rule"}
     for cand in pick_candidates():
+        t0 = time.time()
         res = ss.service.score_session(cand["staff_id"], cand["session_id"])
+        dt = time.time() - t0
         if not res.get("ok"):
+            print(f"  · 候选 {cand['session_id'][:16]}… 评分未成（{dt:.1f}s）："
+                  f"{str(res.get('reason'))[:60]}")
             continue
         row = res["assessment"]
         items = [i for i in (row.get("positive_items") or []) + (row.get("negative_items") or [])
                  if i.get("rule_id") not in engine_ids]
+        print(f"  · 候选 {cand['session_id'][:16]}… {dt:.1f}s | 命中项 {len(items)} 个 | "
+              f"契约尝试 {row.get('contract_attempts')}")
         if items:
             return cand, res
         # 0 命中 → 清掉本次产物再换下一个（否则会留下「该会话已评过」的假象）

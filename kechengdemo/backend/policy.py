@@ -47,7 +47,6 @@ DEFAULT_BLOCKING = ("has_negative", "grade_flip", "weak_evidence", "polarity_vio
 
 def thresholds() -> dict:
     """当前阈值（app_setting > .env > 默认）。"""
-    import scoring_service as ss                       # 延迟导入避免循环依赖
     return {
         "auto": db.setting_float("policy_auto_min", "POLICY_AUTO_MIN", DEFAULT_AUTO_MIN),
         "confirm": db.setting_float("policy_confirm_min", "POLICY_CONFIRM_MIN",

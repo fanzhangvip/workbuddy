@@ -45,8 +45,3 @@ def require(*allowed: str):
         return security.current_principal()
 
     return _dep
-
-
-def roles_info() -> dict:
-    """角色与说明（供前端展示"我这个账号能做什么"）。"""
-    return {"roles": list(security.ROLES), "desc": dict(security.ROLE_DESC)}

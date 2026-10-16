@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """客户意向评分接口（评分中心：可观测 / 可评估）。"""
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends
 
 import config
 import db
@@ -16,10 +16,10 @@ import api_guard
 import audit
 import policy
 import task_runtime
+import writeback_repo                 # 回写待办的水位/放行/关闭（唯一写入口）
 from scoring_service import service
 
 import analyze                       # noqa: E402  提示词/契约版本常量
-import confidence                    # noqa: E402  置信度默认阈值（架构 第六章）
 import contracts                     # noqa: E402
 
 router = APIRouter(prefix="/api/scoring", tags=["scoring"])
@@ -185,12 +185,24 @@ def score_session(payload: dict = Body(default={})):
 
 @router.get("/rules")
 def rules_list(rule_version: str = ""):
+    """某个规则版本的条目（默认当前版本）。
+
+    `effective_at`（2026-10-16）：需求文档 §9.3 要求 `scoring_rule` 带"生效时间"，
+    schema 里也一直有这一列（`NOT NULL DEFAULT now()`）—— 但它**从没被读过**，
+    于是"这版规则是什么时候开始生效的"在系统里没有答案。现在把它一并返回：
+    评分中心据此显示「当前规则 vX 自 YYYY-MM-DD HH:MM 起生效」。
+    """
     rv = rule_version or ss.current_rule_version()
     rows = db.query(
         """SELECT rule_id, polarity, dimension, score, criteria, engine, status
              FROM scoring_rule WHERE rule_version=%s
             ORDER BY polarity DESC, rule_id, score DESC""", (rv,))
-    return {"rule_version": rv, "items": rows}
+    eff = db.query_one(
+        """SELECT max(effective_at) AS at, count(*) AS n
+             FROM scoring_rule WHERE rule_version=%s""", (rv,))
+    return {"rule_version": rv, "items": rows,
+            "rule_count": int((eff or {}).get("n") or 0),
+            "effective_at": (eff or {}).get("at")}
 
 
 # ---------------- 定时 / 设置 ----------------
@@ -607,12 +619,39 @@ def list_approvals(status: str = "pending", limit: int = 50):
 
 @router.post("/approvals/{request_id}", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def decide_approval(request_id: int, payload: dict = Body(default={})):
-    """审批：`{"approved": true, "note": "..."}`。通过 → 任务回 running；驳回 → cancelled。"""
+    """审批：`{"approved": true, "note": "..."}`。
+
+    通过 → 任务回 running（工具网关那类）；驳回 → cancelled。
+
+    **回写审批**（`tool_name='weiban.add_customer_score'` 且 `task_id` 为空，
+    2026-10-16 接线）：不动任务状态，而是让那条被策略拦下的客户回写**重新可投递** ——
+    批准后 `outbox._policy_hold` 不再挂起它，下一轮 drain 就投；驳回则把待办置 `dead`
+    （终态），避免它永远挂在 pending 里没人解释。
+    """
     approve = bool(payload.get("approved"))
+
+    def _do():
+        res = task_runtime.decide_approval(
+            request_id, approve=approve, note=(payload.get("note") or "").strip())
+        if res.get("ok") and not res.get("task_id") and res.get("assessment_id"):
+            # 回写审批的收尾。**只在这一类请求上做**：有 task_id 的是工具网关的
+            # 任务级审批，它的回写语义不在这里（也不该由审批端点顺手改）。
+            if approve:
+                n = writeback_repo.release_on_approve(res["assessment_id"])
+                res["released_outbox"] = n
+                res["note_text"] = (f"已批准：这条回写已放行（{n} 行），"
+                                    f"下一轮 outbox 排空（≤30 秒）投递"
+                                    f"——仍需 writeback_mode=live，否则只记账不写")
+            else:
+                n = writeback_repo.close_on_reject(
+                    res["assessment_id"], note=(payload.get("note") or ""))
+                res["closed_outbox"] = n
+                res["note_text"] = f"已驳回：该回写待办置为 dead（{n} 行），不再投递"
+        return res
+
     return idempotency.run_once(
         payload.get("request_key"), f"approval.{request_id}",
-        lambda: task_runtime.decide_approval(
-            request_id, approve=approve, note=(payload.get("note") or "").strip()))
+        _do)
 
 
 @router.get("/audit/tool", dependencies=[Depends(api_guard.require("admin"))])

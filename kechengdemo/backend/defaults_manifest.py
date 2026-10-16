@@ -114,7 +114,6 @@ def verify() -> dict:
     ⚠️ 只核对 `guard`（保护类）：**声称默认开、实测却是关的**才是危险信号
     （「以为防住了，其实没有」）。观测/优化类默认关是**设计意图**，不算不符。
     """
-    import scoring_service as ss
     items, mismatch = [], []
     for key, api, kind, default, desc in MANIFEST:
         try:

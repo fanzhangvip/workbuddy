@@ -96,6 +96,8 @@ curl -u user:pwd -X POST http://127.0.0.1:8848/api/scoring/rules/publish -H "Con
 `ok:false` **只打一行 print** —— 表现是「当天评分静默不跑」。所以：
 
 - 想让新规则生效：走 `POST /api/scoring/rules/publish`；确有理由强推时加 `force=true`（会写审计）。
+  **评分中心「治理与观测」卡里也有「发布规则 / 强制发布」按钮**（2026-10-16 补的入口），
+  不一定要 curl；发布结果会把门禁结论原样显示出来。
 - 门禁的三种结果：无基线 / 无已人工确认样本 → `decidable=false`（**放行但不代表通过**）；
   有基线且指标下降 → `blocked=true`；否则通过。看 `GET /api/scoring/rules/gate` 的 `reason`。
 - **基线**：`POST /api/eval/baseline`（存在 `app_setting.eval_baseline_run_id` → `eval_run` 行，
@@ -106,6 +108,48 @@ curl -u user:pwd -X POST http://127.0.0.1:8848/api/scoring/rules/publish -H "Con
   `GET /api/eval/alerts`（门禁回退 / 单规则误报率 / 复核积压 / 凭据与同步新鲜度）。
 - **保活状态**：`wb_keepalive` 现在把上次结果写进 `app_setting.keepalive_last`（改造前只写内存，
   重启即失）。`GET /api/sync/keepalive` 可查。
+
+## 回写审批队列（运维必读）
+
+**策略判定为 `confirm` / `human` 的客户回写不会自动写微伴**，而是进审批队列等人工签字
+（2026-10-16 接线）。这是 `policy` 那句「需人工二次确认后才写入」的兑现处 —— 此前那句
+承诺在系统里是**兑现不了的**：`outbox._policy_hold()` 会把待办挂起等人工，
+但没有任何地方能把人工结论送回来，于是它永远躺在 `pending`。
+
+- 看/批：评分中心「回写审批队列」卡片，或 `GET /api/scoring/approvals?status=pending`、
+  `POST /api/scoring/approvals/{request_id}` `{"approved":true,"note":"…"}`（operator/admin）。
+- **批准** → 放行投递（`next_attempt_at` 拉回现在，下一轮 outbox 排空 ≤30 秒投递；
+  仍要求 `writeback_mode=live`，否则只记账不写）。**驳回** → 待办置 `dead` 终态。
+- 有效期：`writeback_approval_expires_minutes`（0 = 不过期）。过期后**拒绝再签**
+  并就地标 `expired` —— 分数/会话/阈值都可能已经变了，隔夜签字没有意义。
+- 只在 `writeback_mode=live` 时才会建审批；dry_run 下**不建**（没打算写，拦它没意义）。
+
+## 无前端入口的端点（**有意的**，别再当死代码查一遍）
+
+以下端点只有 curl / 脚本入口，属于运维位；它们**已实现且有真实调用方**（脚本、启动自检、
+文档流程）。新增此类端点时请顺手加到这里：
+
+`/api/scoring/schema-check`（重建后自检）· `/api/scoring/defaults-manifest`（保护类配置自检）·
+`/api/scoring/repair-current`（`is_current` 自愈）· `/api/scoring/audit/{stats,tool,export}`（合规导出）·
+`/api/eval/alerts`（定期体检）· `/api/eval/coverage`（规则覆盖度，已同时上界面）·
+`/api/eval/run-detail`（已同时上界面）· `/api/eval/delete`、`/api/review/batch-status`（已同时上界面）。
+
+**已经补上界面的**（原来只能 curl）：回写审批、批次任务 `/scoring/tasks*`、策略/工具审计、
+规则发布、保留期清理、标签队列投递、评估集运行历史/基线/告警/覆盖度/停用/删除、单会话重评。
+
+**⚠️ 重建 app 容器会杀掉正在跑的批量。** `docker compose up -d --build app` 是**重建容器**
+（不是热更新代码），它会把 uvicorn 连同同步/评分的后台线程一起终止 —— 那条 `sync_job` /
+`scoring_run` 行会停在 `status='running'`，直到心跳超过 15 分钟被判定为僵尸失败。所以：
+
+1. 重建前先确认没有 running 批次：`SELECT count(*) FROM sync_job WHERE status='running'`
+   （`scoring_run` 同理）；
+2. 万一被中断：数据**不会丢**（水位只按已完成的会话推进，重跑幂等），但要重新触发一次；
+3. 只想让**前端**生效（后端不受影响的那种改动）：`frontend/node_modules/.bin/vite.cmd build`
+   （在 `frontend/` 下跑）产出的 `dist` 要进镜像才对外可见 —— 也就是说前端改动同样需要重建。
+
+**⚠️ 新代码要生效必须重建。** 容器里跑的是镜像里的代码（`frontend/dist` 也是打包进镜像的），
+改完仓库里的文件**不会**自动生效。历史上就踩过：重建把一个还没提交的鉴权改动带进运行环境，
+于是所有接口开始要求登录（见 `security.py` 与 `/login`）。
 
 ## Commit & Pull Request Guidelines
 

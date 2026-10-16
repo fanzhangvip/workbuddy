@@ -25,6 +25,49 @@ import ww_chatdata           # noqa: E402
 PAGE = 100                   # 微伴接口单页条数
 SESSION_TYPES = ("ext_user", "room", "other_staff")
 
+#: 每个员工最多同步多少个会话（**硬上限，不可放开**）。
+#: 为什么必须封顶：这个数字直接决定外部调用量（每个会话还要再拉消息 + 调企微解密）。
+#: 不封顶时，一次「全量 + 不选员工」就是 308 个员工 × 上千会话的全量重拉 ——
+#: 文档自己写着单员工上千会话的全量要 1 小时量级，乘上员工数就是失控。
+#: 语义（**与旧文档不同，旧文档写的 `0 = 不限` 是错的**）：
+#:   · 缺省 / 传 0 / 传负数 → 用 `DEFAULT_MAX_SESSIONS_PER_STAFF`
+#:   · 超过 `MAX_SESSIONS_PER_STAFF_CAP` → 收敛到该上限
+DEFAULT_MAX_SESSIONS_PER_STAFF = 200
+MAX_SESSIONS_PER_STAFF_CAP = 200
+
+#: 会话列表**翻页条数上限**（每员工每类型）。撞到它就停，以前是**静默截断**
+#: （实测 top3 员工恰好停在 20050 条左右 —— 更旧的会话永远看不到，也不报警）。
+#: 现在它可配（`sync_session_page_cap`），撞到时写进任务 detail 并打日志。
+SESSION_PAGE_CAP_DEFAULT = 20000
+
+#: 「会话列表已扫到哪」的**安全余量**（秒）。用员工已知的最新时间当水位提前收工，
+#: 等于假设"列表按最近活跃降序 ⇒ 整页都更旧 ⇒ 后面更旧"。这条假设对**从未入库**的
+#: 老会话有风险（它排在后面、时间又旧，会被一并跳过），所以水位先往回让 7 天 ——
+#: 代价是极少数情况下多翻一页，收益是不要把"沉默的老会话"永久漏掉。
+SCAN_STOP_MARGIN_SECONDS = 7 * 86400
+
+
+def resolve_max_sessions_per_staff(value) -> tuple:
+    """把调用方给的"每员工最多同步多少会话"收敛成生效值。返回 ``(生效值, 是否被收敛)``。
+
+    **这是唯一口径**（API / 调度器 / 脚本三条路都走它），因而也是唯一需要单测的地方
+    —— 不必启动批量就能验（`tests/test_sync_window.py`）。
+
+    规则（**旧文档写的 `0 = 不限` 是错的**，已按此修正）：
+      · 缺省 / None / 空串 / 0 / 负数 → `DEFAULT_MAX_SESSIONS_PER_STAFF`
+      · 超过 `MAX_SESSIONS_PER_STAFF_CAP` → 收敛到该上限
+      · 中间的合法值 → 原样使用
+    """
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 0:
+        return DEFAULT_MAX_SESSIONS_PER_STAFF, True        # 缺省也算"被收敛"（调用方不知道上限）
+    if n > MAX_SESSIONS_PER_STAFF_CAP:
+        return MAX_SESSIONS_PER_STAFF_CAP, True
+    return n, False
+
 
 def sync_window(watermark: int, round_start: int, overlap_seconds: int) -> tuple:
     """需求 4.3 的取数窗口 → `(start_time, end_time)`。
@@ -180,9 +223,14 @@ class SyncService(job_service.JobService):
         types = [t for t in (session_types or ["ext_user"]) if t in SESSION_TYPES]
         if not types:
             types = ["ext_user"]
+        # 每员工会话数**封顶**（规则与理由见 `resolve_max_sessions_per_staff`）。
+        # 收敛放在服务层这个唯一入口，API / 调度器 / 脚本三条路都绕不过：
+        # 改造前 API 层用 `or 200` 隐式吃掉 0，而文档写的是"0 = 不限" —— 三者互相矛盾。
+        max_sessions_per_staff, capped = resolve_max_sessions_per_staff(max_sessions_per_staff)
 
         detail = db.as_json({"staff_ids": staff_ids, "session_types": types,
                              "max_sessions_per_staff": max_sessions_per_staff,
+                             "sessions_capped": capped,
                              "lookback_hours": lookback_hours})
         job_id = db.query_one(
             """INSERT INTO sync_job (kind, status, triggered_by, detail)
@@ -194,12 +242,17 @@ class SyncService(job_service.JobService):
         self._job_id = job_id
         self._progress = {"stage": "启动中", "current_staff": None, "current_session": None,
                           "session_total": 0, "session_done": 0, "msg_total": 0,
-                          "msg_decrypted": 0, "msg_new": 0}
+                          "msg_decrypted": 0, "msg_new": 0,
+                          "staff_total": 0, "staff_done": 0}
         self._spawn(self._run,
                     (job_id, kind, staff_ids, types, max_sessions_per_staff,
                      max_msgs_per_session, ignore_cursor, lookback_hours),
                     name=f"sync-{job_id}")
-        return {"ok": True, "job_id": job_id}
+        # 把**生效值**回给调用方（修"文档说 0=不限、实现却是 200"那处矛盾）：
+        # 界面据此提示"已按上限 200 收敛"，而不是让人以为"不限"生效了。
+        return {"ok": True, "job_id": job_id,
+                "max_sessions_per_staff": max_sessions_per_staff,
+                "sessions_capped": capped}
 
     # ---------------- 内部实现 ----------------
 
@@ -278,14 +331,45 @@ class SyncService(job_service.JobService):
                 db.query("SELECT staff_id FROM staff ORDER BY name NULLS LAST")]
 
     # ---- 会话 ----
+    def _staff_scan_watermark(self, staff_id: str, session_types: list) -> int:
+        """该员工**已知会话里最新的 `last_msg_time`** —— 当作"会话列表已扫到哪"的水位。
+
+        ## 为什么需要它（2026-10-16 实测）
+
+        `stop_before` 原来只有一个来源：`sync_cursor`（**会话级**水位）。而实测
+        **308 个员工里只有 11 个有游标** —— 其余 297 个 `stop_before=0`，
+        于是每次同步都要把他们的会话列表**一路翻到 20000 条上限**
+        （单员工 20050 条会话 = 200 页请求；实测一次增量同步卡在第一遍 20 分钟只推进 127 个员工）。
+
+        但这些会话**上一轮就已经 upsert 进 `chat_session` 了** —— 库里的痕迹本身就是
+        "扫到哪儿了"的证据。用它当水位，才能把「第一次发现」和「之后每轮都全翻」区分开：
+        没有会话记录的员工仍然全量扫（该扫），扫过的员工只翻最前面一两页。
+
+        ⚠️ 假设与 `stop_before` 原有语义同类（列表按最近活跃降序 ⇒ 整页更旧 ⇒ 后面更旧），
+        所以调用方会**先减去 `SCAN_STOP_MARGIN_SECONDS`** 再当水位用。
+        """
+        row = db.query_one(
+            """SELECT max(last_msg_time) AS mx FROM chat_session
+                WHERE staff_id = %s AND session_type = ANY(%s)""",
+            (staff_id, list(session_types)))
+        return int((row or {}).get("mx") or 0)
+
     def _sync_sessions_of(self, staff_id: str, session_types: list,
-                          stop_before: int = 0) -> list:
-        """拉某员工的会话并落库。
+                          stop_before: int = 0) -> tuple:
+        """拉某员工的会话并落库。返回 ``(会话列表, stats)``。
 
         ``stop_before``：增量模式下传该员工已有的最大水位。会话列表按最近活跃
         降序返回，一旦整页都早于水位即可停止翻页，省掉大量无效请求。
+
+        ``stats`` = ``{pages, stopped_early, truncated}``：
+        · `pages` —— 实际翻了几页（这个数直接决定第一遍的耗时，必须看得见）
+        · `stopped_early` —— 靠水位提前收工的次数（证明优化真的生效）
+        · `truncated` —— 撞上 `sync_session_page_cap` 被截断（**以前是静默的**：
+          超过上限的旧会话永远看不到，用户却以为"同步成功了"）
         """
-        out = []
+        cap = db.setting_int("sync_session_page_cap", "SYNC_SESSION_PAGE_CAP",
+                             SESSION_PAGE_CAP_DEFAULT)
+        out, pages, early, truncated = [], 0, 0, False
         for stype in session_types:
             offset = 0
             while True:
@@ -295,11 +379,19 @@ class SyncService(job_service.JobService):
                 if not batch:
                     break
                 out.extend(batch)
+                pages += 1
                 offset += PAGE
-                if len(batch) < PAGE or offset >= 20000:
+                if len(batch) < PAGE:
                     break
                 if stop_before and all((s.get("last_msg_time") or 0) <= stop_before
                                        for s in batch):
+                    early += 1
+                    break
+                # ⚠️ 顺序有意：**先看水位再撞上限** —— 能靠水位收工就别去撞截断。
+                if cap and offset >= cap:
+                    truncated = True
+                    print(f"[sync] ⚠️ 员工 {staff_id[:12]}… 的会话列表在 {cap} 条处截断"
+                          f"（`sync_session_page_cap`）：更旧的会话本次拉不到")
                     break
         if out:
             db.execute_many(SQL_UPSERT_SESSION, [(
@@ -308,7 +400,7 @@ class SyncService(job_service.JobService):
                 s.get("agree_msgaudit"), s.get("last_msg_time"), s.get("last_msg_thumb"),
                 s.get("created_at"),
             ) for s in out])
-        return out
+        return out, {"pages": pages, "stopped_early": early, "truncated": truncated}
 
     # ---- 单会话消息 ----
     def _messages_of(self, staff_id, session_id, since: int, cap: int,
@@ -409,7 +501,9 @@ class SyncService(job_service.JobService):
         round_start = int(time.time())
         overlap_seconds = db.setting_int("sync_overlap_minutes", "SYNC_OVERLAP_MINUTES",
                                          15) * 60
-        round_end = round_start - 60
+        # ⚠️ 上界**不要在这里自己算**：`sync_window()` 返回 `(start, end)`，
+        #    end 就是 `round_start - 60`。此处曾留一个同名局部变量，从未被使用
+        #    （复制同一公式 = 两份真相，改一处必然忘另一处）。
         try:
             db.init_db()
 
@@ -434,16 +528,41 @@ class SyncService(job_service.JobService):
             for (st, _se), t in cur_map.items():
                 if t > staff_watermark.get(st, 0):
                     staff_watermark[st] = t
+            # 再叠一层「该员工**已扫到哪**」（修 2026-10-16 实测的慢根因）：
+            # 只有 11/308 个员工有会话级游标，其余 `stop_before=0` → 每次都把会话列表
+            # 翻到 20000 条上限（单员工 200 页）。用「库里已知会话的最新时间 − 安全余量」
+            # 当水位，就能把"首次发现"和"之后每轮都全翻"分开。
+            for _sid in targets:
+                kw = self._staff_scan_watermark(_sid, session_types)
+                if kw:
+                    kw = max(0, kw - SCAN_STOP_MARGIN_SECONDS)
+                    if kw > staff_watermark.get(_sid, 0):
+                        staff_watermark[_sid] = kw
 
             todo = []      # (staff_id, session_dict)
+            pages_total = early_total = 0
+            truncated_staff = []
             for i, sid in enumerate(targets, 1):
                 if self._should_stop(job_id):
                     break
                 self._bump(job_id, detail={"stage": f"读取会话列表 ({i}/{len(targets)})",
-                                           "current_staff": sid})
+                                           "current_staff": sid,
+                                           # 第一遍的进度（修 UX 缺陷）：这一段要遍历**全部员工**、
+                                           # 每员工一次会话列表调用（实测 ~5 秒/员工 → 308 员工
+                                           # ≈27 分钟），而 `session_total` 要到第一遍结束才写 ——
+                                           # 不把这一段单独报出来，界面上的进度条会**半小时恒为 0%**，
+                                           # 看起来像卡死（实测踩到：6.2 分钟时 stage 是 60/308、
+                                           # 进度条仍是 0/0）。
+                                           "staff_done": i, "staff_total": len(targets),
+                                           "sessions_found": len(todo)})
                 try:
-                    sess = self._sync_sessions_of(
+                    sess, sc = self._sync_sessions_of(
                         sid, session_types, stop_before=staff_watermark.get(sid, 0))
+                    pages_total += sc["pages"]
+                    early_total += sc["stopped_early"]
+                    if sc["truncated"]:
+                        truncated_staff.append(sid[:12])
+                        self._bump(job_id, detail={"truncated_count": len(truncated_staff)})
                 except Exception as e:
                     print(f"[sync] 员工 {sid} 会话列表失败：{e}")
                     continue
@@ -453,6 +572,17 @@ class SyncService(job_service.JobService):
                 todo.extend((sid, s) for s in sess)
 
             self._patch_job(job_id, session_total=len(todo))
+            # 第一遍的**可观测性**（这一遍就是同步的成本大头）：
+            #   · session_pages   —— 一共翻了几页（整页 100 条）
+            #   · scan_early_stops—— 靠水位提前收工了几次（证明"已扫到哪"生效）
+            #   · truncated_staff —— 撞上 `sync_session_page_cap` 被截断的员工（**不再是静默的**）
+            self._bump(job_id, detail={"session_pages": pages_total,
+                                       "scan_early_stops": early_total,
+                                       "truncated_staff": truncated_staff[:10],
+                                       "truncated_count": len(truncated_staff)})
+            if truncated_staff:
+                print(f"[sync] ⚠️ {len(truncated_staff)} 个员工的会话列表被截断"
+                      f"（`sync_session_page_cap`），更旧的会话本次看不到")
             self._bump(job_id, detail={"stage": "拉取消息与正文",
                                        "session_total": len(todo)})
 

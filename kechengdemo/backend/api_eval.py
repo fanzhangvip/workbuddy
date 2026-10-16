@@ -302,7 +302,7 @@ def run_status():
 def runs(limit: int = 20):
     rows = db.query("""SELECT id, kind, rule_version, prompt_version, case_total, case_ok,
                               metrics, gate_passed, gate_diffs, status, elapsed_sec,
-                              started_at, finished_at
+                              started_at, finished_at, baseline_id
                          FROM eval_run ORDER BY id DESC LIMIT %s""", (limit,))
     return {"items": rows}
 

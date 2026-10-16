@@ -217,7 +217,6 @@ def _morning_job():
     走**增量刷新**（force=False）+ 只扫指定等级 —— 符合 D3 拍板的「复核走增量刷新」。
     """
     try:
-        import scoring_service as ss
         scope = db.setting("public_class_grade_scope", "PUBLIC_CLASS_GRADE_SCOPE", "S,A")
         grades = [g.strip().upper() for g in str(scope).split(",") if g.strip()]
         if not guard_can_start("scoring"):
@@ -281,7 +280,6 @@ def start():
     _reschedule_daily()
     _reschedule_eval_regression()
     try:
-        import scoring_service as _ss
         _mo = db.setting('scoring_morning_cron', 'SCORING_MORNING_CRON', '') or '关闭'
         _rt = db.setting_int('data_retention_days', 'DATA_RETENTION_DAYS', 0)
     except Exception:
@@ -546,7 +544,6 @@ def _reschedule_morning():
         _scheduler.remove_job(MORNING_JOB_ID)
     hhmm = str(config.get("SCORING_MORNING_CRON") or "").strip()
     try:
-        import scoring_service as ss
         hhmm = str(db.setting("scoring_morning_cron", "SCORING_MORNING_CRON", "") or "").strip()
     except Exception:
         pass

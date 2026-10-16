@@ -9,10 +9,11 @@
     「弹出浏览器扫码」拿 open_sid / cookie，是**抓数据的凭据**，不是登录本系统。
     `POST /login` 这个名字是历史遗留（前端「数据源凭据」页在用），别和会话登录搞混。
 """
-from fastapi import APIRouter, Body, Request, Response
+from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import JSONResponse
 
 import auth_service
+import api_guard
 import security
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -105,9 +106,17 @@ def status():
     return auth_service.credential_status()
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def login(payload: dict = Body(default={})):
-    """弹出浏览器扫码登录并自动抓取凭据。"""
+    """弹出浏览器扫码登录并自动抓取凭据。
+
+    ⚠️ 这是**有外部副作用**的动作（在宿主机拉起浏览器、改写 `.cache/` 里的凭据文件），
+    按角色表属 operator 起步（viewer = 只读）。改造前它没有任何角色守卫 ——
+    任何已登录用户都能触发宿主机的浏览器流程。
+
+    容器部署下 `browser.available=false`，`auth_service.start_login` 会直接返回
+    "做不到"并给出宿主机命令，不会真去拉浏览器。
+    """
     return auth_service.start_login(
         staff_id=payload.get("staff_id"),
         session_id=payload.get("session_id"),
@@ -115,7 +124,7 @@ def login(payload: dict = Body(default={})):
     )
 
 
-@router.post("/verify")
+@router.post("/verify", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def verify():
-    """真调一次企微接口校验凭据是否仍然有效。"""
+    """真调一次企微接口校验凭据是否仍然有效（有外部调用，同样 operator 起步）。"""
     return auth_service.verify()

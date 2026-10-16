@@ -22,10 +22,9 @@
 TIER = "t1"
 
 
-import os
 import sys
 
-from _harness import ROOT, check, summary  # noqa: E402
+from _harness import check, summary  # noqa: E402
 
 import db                          # noqa: E402
 import grade_tag as gt             # noqa: E402

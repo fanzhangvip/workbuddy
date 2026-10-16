@@ -19,10 +19,9 @@
 TIER = "t1"
 
 
-import os
 import sys
 
-from _harness import ROOT, check, summary  # noqa: E402
+from _harness import check, summary  # noqa: E402
 
 import db                        # noqa: E402
 import settings_registry as reg  # noqa: E402
@@ -165,6 +164,13 @@ def test_writable_equivalence():
         ("eval_min_cases_per_rule", "eval_min_cases_per_rule"),
         ("eval_regression_cron", "eval_regression_cron"),
         ("eval_regression_limit", "eval_regression_limit"),
+        # 会话列表翻页上限（2026-10-16）：以前是写死的 20000 + 静默截断，
+        # 现在可配且会被记进任务详情 —— 大员工（实测 2 万会话）需要现场调。
+        ("sync_session_page_cap", "sync_session_page_cap"),
+        # 回写审批有效期（2026-10-16 接线）：策略判定 confirm/human 的客户回写会进
+        # 审批队列等人工签字；有效期过后拒绝再签（分数/会话/阈值都可能已变）。
+        # 0 = 不过期（默认），需要"隔夜就作废"的口径时在这里调。
+        ("writeback_approval_expires_minutes", "writeback_approval_expires_minutes"),
     }
     added = new - old
     check("白名单只比改造前多出**显式声明**的新增项",
@@ -182,7 +188,6 @@ def test_writable_equivalence():
 
 def test_read_equivalence():
     print("\n--- 3. 读侧与改造前默认值等价 ---")
-    import scoring_service as ss
     fn = {reg.INT: db.setting_int, reg.BOOL: db.setting_bool,
           reg.FLOAT: db.setting_float, reg.STR: db.setting}
     got = {s.api_key: reg.typed_get(s, fn[s.type]) for s in reg.SETTINGS}

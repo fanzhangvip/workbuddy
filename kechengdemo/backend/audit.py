@@ -333,15 +333,6 @@ def verify_export(day=None, path: str | None = None) -> dict:
     return {"ok": not hits, "path": str(p), "rows": rows, "hits": hits[:10]}
 
 
-def stale_exports(days: int) -> list:
-    """列出超过 ``days`` 天的导出文件（供保留期策略决定是否清理）。"""
-    if days <= 0 or not EXPORT_DIR.exists():
-        return []
-    cutoff = time.time() - int(days) * 86400
-    return [str(p) for p in sorted(EXPORT_DIR.glob("tool_audit-*.jsonl"))
-            if p.stat().st_mtime < cutoff]
-
-
 def stats() -> dict:
     """审计观测（供前端 / 排障）。"""
     row = db.query_one(
@@ -377,7 +368,6 @@ _TIER_KEYS = {
 
 def tier_days(tier: str) -> int:
     """读某档保留天数（app_setting > .env > 默认）。0 = 不清理。"""
-    import scoring_service as ss                       # 延迟导入避免循环依赖
     key, env = _TIER_KEYS[tier]
     return db.setting_int(key, env, _TIER_DEFAULTS[tier])
 

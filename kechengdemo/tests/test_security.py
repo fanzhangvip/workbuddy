@@ -26,7 +26,7 @@ import base64
 import os
 import sys
 
-from _harness import ROOT, check, summary  # noqa: E402
+from _harness import check, summary  # noqa: E402
 
 import security                    # noqa: E402
 

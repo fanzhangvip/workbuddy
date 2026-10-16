@@ -27,13 +27,12 @@ TIER = "t1"
 
 import sys
 
-from _harness import ROOT, check, summary  # noqa: E402
+from _harness import check, summary  # noqa: E402
 
 import audit                # noqa: E402
 import db                   # noqa: E402
 import eval_case_repo as repo   # noqa: E402
 import eval_runner          # noqa: E402
-import rules as rules_mod   # noqa: E402
 
 KIND = "__guard_test__"
 ITEM = {"rule_id": "positive_cooperative", "score": 1, "polarity": "positive",

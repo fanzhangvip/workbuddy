@@ -94,8 +94,24 @@ export const api = {
   evalMetaLoop: () => http.get('/eval/meta-loop').then(r => r.data),
   // AI 预标注：把 AI 当时判定填成草稿（人工只复核）；/run 是同步跑分
   evalPrefill: (payload) => http.post('/eval/prefill', payload).then(r => r.data),
-  evalRunNow: (payload) => http.post('/eval/run', payload).then(r => r.data),
   evalBackflow: (payload) => http.post('/eval/backflow', payload).then(r => r.data),
+  // 回写审批（策略判定 confirm/human 的客户回写等人工签字）
+  scoringApprovals: (status = 'pending', limit = 50) =>
+    http.get('/scoring/approvals', { params: { status, limit } }).then(r => r.data),
+  scoringApprovalDecide: (request_id, payload = {}) =>
+    http.post(`/scoring/approvals/${request_id}`, payload).then(r => r.data),
+  // 批次任务（外循环 task/task_step：看走到哪、取消、从检查点续跑）
+  scoringTasks: (params) => http.get('/scoring/tasks', { params }).then(r => r.data),
+  scoringTaskStats: (days = 30) => http.get('/scoring/tasks/stats', { params: { days } }).then(r => r.data),
+  scoringTaskDetail: (task_id, steps = 50) =>
+    http.get(`/scoring/tasks/${task_id}`, { params: { steps } }).then(r => r.data),
+  scoringTaskCancel: (task_id, payload = {}) =>
+    http.post(`/scoring/tasks/${task_id}/cancel`, payload).then(r => r.data),
+  scoringTaskResume: (task_id) => http.post(`/scoring/tasks/${task_id}/resume`).then(r => r.data),
+  // 审计留痕（策略分布 / 工具调用五问）
+  scoringPolicyStats: (days = 30) => http.get('/scoring/policy/stats', { params: { days } }).then(r => r.data),
+  scoringAuditStats: (days = 30) => http.get('/scoring/audit/stats', { params: { days } }).then(r => r.data),
+  scoringAuditTool: (params) => http.get('/scoring/audit/tool', { params }).then(r => r.data),
 
   // ---------------- 负分人工复核 ----------------
   reviewStats: () => http.get('/review/stats').then(r => r.data),
@@ -105,6 +121,8 @@ export const api = {
   reviewOptions: () => http.get('/review/options').then(r => r.data),
   reviewSubmit: (payload) => http.post('/review/submit', payload).then(r => r.data),
   reviewSetStatus: (payload) => http.post('/review/status', payload).then(r => r.data),
+  // 批量改状态（例如一次性把同一批明显误判的负分标成「已忽略」）
+  reviewBatchStatus: (payload) => http.post('/review/batch-status', payload).then(r => r.data),
   reviewAudit: (limit = 30) => http.get('/review/audit', { params: { limit } }).then(r => r.data),
 
   // ---------------- 评估集（回答"判得准不准"）----------------
@@ -121,23 +139,19 @@ export const api = {
   evalStart: (payload = {}) => http.post('/eval/start', payload).then(r => r.data),
   evalStatus: () => http.get('/eval/status').then(r => r.data),
   evalRuns: (limit = 20) => http.get('/eval/runs', { params: { limit } }).then(r => r.data),
+  evalRunDetail: (run_id) => http.get('/eval/run-detail', { params: { run_id } }).then(r => r.data),
   evalBaseline: () => http.get('/eval/baseline').then(r => r.data),
   evalSetBaseline: (payload = {}) => http.post('/eval/baseline', payload).then(r => r.data),
+  // 规则选项（判对/判错时的 rule_id 与档位来源）—— 原来这里是裸 fetch，且走的是
+  // 后端同一个端点：绕过 api.js 会让"统一加超时/统一加 401 处理"漏掉这一处。
+  evalOptions: () => http.get('/eval/options').then(r => r.data),
+  // 覆盖度（哪些规则一条样本都没有）/ 告警聚合（门禁回退、复核积压、凭据新鲜度）
+  evalCoverage: () => http.get('/eval/coverage').then(r => r.data),
+  evalAlerts: () => http.get('/eval/alerts').then(r => r.data),
+  evalDelete: (payload) => http.post('/eval/delete', payload).then(r => r.data),
   evalGate: () => http.get('/eval/gate').then(r => r.data),
   evalExportUrl: (kind = '') => `/api/eval/export?kind=${encodeURIComponent(kind)}`,
 }
-
-/**
- * 把「命中项的证据行数组」渲染成气泡。
- *
- * 证据行是后端按 `labels[#编号]` 回填的**整行文本**（`#012 [时间] 角色: 内容`），
- * 所以直接显示会有两个毛病：① 编号/时间前缀对人不友好；② 正文里的换行会被折叠成一段。
- * 复用 parseConversation 一次解决：去前缀 + 左右分栏 + 多行保留。
- */
-export function evidenceBubbles(evidence) {
-  return parseConversation((evidence || []).join('\n'))
-}
-
 
 // ---------------- 展示用工具 ----------------
 
@@ -298,6 +312,21 @@ export function fmtTime(ts, withSeconds = false) {
   const p = (n) => String(n).padStart(2, '0')
   const base = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
   return withSeconds ? `${base}:${p(d.getSeconds())}` : base
+}
+
+/**
+ * 后端返回的 `datetime` 是**字符串**（`"2026-10-16 02:17:03.653598+00:00"`），
+ * 而 `fmtTime` / `fmtRelative` 吃的是**秒级数字**时间戳 —— 直接把字符串喂进去，
+ * `ts * 1000` 得到 `NaN`，页面会显示 `NaN-NaN-NaN NaN:NaN`（报错都不报，最阴的一类）。
+ *
+ * 所以：**数字原样返回，字符串先 `Date.parse` 再除以 1000，解析不了返回 null**。
+ * 判断收敛在这里一处 —— 各页面不必再各写一遍 `fmtTime(Date.parse(x) / 1000)`。
+ */
+export function toEpoch(v) {
+  if (v === null || v === undefined || v === '') return null
+  if (typeof v === 'number') return v
+  const t = Date.parse(v)
+  return Number.isNaN(t) ? null : t / 1000
 }
 
 export function fmtClock(ts) {

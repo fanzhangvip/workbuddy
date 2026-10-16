@@ -96,19 +96,6 @@ def messages_to_text(msgs: list, plain: dict = None) -> str:
     return ctx_preprocess.build_llm_context(rows)["text"]
 
 
-def fetch_conversation(staff_id: str, session_id: str, max_messages: int = 100) -> str:
-    """取真实会话正文（元数据来自微伴 OpenAPI，正文来自企微接口）。"""
-    import ww_chatdata
-
-    res = weiban.list_messages(staff_id, session_id, limit=min(max_messages, 100))
-    msgs = res.get("message_list", [])
-    if not msgs:
-        return ""
-    plain = ww_chatdata.WecomChatData(verbose=False).decrypt(msgs)
-    msgs = sorted(msgs, key=lambda m: m.get("time") or 0)
-    return messages_to_text(msgs, plain)
-
-
 def _extract_text(m: dict) -> str:
     """从 content 中提取可读文本（不同消息类型结构不同）。"""
     c = m.get("content")
@@ -117,17 +104,6 @@ def _extract_text(m: dict) -> str:
     if isinstance(c, str):
         return c
     return ""
-
-
-def sample_to_text(messages: list) -> str:
-    """内置样例同样走预处理层，保证 --sample 的输出与真实评分链路一致。"""
-    rows = [{
-        "message_id": f"sample-{i:03d}",
-        "direction": "send" if m.get("role") == "销售" else "recv",
-        "msg_time": 0,
-        "content": m.get("text"),
-    } for i, m in enumerate(messages or [], 1)]
-    return ctx_preprocess.build_llm_context(rows)["text"]
 
 
 #: ── 信任边界（ADR-008）────────────────────────────────────────────────

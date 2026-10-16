@@ -7,7 +7,10 @@
 import sys
 import time
 
-from _harness import ROOT  # noqa: E402
+# ⚠️ 这行的作用是**导入即生效的副作用**：`_harness` 在导入时把仓库根与 `backend/`
+#    注入 `sys.path`、并把 stdout/stderr 统一成 UTF-8。名字一个都用不到，
+#    但**不能删**（删了之后 `import scoring_service` 之类会直接 ImportError）。
+import _harness  # noqa: F401,E402
 
 import db                       # noqa: E402
 import scoring_service as ss    # noqa: E402

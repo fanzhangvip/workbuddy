@@ -14,11 +14,10 @@
 TIER = "t1"
 
 
-import os
 import re
 import sys
 
-from _harness import FAILED, PASSED, ROOT, check, delete_rows, purge_run  # noqa: E402
+from _harness import FAILED, PASSED, check, delete_rows, purge_run  # noqa: E402
 
 import analyze                # noqa: E402
 import db                     # noqa: E402
@@ -26,7 +25,6 @@ import graph_session          # noqa: E402
 import llm                    # noqa: E402
 import rules as rules_mod     # noqa: E402
 import scoring_service as ss  # noqa: E402
-import trace                  # noqa: E402
 
 RUN_ID = 994000001
 _HEX16 = re.compile(r"^[0-9a-f]{16}$")

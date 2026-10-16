@@ -33,9 +33,8 @@ TIER = "t1"
 
 import sys
 
-from _harness import ROOT, check, summary  # noqa: E402
+from _harness import check, summary  # noqa: E402
 
-import audit            # noqa: E402
 import config           # noqa: E402
 import db               # noqa: E402
 import eval_runner      # noqa: E402

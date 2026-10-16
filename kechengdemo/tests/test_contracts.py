@@ -9,10 +9,9 @@ TIER = "t0"
 
 
 import copy
-import os
 import sys
 
-from _harness import FAILED, PASSED, ROOT, check  # noqa: E402
+from _harness import FAILED, PASSED, check  # noqa: E402
 
 from pydantic import ValidationError          # noqa: E402
 

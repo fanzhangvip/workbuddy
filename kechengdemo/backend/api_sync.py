@@ -10,24 +10,33 @@ from sync_service import service
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
 
-@router.post("/start")
+@router.post("/start", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def start(payload: dict = Body(default={})):
     """启动同步任务。
 
     kind: full（忽略水位全量）/ incremental（按水位增量，默认）
+
+    ⚠️ 这个接口会发起大量外部调用（微伴会话/消息 + 企微解密），属于
+    **operator 起步**的动作（角色定义见 `/api/auth/me`：viewer = 只读）。
+    改造前它没有任何角色守卫 —— 一个只读账号就能启动全量同步。
+
+    `max_sessions_per_staff`：每员工最多同步多少会话。**硬上限 200**
+    （缺省/0/负数 → 200，超过 → 收敛到 200），收敛在 `sync_service.start()` 里做，
+    返回值会带 `sessions_capped` 说明是否被收敛。
     """
     return service.start(
         kind=payload.get("kind") or "incremental",
         staff_ids=payload.get("staff_ids") or None,
         session_types=payload.get("session_types") or ["ext_user"],
-        max_sessions_per_staff=int(payload.get("max_sessions_per_staff") or 200),
+        # 原样透传：封顶口径由服务层统一负责（唯一入口，API/调度器/脚本都绕不过）
+        max_sessions_per_staff=payload.get("max_sessions_per_staff"),
         max_msgs_per_session=int(payload.get("max_msgs_per_session") or 0),
         triggered_by="manual",
         ignore_cursor=bool(payload.get("ignore_cursor")) or payload.get("kind") == "full",
     )
 
 
-@router.post("/stop")
+@router.post("/stop", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def stop():
     return service.stop()
 
@@ -52,7 +61,7 @@ def get_schedule():
     return scheduler.schedule_info()
 
 
-@router.post("/schedule")
+@router.post("/schedule", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def set_schedule(payload: dict = Body(default={})):
     """设置定时同步间隔（分钟，0=关闭）。
 
@@ -125,7 +134,7 @@ def keepalive_status():
     return wb_keepalive.status()
 
 
-@router.post("/keepalive")
+@router.post("/keepalive", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def keepalive_run(payload: dict = Body(default={})):
     """手动触发一次凭据保活（会打开/刷新后台页面）。"""
     import wb_keepalive

@@ -17,16 +17,14 @@
 TIER = "t1"
 
 
-import os
 import sys
 import time
 
-from _harness import (FAILED, PASSED, ROOT, check, delete_rows,  # noqa: E402
+from _harness import (FAILED, PASSED, check, delete_rows,  # noqa: E402
                       pick_session_for_test, purge_run)
 
 import analyze                # noqa: E402
 import db                     # noqa: E402
-import rules as rules_mod     # noqa: E402
 import scoring_service as ss  # noqa: E402
 
 N = 4

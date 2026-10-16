@@ -26,7 +26,7 @@ import os
 import subprocess
 import sys
 
-from _harness import (FAILED, PASSED, ROOT, check, delete_rows,  # noqa: E402
+from _harness import (FAILED, PASSED, check, delete_rows,  # noqa: E402
                       pick_session_for_test)
 
 import analyze                # noqa: E402

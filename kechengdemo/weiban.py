@@ -10,8 +10,6 @@
 """
 import json
 import time
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 import config
@@ -317,16 +315,6 @@ def add_customer_tag(staff_id: str, external_user_id: str = "", unionid: str = "
                             external_user_id, unionid, tag_group, tag_name)
 
 
-def remove_customer_tag(staff_id: str, external_user_id: str = "", unionid: str = "",
-                        tag_group: str = "", tag_name: str = "") -> dict:
-    """删除客户的企业标签（`/open-api/tag/remove`）。
-
-    ⚠️ 只影响**该客户**，不会从所有客户身上删除这个标签。
-    """
-    return _customer_tag_op("/open-api/tag/remove", "remove_customer_tag", staff_id,
-                            external_user_id, unionid, tag_group, tag_name)
-
-
 def batch_update_customer_tags(staff_id: str, external_user_id: str,
                                add_tag_id_list: list = None,
                                remove_tag_id_list: list = None) -> dict:
@@ -379,15 +367,6 @@ def list_sessions(staff_id: str, session_type: str = None,
     return _get("/open-api/chat/session/list", "获取会话列表", **extra)
 
 
-def iter_all_sessions(staff_id: str, session_type: str = "ext_user", page_size: int = 100):
-    """迭代某员工全部会话（自动翻页）。"""
-    for s in _iter_paged(
-            lambda limit, offset: list_sessions(staff_id, session_type,
-                                                limit=limit, offset=offset),
-            "session_list", page_size):
-        yield s
-
-
 def list_messages(staff_id: str, session_id: str, limit: int = 100, offset: int = 0,
                   start_time: int = None, end_time: int = None) -> dict:
     """获取指定会话的消息（v2，按消息时间逆序）。"""
@@ -398,17 +377,6 @@ def list_messages(staff_id: str, session_id: str, limit: int = 100, offset: int 
     if end_time is not None:
         extra["end_time"] = end_time
     return _get("/open-api/chat/message/list/v2", "获取会话消息", **extra)
-
-
-def iter_all_messages(staff_id: str, session_id: str, page_size: int = 100,
-                      start_time: int = None, end_time: int = None):
-    """迭代单个会话的全部消息（自动翻页，按消息时间逆序）。"""
-    for m in _iter_paged(
-            lambda limit, offset: list_messages(staff_id, session_id, limit=limit,
-                                                offset=offset, start_time=start_time,
-                                                end_time=end_time),
-            "message_list", page_size):
-        yield m
 
 
 # ---------------- CLI 自测入口 ----------------

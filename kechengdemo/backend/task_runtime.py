@@ -60,11 +60,6 @@ class TransitionError(Exception):
     """非法状态迁移（如终态迁出、waiting_approval 被自动执行）。"""
 
 
-def _now():
-    return db.query_one("SELECT now() AS t")["t"]
-
-
-
 def can_transition(frm: str, to: str) -> bool:
     """纯函数：``frm`` 能否迁到 ``to``。**终态不可迁出**（INV-5）。"""
     return to in ALLOWED.get(frm or "", set())
@@ -324,29 +319,81 @@ def resume(src_task_id: int, *, actor_id: str | None = None,
 # ---------------------------------------------------------------- 审批门控
 
 def request_approval(task_id: int, tool_name: str, *, step_id=None, params=None,
-                     reason: str = None, expires_minutes: int = 0) -> dict:
+                     reason: str = None, expires_minutes: int = 0,
+                     block_task: bool = True, assessment_id: int = None) -> dict:
     """为高风险操作建审批请求，并把任务**物理阻塞**在 `waiting_approval`。
 
     文章 H 的关键点：把「先计划后执行」从软约束（写在提示词里希望模型遵守）
     变成**硬约束**（代码层面不让它继续往下走）。所以这里不只是插一条记录，
     还要**真的把任务状态推走** —— 之后的调度器看到一个不在 running 的任务，
     自然不会继续推进它。
+
+    ``block_task=False``（2026-10-16 新增）：**只登记审批、不推任务状态**。
+    给「一条客户回写需要人工确认」这种场景用 —— 它卡住的是**那一条回写**
+    （`outbox._policy_hold` 会一直挂着它），而不是整个评分批次；把批次推到
+    `waiting_approval` 等于因为一个客户而停掉整轮评分。``assessment_id`` 记录
+    "审批的是哪一条评估"，放行时才找得回要投递的分数。
     """
     who = security.actor()
     row = db.query_one(
         """INSERT INTO approval_request
              (task_id, step_id, tool_name, params_redacted, requested_by,
-              expires_at)
+              expires_at, assessment_id)
            VALUES (%s,%s,%s,%s::jsonb,%s,
-                   CASE WHEN %s > 0 THEN now() + make_interval(mins => %s) END)
+                   CASE WHEN %s > 0 THEN now() + make_interval(mins => %s) END,
+                   %s)
            RETURNING request_id""",
         (task_id, step_id, tool_name,
          # ⚠️ 必须走同一套脱敏：审批参数里同样会带 token / 密钥
          json.dumps(audit.redact(params or {}), ensure_ascii=False, default=str),
-         who, int(expires_minutes or 0), int(expires_minutes or 0)))
-    transition(task_id, "waiting_approval", reason=f"需审批：{tool_name}｜{reason or ''}")
+         who, int(expires_minutes or 0), int(expires_minutes or 0), assessment_id))
+    if block_task:
+        transition(task_id, "waiting_approval",
+                   reason=f"需审批：{tool_name}｜{reason or ''}")
     return {"ok": True, "request_id": row["request_id"],
-            "task_id": task_id, "blocked": True}
+            "task_id": task_id, "blocked": bool(block_task)}
+
+
+def request_writeback_approval(*, assessment_id: int, relationship_key: str,
+                               staff_id: str, external_user_id: str, score: int,
+                               reason: str = "") -> dict:
+    """「这条回写要人工点头」的审批请求（**不阻塞批次**），**幂等**。
+
+    为什么需要它：`outbox._policy_hold()` 早就把 `policy_action != auto` 的回写挂在
+    `pending` 上等人工 —— 但**从来没有任何机制能放行它**（也没人知道要去放行）：
+    `approval_request` 只有测试在写，审批队列永远是空的。于是「需人工二次确认后才写入」
+    这句承诺（`scoring_service._POLICY_WB_CN`）在代码里是**兑现不了的**。
+
+    幂等口径：同一 `assessment_id` 只要已有 `pending` / `approved` 的请求就直接复用，
+    不重复插（同一客户被反复评估时会走到这里多次）。已被**驳回**的不复用 ——
+    那是"人工明确说过不写"，再次评估要重新走一遍确认。
+    """
+    if not assessment_id:
+        return {"ok": False, "reason": "缺少 assessment_id"}
+    try:
+        old = db.query_one(
+            """SELECT request_id, status FROM approval_request
+                WHERE assessment_id = %s AND status IN ('pending','approved')
+                ORDER BY request_id DESC LIMIT 1""", (assessment_id,))
+        if old:
+            return {"ok": True, "request_id": old["request_id"],
+                    "status": old["status"], "reused": True, "blocked": False}
+    except Exception as e:                      # noqa: BLE001
+        print(f"[approval] 查重失败（照常新建）：{type(e).__name__}: {e}")
+    expires = db.setting_int("writeback_approval_expires_minutes",
+                             "WRITEBACK_APPROVAL_EXPIRES_MINUTES", 0)
+    res = request_approval(
+        None, "weiban.add_customer_score",
+        params={"assessment_id": assessment_id, "relationship_key": relationship_key,
+                "staff_id": staff_id, "external_user_id": external_user_id,
+                "score": int(score)},
+        reason=reason, block_task=False, assessment_id=assessment_id,
+        expires_minutes=expires)
+    audit.record_action("system", "writeback_approval_requested",
+                        f"assessment:{assessment_id}",
+                        {"request_id": res.get("request_id"), "reason": reason,
+                         "score": int(score)})
+    return res
 
 
 def decide_approval(request_id: int, *, approve: bool, note: str = "") -> dict:
@@ -354,6 +401,16 @@ def decide_approval(request_id: int, *, approve: bool, note: str = "") -> dict:
 
     ⚠️ 只认 `pending` 的请求；**已决的请求不会被二次处理**
     （文章 H：审批响应必须精确匹配，否则会误批准另一个待处理请求）。
+
+    两类请求走同一张表，但**收尾方式不同**（2026-10-16）：
+    · 有 `task_id` 的（工具网关）→ 推进任务状态机（原语义，不变）；
+    · 没有 `task_id` 的（回写审批）→ 不动任何任务状态，只返回结论；真正的放行
+      由调用方按 `assessment_id` 落 `outbox`（见 `api_scoring.decide_approval`）。
+      这类请求卡住的是**一条客户回写**，不该去推一个可能早已结束的批次任务。
+
+    `expires_at` 过期后拒绝处理：审批的是"当时那一次判定"，太久之后的签字没有意义
+    （分数、会话、策略阈值都可能已经变了）。过期的行会被就地标成 `expired`，
+    不再挂在"待审批"里误导人。
     """
     who = security.actor()
     req = db.query_one("SELECT * FROM approval_request WHERE request_id=%s",
@@ -362,19 +419,29 @@ def decide_approval(request_id: int, *, approve: bool, note: str = "") -> dict:
         return {"ok": False, "reason": f"审批请求 {request_id} 不存在"}
     if req["status"] != "pending":
         return {"ok": False, "reason": f"该请求已是 {req['status']}，不再处理"}
+    exp = req.get("expires_at")
+    if exp and exp.timestamp() < time.time():
+        db.execute("""UPDATE approval_request SET status='expired'
+                       WHERE request_id=%s AND status='pending'""", (request_id,))
+        return {"ok": False, "reason": f"审批请求 {request_id} 已过期（{exp:%Y-%m-%d %H:%M}），"
+                                       f"已标记为 expired；如仍需写入请重新评估该客户"}
     db.execute(
         """UPDATE approval_request SET status=%s, decided_by=%s, decided_at=now(),
                note=%s WHERE request_id=%s AND status='pending'""",
         ("approved" if approve else "rejected", who, note or None, request_id))
-    try:
-        transition(req["task_id"], "running" if approve else "cancelled",
-                   reason=f"审批 {'通过' if approve else '驳回'}：{note or ''}")
-    except TransitionError as e:
-        return {"ok": False, "reason": str(e)}
+    if req.get("task_id"):
+        try:
+            transition(req["task_id"], "running" if approve else "cancelled",
+                       reason=f"审批 {'通过' if approve else '驳回'}：{note or ''}")
+        except TransitionError as e:
+            return {"ok": False, "reason": str(e)}
     audit.record_action(who, "approval_decide", f"approval:{request_id}",
-           {"approve": bool(approve), "task_id": req["task_id"], "note": note})
+           {"approve": bool(approve), "task_id": req.get("task_id"),
+            "tool_name": req.get("tool_name"),
+            "assessment_id": req.get("assessment_id"), "note": note})
     return {"ok": True, "request_id": request_id, "approved": bool(approve),
-            "task_id": req["task_id"]}
+            "task_id": req.get("task_id"), "tool_name": req.get("tool_name"),
+            "assessment_id": req.get("assessment_id")}
 
 
 def is_blocked(task_id: int) -> bool:
@@ -400,11 +467,5 @@ def stats(days: int = 30) -> dict:
             "steps": steps,
             "heartbeat_timeout_seconds": HEARTBEAT_TIMEOUT,
             "allowed_transitions": {k: sorted(v) for k, v in ALLOWED.items()}}
-    return snap
 
 
-def set_progress(task_id: int, **fields) -> None:
-    """覆盖式写进度字段（如 ``stage`` / ``current_target``）。"""
-    snap = _progress_snapshot(task_id)
-    snap.update(fields)
-    _write_progress(task_id, snap)

@@ -28,7 +28,6 @@
 本 worker 重试的是「**评分本身**」。两者互不替代：
 评分失败时根本没有 assessment，也就无从回写。
 """
-import time
 
 import audit
 import db
@@ -41,7 +40,6 @@ BACKOFF_BASE_MINUTES = 15
 
 
 def _max_attempts() -> int:
-    import scoring_service as ss
     return max(1, db.setting_int("session_max_failures", "SESSION_MAX_FAILURES", 3))
 
 

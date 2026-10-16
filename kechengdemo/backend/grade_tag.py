@@ -33,7 +33,6 @@
 **旧任务后到会把标签写回旧等级**。故 drain 时：
 **同一 `relationship_key` 只处理 `outbox_id` 最大的那条**，更早的标 `superseded`。
 """
-import time
 
 import db
 import http_client                  # 全项目唯一的退避实现（Reuse Before Rewrite）
@@ -49,7 +48,6 @@ PROBE_KEY = "grade_tag_probe_customer"
 
 BACKOFF_BASE = 30
 BACKOFF_CAP = 3600
-DEFAULT_MAX_ATTEMPTS = 8
 STUCK_SECONDS = 600
 OFF_DEFER_SECONDS = 600
 
@@ -57,14 +55,12 @@ OFF_DEFER_SECONDS = 600
 # ============================================================ 配置
 
 def tag_group() -> str:
-    import scoring_service as ss
     return (db.setting("grade_tag_group", "GRADE_TAG_GROUP", DEFAULT_TAG_GROUP)
             or DEFAULT_TAG_GROUP).strip()
 
 
 def mode() -> str:
     """实时读开关（`off` / `dry_run` / `live`）。**与分数回写开关无关。**"""
-    import scoring_service as ss
     m = str(db.setting("grade_tag_mode", "GRADE_TAG_MODE", "off") or "off").strip().lower()
     return m if m in ("off", "dry_run", "live") else "off"
 

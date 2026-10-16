@@ -23,7 +23,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import analyze
-import audit
 import db
 import eval_case_repo
 import rules as rules_mod
@@ -905,14 +904,18 @@ def run_sync(kind: str = "", limit: int = 0, on_progress=None, check_drift: bool
     row = db.query_one(
         """INSERT INTO eval_run (kind, rule_version, prompt_version, case_total, case_ok,
                                  metrics, gate_passed, gate_diffs, status, elapsed_sec, detail,
-                                 finished_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'success',%s,%s,now()) RETURNING id""",
+                                 finished_at, baseline_id)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'success',%s,%s,now(),%s) RETURNING id""",
         (kind or None, rules.get("rule_version"), analyze.PROMPT_VERSION,
          len(cases), m["case_valid"], db.as_json(m),
          passed if base.get("metrics") else None, db.as_json(diffs) if diffs else None,
          elapsed, db.as_json({"cases": details, "drift": drift, "tol": round(tol, 4),
                               "baseline_at": base.get("set_at"),
-                              "baseline_run_id": base.get("run_id")})))
+                              "baseline_run_id": base.get("run_id")}),
+         # `baseline_id`（修 2026-10-16）：这一列**从建表起就没人写过**，
+         # 于是"这轮跑分是拿哪条基线比出来的"只能去 `detail` 这个 JSON 里翻。
+         # 现在按列填上（同一份事实只保留一处真相；detail 里的仍留作历史兼容）。
+         base.get("run_id")))
     # `rule_version` / `prompt_version` / `finished_at` / `case_ids` 是**门禁验新鲜度**
     # 必需的字段（修 P5）：没有它们，`gate_decision` 无法判断进程内缓存的跑分结果
     # 是不是"当前这版规则 + 当前提示词 + 30 分钟内"跑的。
@@ -920,12 +923,34 @@ def run_sync(kind: str = "", limit: int = 0, on_progress=None, check_drift: bool
            "drift": drift, "metrics": m, "gate_passed": passed if base.get("metrics") else None,
            "gate_diffs": diffs, "has_baseline": bool(base.get("metrics")), "tol": round(tol, 4),
            "elapsed_sec": elapsed,
+           "baseline_id": base.get("run_id"),
            "rule_version": rules.get("rule_version"), "prompt_version": analyze.PROMPT_VERSION,
            "case_ids": [c["case_id"] for c in cases],
            "finished_at": int(time.time())}
     with _LOCK:
         _STATE.update({"result": out, "elapsed_sec": elapsed})
     return out
+
+
+def _no_cases_reason(kind: str, include_prefilled: bool) -> str:
+    """「一条可评样本都没有」时说清**为什么**、以及**该做什么**（修 2026-10-16 的实测误判）。
+
+    背景：评估集默认排除 AI 草稿（`prefilled`）—— 这是对的，草稿计入门禁等于
+    「AI 批改自己」。但库里 30 条全是草稿时，「跑评估」会**跑 0 条、瞬间结束**、
+    `eval_run` 落一条 `case_total=0`，界面上看起来"什么都没发生"
+    （实测就有人据此判断"评测没生效"，其实评测集是好的，只是没有可用样本）。
+    """
+    tot = (db.query_one("SELECT count(*) AS n FROM eval_case WHERE active") or {}).get("n") or 0
+    draft = (db.query_one("SELECT count(*) AS n FROM eval_case "
+                          "WHERE active AND prefilled") or {}).get("n") or 0
+    if draft and not include_prefilled:
+        return (f"当前 0 条可评样本：{tot} 条样本里有 {draft} 条仍是**AI 草稿**"
+                f"（草稿不计入指标，否则就是「AI 批改自己」）。"
+                f"请在评估页逐条点「✓ 判对」或「保存修改」把它们转成金标准后再跑；"
+                f"只想看方向性对照的话，可以显式带 `include_prefilled=true`"
+                f"（**结果不能当门禁依据**）。")
+    return (f"当前 0 条可评样本（kind={kind or '全部'}）：先「抽样」建样本并完成标注，"
+            f"或检查样本是否都被停用 / 被冻结。")
 
 
 def start(kind: str = "", limit: int = 0, include_prefilled: bool = False) -> dict:
@@ -939,6 +964,13 @@ def start(kind: str = "", limit: int = 0, include_prefilled: bool = False) -> di
     with _LOCK:
         if _STATE["running"]:
             return {"ok": False, "reason": "已有评估在跑，请等待完成"}
+        # ⚠️ 0 条可评样本就**不启动**（修 2026-10-16）：跑 0 条会瞬间结束、
+        #    只落一条 case_total=0 的记录，用户看到的是"点了没反应"。
+        #    这道检查必须在**拿到锁之后**（修 2026-10-16 复审）：放在锁外时，
+        #    "已有评估在跑" 与 "0 条样本" 会竞争，用户可能得到后者 —— 而那会把人
+        #    引去补样本，真正该做的是等这一轮跑完。
+        if not _cases(kind, limit, include_prefilled=include_prefilled):
+            return {"ok": False, "reason": _no_cases_reason(kind, include_prefilled)}
         _STATE["include_prefilled"] = bool(include_prefilled)
         _STATE.update({"running": True, "total": 0, "done": 0, "current": None,
                        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),

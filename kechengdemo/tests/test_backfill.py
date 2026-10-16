@@ -23,7 +23,7 @@ import os
 import sys
 import tempfile
 
-from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
+from _harness import FAILED, PASSED, check, delete_rows  # noqa: E402
 
 import backfill as bf            # noqa: E402
 import db                        # noqa: E402

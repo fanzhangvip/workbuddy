@@ -15,10 +15,9 @@
 TIER = "t1"
 
 
-import os
 import sys
 
-from _harness import FAILED, PASSED, ROOT, check, delete_rows, purge_run  # noqa: E402
+from _harness import FAILED, PASSED, check, delete_rows, purge_run  # noqa: E402
 
 import analyze                # noqa: E402
 import contracts              # noqa: E402

@@ -2,6 +2,11 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, fmtTime, fmtRelative } from '../api'
+import { useLoadFailures } from '../composables/loadFailures'
+import PartialLoadBanner from '../components/PartialLoadBanner.vue'
+
+// 局部加载失败统一收口（见 composables/loadFailures.js）：总览的统计/搜索失败不再静默
+const { failures, note: noteFail, clear: clearFail } = useLoadFailures()
 
 const router = useRouter()
 const stats = ref({})
@@ -21,7 +26,8 @@ async function load() {
     stats.value = s
     recent.value = r.items || []
     topStaffs.value = st.items || []
-  } catch (e) { /* 后端未就绪 */ }
+    clearFail('load')
+  } catch (e) { noteFail('load', '总览数据', e) }
 }
 
 async function doSearch() {
@@ -30,7 +36,12 @@ async function doSearch() {
   try {
     const r = await api.search({ q: q.value.trim(), limit: 40 })
     results.value = r.items || []
-  } catch (e) { results.value = [] }
+    clearFail('search')
+  } catch (e) {
+    // 静默置空会把"搜索失败"伪装成"没有匹配结果"
+    results.value = []
+    noteFail('search', '全文搜索', e)
+  }
   searching.value = false
 }
 
@@ -48,6 +59,8 @@ onMounted(load)
 
 <template>
   <div class="page">
+    <!-- 局部加载失败 → 明说 + 可重试（见 components/PartialLoadBanner.vue） -->
+    <PartialLoadBanner :failures="failures" @retry="load" />
     <div style="display:grid;gap:16px">
 
       <div class="grid-stats">

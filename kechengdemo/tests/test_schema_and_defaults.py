@@ -17,10 +17,9 @@
 TIER = "t1"
 
 
-import os
 import sys
 
-from _harness import ROOT, check, delete_rows, summary  # noqa: E402
+from _harness import check, delete_rows, summary  # noqa: E402
 
 import defaults_manifest as dm   # noqa: E402
 import schema_check as sc        # noqa: E402

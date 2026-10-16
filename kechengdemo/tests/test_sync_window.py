@@ -22,7 +22,7 @@ TIER = "t0"
 
 import sys
 
-from _harness import ROOT, check, summary      # noqa: E402
+from _harness import check, summary      # noqa: E402
 
 import sync_service                            # noqa: E402
 import weiban                                  # noqa: E402
@@ -117,12 +117,40 @@ def test_skip_rule_covers_overlap():
           and 'if s.get("last_msg_time") and s["last_msg_time"] <= watermark' not in src)
 
 
+def test_max_sessions_cap():
+    """每员工会话数**必须有硬上限**（2026-10-16 定：200，不可调高）。
+
+    守三件事：
+      · 缺省 / 0 / 负数 / 非数字 → 落到默认 200（**不是"不限"** —— 旧文档写错了）；
+      · 超过 200 → 收敛到 200，并回报"被收敛"（界面据此提示，而不是让人以为设成了 1000）；
+      · 中间合法值 → 原样使用。
+    另外：**上限只在 `sync_service` 一处生效**（API / 调度器 / 脚本都走它），
+    所以这里直接测那个纯函数，不必启动批量。
+    """
+    print("\n--- 每员工会话数硬上限 ---")
+    R = sync_service.resolve_max_sessions_per_staff
+    for bad in (None, "", 0, -5, "abc"):
+        v, capped = R(bad)
+        check(f"{bad!r} → 默认 {sync_service.DEFAULT_MAX_SESSIONS_PER_STAFF}",
+              v == sync_service.DEFAULT_MAX_SESSIONS_PER_STAFF and capped is True,
+              f"{v}/{capped}")
+    v, capped = R(1000)
+    check("1000 → 收敛到 200（硬上限）",
+          v == sync_service.MAX_SESSIONS_PER_STAFF_CAP and capped is True, f"{v}/{capped}")
+    v, capped = R(200)
+    check("200（正好等于上限）→ 原样", v == 200 and capped is False, f"{v}/{capped}")
+    v, capped = R("50")
+    check("字符串 '50' → 50（API 传 JSON 数字/字符串都兼容）",
+          v == 50 and capped is False, f"{v}/{capped}")
+
+
 def main():
     test_pure_window()
     test_params_are_passed()
     test_end_fixed_across_pages()
     test_overlap_setting_is_wired()
     test_skip_rule_covers_overlap()
+    test_max_sessions_cap()
     return summary()
 
 

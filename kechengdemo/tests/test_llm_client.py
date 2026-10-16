@@ -10,11 +10,10 @@ TIER = "t0"
 
 import io
 import json
-import os
 import sys
 import urllib.error
 
-from _harness import FAILED, PASSED, ROOT, check  # noqa: E402
+from _harness import FAILED, PASSED, check  # noqa: E402
 
 import llm                                     # noqa: E402
 

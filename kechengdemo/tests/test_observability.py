@@ -19,11 +19,10 @@
 TIER = "t1"
 
 
-import os
 import sys
 import time
 
-from _harness import FAILED, PASSED, ROOT, check, delete_rows  # noqa: E402
+from _harness import FAILED, PASSED, check, delete_rows  # noqa: E402
 
 import analyze                   # noqa: E402
 import api_scoring               # noqa: E402

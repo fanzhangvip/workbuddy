@@ -34,7 +34,6 @@ import argparse
 import json
 import os
 import sys
-from collections import defaultdict
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)

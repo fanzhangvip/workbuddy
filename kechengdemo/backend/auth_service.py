@@ -14,7 +14,6 @@
 import json
 import threading
 import time
-from pathlib import Path
 
 import db
 from db import ROOT
@@ -23,7 +22,6 @@ import wb_bootstrap            # 复用已验证的抓取逻辑  # noqa: E402
 
 CACHE_DIR = ROOT / ".cache"
 BOOTSTRAP_FILE = CACHE_DIR / "ww_bootstrap.json"
-FAIL_SHOT = CACHE_DIR / "bootstrap_fail.png"
 
 _state = {
     "running": False,

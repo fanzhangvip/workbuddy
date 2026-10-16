@@ -251,11 +251,6 @@ class ContractViolationError(Exception):
         self.attempts = attempts
 
 
-def normalize_evidence_id(raw: Any) -> Optional[str]:
-    """把模型可能写出的 "#12" / "12" / "#012" 统一成 "#012"（与预处理层同一实现）。"""
-    return ctx_preprocess.normalize_code(raw)
-
-
 # ===========================================================================
 # 工具：把 schema 注入提示词（替代手写 JSON 示例）
 # ===========================================================================

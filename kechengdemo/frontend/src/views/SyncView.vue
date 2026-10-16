@@ -1,8 +1,13 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { api, fmtTime } from '../api'
+import { api, fmtTime, toEpoch } from '../api'
 import { useAsyncAction } from '../composables/useAsyncAction'
 import { usePolling } from '../composables/usePolling'
+import { useLoadFailures } from '../composables/loadFailures'
+import PartialLoadBanner from '../components/PartialLoadBanner.vue'
+
+// 局部加载失败统一收口（见 composables/loadFailures.js）
+const { failures, note: noteFail, clear: clearFail } = useLoadFailures()
 
 const form = ref({
   kind: 'incremental',
@@ -18,8 +23,8 @@ const jobs = ref([])
 const schedule = ref({ enabled: false, interval_minutes: 0, next_run_time: null })
 const keepalive = ref(null)
 const kaInterval = ref(null)
-// busy / error 由 composable 提供（模板里仍写 `busy` / `ka.busy`，用法不变）
-const { busy, error, run } = useAsyncAction()
+// busy / error / msg 由 composable 提供（模板里仍写 `busy` / `ka.busy`，用法不变）
+const { busy, error, msg, run } = useAsyncAction()
 // 保活按钮有自己的忙态，避免「启动同步」与「立即保活」互相禁用
 const ka = useAsyncAction({ errorPrefix: '保活失败：' })
 // 日常任务（需求 4.2）：主同步 + 分析 / 48 小时补偿同步 + 分析
@@ -61,14 +66,46 @@ async function loadStaffs() {
   try {
     const r = await api.staffs({ only_with_session: 1, limit: 800 })
     staffs.value = r.items || []
-  } catch (e) { /* ignore */ }
+    clearFail('staffs')
+  } catch (e) { noteFail('staffs', '员工列表', e) }
 }
 
 const job = computed(() => status.value?.job || {})
+/** 第一遍扫描的观测值（翻页数 / 提前收工 / 截断）—— 全部来自 `sync_job.detail`。
+ *
+ *  这一段是同步的成本大头（每员工一次会话列表调用），但界面上从来只看得到
+ *  "N/M 会话"；`detail` 里那几个数只能翻数据库或看容器日志。 */
+const scanStats = computed(() => {
+  const d = job.value.detail || {}
+  const keep = {}
+  for (const k of ['session_pages', 'scan_early_stops', 'truncated_count',
+                   'truncated_staff', 'sessions_found']) {
+    if (d[k] !== undefined && d[k] !== null && d[k] !== 0) keep[k] = d[k]
+    if (k === 'sessions_found' && d[k] === 0) keep[k] = 0
+  }
+  return Object.keys(keep).length ? keep : null
+})
+// 进度分两段（修 UX 缺陷）：① 读取会话列表 —— 这一段要遍历**全部员工**，
+// 实测 ~5 秒/员工（308 员工 ≈27 分钟），而 `session_total` 要到这一遍结束才写；
+// ② 拉取消息与正文 —— 按 `session_done / session_total`。
+// 改造前第一段没有自己的分母，于是**前半小时进度条恒为 0%**，看起来像卡死。
+// 现在两段各用自己的分子分母，并在标签里写明当前处于哪一段。
 const progress = computed(() => {
-  const total = job.value.session_total || 0
-  const done = job.value.session_done || 0
-  return total ? Math.min(100, Math.round((done / total) * 100)) : 0
+  const p = status.value?.progress || {}
+  const sTotal = job.value.session_total || 0
+  if (sTotal) {
+    return Math.min(100, Math.round(((job.value.session_done || 0) / sTotal) * 100))
+  }
+  const sAll = p.staff_total || 0
+  return sAll ? Math.round(((p.staff_done || 0) / sAll) * 100) : 0
+})
+
+//: 进度标签：第二段按会话，第一段按员工（分母不同，必须写清否则又是一次误读）
+const progressText = computed(() => {
+  const p = status.value?.progress || {}
+  if (job.value.session_total) return `${job.value.session_done || 0} / ${job.value.session_total} 会话`
+  if (p.staff_total) return `${p.staff_done || 0} / ${p.staff_total} 员工（读取会话列表）`
+  return '—'
 })
 const running = computed(() => !!status.value?.running)
 
@@ -91,6 +128,12 @@ const kaFresh = computed(() => !!kaCred.value.exists && (kaCred.value.age_hours 
 const kaTagText = computed(() => (!kaCred.value.exists ? '无凭据' : kaFresh.value ? '正常' : '待刷新'))
 const kaTagClass = computed(() => (kaFresh.value ? 'green' : 'orange'))
 
+// 这台部署能不能在应用内保活？（容器里没有 Chrome → 只能去宿主机执行）
+// 后端 `wb_keepalive.status()` 已经给出 `browser.available` / `reason` / `hint`，
+// 前端据此**提前禁用**按钮并把"该去哪儿做"写出来，而不是等用户点了再报错。
+const kaBrowser = computed(() => keepalive.value?.browser || {})
+const kaUsable = computed(() => kaBrowser.value.available !== false)
+
 const kaLastText = computed(() => {
   const l = kaLast.value
   if (!l.at) return '本次启动后尚未保活'
@@ -98,6 +141,19 @@ const kaLastText = computed(() => {
 })
 
 async function start() {
+  // 「全量」是唯一会忽略水位、重拉全部会话与消息的动作：全量 + 不选员工 = 全部员工
+  // 逐个走一遍（每员工最多 200 个会话，每个会话还要重新拉消息 + 企微解密）。
+  // 这里的确认框写清"范围"，避免一次误点就是几小时的批量。
+  if (form.value.kind === 'full') {
+    const scope = form.value.staff_id
+      ? '1 个员工'
+      : `全部 ${staffs.value.length || ''} 个员工`
+    if (!window.confirm(
+      `全量同步会忽略水位、重新拉取 ${scope} 的会话与消息（每员工最多 200 个会话）。\n\n`
+      + `范围越大耗时越长（单员工上千会话的全量约 1 小时量级），期间不能评分。\n\n确定开始吗？`)) {
+      return
+    }
+  }
   await run(async () => {
     const payload = {
       kind: form.value.kind,
@@ -108,12 +164,22 @@ async function start() {
     }
     const r = await api.syncStart(payload)
     if (!r.ok) { error.value = r.reason || '启动失败'; return }
+    // 后端把**生效值**回传（每员工会话数硬上限 200，不可调高）
+    msg.value = r.sessions_capped
+      ? `已启动：每员工最多 ${r.max_sessions_per_staff} 个会话（超过上限，已收敛）`
+      : `已启动：每员工最多 ${r.max_sessions_per_staff} 个会话`
   })
   refresh()
 }
 
 async function stop() {
-  await run(async () => { await api.syncStop() })
+  await run(async () => {
+    const r = await api.syncStop()
+    // ⚠️ 必须看返回值：后端会回 `{ok:false, reason:"当前没有正在运行的同步任务"}`，
+    //    改造前这里不看 —— 点了停止既没停也没提示，像是按钮坏了。
+    if (!r.ok) { error.value = r.reason || '停止失败'; return }
+    msg.value = r.message || '已发出停止信号，将在当前会话处理完后退出'
+  })
   refresh()
 }
 
@@ -141,7 +207,14 @@ async function saveKa() {
 async function runKa() {
   await ka.run(async () => {
     const r = await api.keepaliveRun(45)
-    if (!r.ok) { error.value = '保活失败：' + (r.message || '未知原因'); return }
+    if (!r.ok) {
+      // `hint` 是**该干什么**（宿主机的 host_bootstrap_login.bat / python wb_bootstrap.py），
+      // 改造前只显示 `message`（"保活需要浏览器…"）→ 用户知道坏了但不知道去哪儿修。
+      error.value = '保活失败：' + (r.message || '未知原因')
+        + (r.hint ? '｜' + r.hint : '')
+      return
+    }
+    msg.value = r.message || '保活完成'
     await refresh()
   })
 }
@@ -165,6 +238,8 @@ usePolling(refresh, 2500)
 
 <template>
   <div class="page">
+    <!-- 局部加载失败 → 明说 + 可重试（见 components/PartialLoadBanner.vue） -->
+    <PartialLoadBanner :failures="failures" @retry="refresh" />
     <div class="layout">
 
       <!-- 左：启动同步 -->
@@ -224,6 +299,7 @@ usePolling(refresh, 2500)
             </div>
 
             <div v-if="error" class="alert err">{{ error }}</div>
+            <div v-if="msg" class="alert ok">{{ msg }}</div>
           </div>
         </div>
 
@@ -342,7 +418,15 @@ usePolling(refresh, 2500)
 
             <div class="muted" style="font-size:12px">最近一次：{{ kaLastText }}</div>
 
-            <button class="btn primary" :disabled="ka.busy || running" @click="runKa">
+            <div class="alert err" v-if="!kaUsable" style="font-size:12px">
+              当前部署**无法在应用内保活**：{{ kaBrowser.reason }}
+              <div style="margin-top:6px">
+                {{ kaBrowser.hint || '请在宿主机执行保活：双击 host_bootstrap_login.bat，或运行 python wb_bootstrap.py；凭据写入 .cache/ 后容器会自动读到。' }}
+              </div>
+            </div>
+
+            <button class="btn primary" :disabled="ka.busy || running || !kaUsable" @click="runKa"
+                    :title="kaUsable ? '' : '容器内没有浏览器，需在宿主机执行保活'">
               <i v-if="ka.busy" class="spin"></i>{{ ka.busy ? '保活中…' : '立即保活' }}
             </button>
 
@@ -366,9 +450,23 @@ usePolling(refresh, 2500)
             <div>
               <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px">
                 <span class="muted">{{ status?.progress?.stage || '暂无任务' }}</span>
-                <span class="muted">{{ job.session_done || 0 }} / {{ job.session_total || 0 }} 会话</span>
+                <span class="muted">{{ progressText }}</span>
               </div>
               <div class="progress"><i :style="{ width: progress + '%' }"></i></div>
+            </div>
+            <!-- 第一遍（读取会话列表）的成本与截断：`sync_job.detail` 里一直有这几个数，
+                 但页面上从来没显示过 —— 于是"有员工的会话列表在 20000 条处被截断"
+                 只能翻数据库或看容器日志才知道（改造前连日志都没有）。 -->
+            <div v-if="scanStats" class="muted" style="font-size:11.5px;line-height:1.7">
+              <span v-if="scanStats.session_pages">会话列表共翻 {{ scanStats.session_pages }} 页</span>
+              <span v-if="scanStats.scan_early_stops">· 靠水位提前收工 {{ scanStats.scan_early_stops }} 次</span>
+              <span v-if="scanStats.sessions_found != null">· 命中会话 {{ scanStats.sessions_found }}</span>
+              <div v-if="scanStats.truncated_count" class="tag red" style="margin-top:4px;white-space:normal">
+                ⚠️ {{ scanStats.truncated_count }} 个员工的会话列表撞上翻页上限
+                （`sync_session_page_cap`），更旧的会话本次没拉到：
+                {{ (scanStats.truncated_staff || []).join('、') }}
+                —— 调大该配置可以继续拉，代价是第一遍耗时线性增加
+              </div>
             </div>
 
             <div class="grid-stats">
@@ -414,7 +512,7 @@ usePolling(refresh, 2500)
                   <td class="mono">{{ j.session_done }}/{{ j.session_total }}</td>
                   <td class="mono">{{ (j.msg_total || 0).toLocaleString() }}</td>
                   <td class="mono" style="color:var(--ok)">{{ (j.msg_decrypted || 0).toLocaleString() }}</td>
-                  <td class="muted" style="font-size:12px">{{ fmtTime(Date.parse(j.started_at) / 1000) }}</td>
+                  <td class="muted" style="font-size:12px">{{ fmtTime(toEpoch(j.started_at)) }}</td>
                 </tr>
                 <tr v-if="!jobs.length"><td colspan="7" class="muted" style="text-align:center;padding:24px">暂无任务记录</td></tr>
               </tbody>

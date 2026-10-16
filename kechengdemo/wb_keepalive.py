@@ -101,20 +101,31 @@ def _record(ok: bool, code: int, message: str, source: str) -> dict:
     global _last_run
     _last_run = {"at": int(time.time()), "ok": ok, "code": code,
                  "message": message, "source": source}
-    # 状态**落库**（修 P12）：改造前只写这个模块级全局变量 —— 重启即失，
-    # 于是 `GET /api/sync/keepalive` 的 `last_run` 恒为 null，"上次成功保活是什么时候"
-    # 没有任何地方记得住。正文通道 2026-10-13 断掉、同步空转两天没人发现，
-    # 根因之一就是这里没有可查、可告警的事实。
-    # ⚠️ 落库失败**绝不能影响保活本身**：本脚本跑在宿主机、可能比库先起来，
-    #    也可能在没有库的环境里单独跑（那时它只是个 CLI）。
+    _persist_state(_last_run)
+    return _last_run
+
+
+def _persist_state(rec: dict) -> None:
+    """把保活结果**落库**（修 P12），供 `status()` 与 `/api/eval/alerts` 读取。
+
+    为什么要有它：改造前状态只写在 `_last_run` 这个模块级全局变量里 —— **重启即失**，
+    于是 `GET /api/sync/keepalive` 的 `last_run` 恒为 null，"上次成功保活是什么时候"
+    没有任何地方记得住。正文通道 2026-10-13 断掉、同步空转两天才被发现，
+    根因之一就是这里没有可查、可告警的事实。
+
+    ⚠️ 两条纪律：
+    · 落库失败**绝不能影响保活本身**（本脚本跑在宿主机，可能比库先起来，
+      也可能在没有库的环境里当纯 CLI 用）；
+    · 单独抽成一个函数是**为了让测试替身它** —— `tests/test_channel_check.py` 会连调
+      `refresh()` 三次，若真落库就会把"最近一次保活"写成测试结果（同步页上直接可见）。
+    """
     try:
         if str(ROOT / "backend") not in sys.path:
             sys.path.insert(0, str(ROOT / "backend"))
         import db                                  # noqa: PLC0415
-        db.set_setting("keepalive_last", json.dumps(_last_run, ensure_ascii=False))
+        db.set_setting("keepalive_last", json.dumps(rec, ensure_ascii=False))
     except Exception as e:                         # noqa: BLE001
         log(f"（保活状态未落库：{type(e).__name__}: {e}）")
-    return _last_run
 
 
 # ---------------------------------------------------------------- 凭据读写 / 校验

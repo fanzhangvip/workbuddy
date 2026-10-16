@@ -24,9 +24,8 @@
 
 `group` 只用于前端/文档的组织与排障检索，不参与逻辑。
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-import db
 
 #: 类型标识（与 scoring_service 的四个取值函数一一对应）
 INT, BOOL, FLOAT, STR = "int", "bool", "float", "str"
@@ -91,6 +90,14 @@ SETTINGS: tuple = (
     Setting("sync_overlap_minutes", "SYNC_OVERLAP_MINUTES", INT, 15, "schedule",
             "增量同步的重叠回看窗口（分钟，需求 4.3）："
             "`start_time = 水位 − 该值`，兜住乱序/迟到入库的消息（重复由唯一键幂等吸收）"),
+    Setting("sync_session_page_cap", "SYNC_SESSION_PAGE_CAP", INT, 20000, "schedule",
+            "会话列表翻页条数上限（每员工每类型）。撞到就停并**在任务详情里记明**"
+            "（改造前是静默截断：超过上限的旧会话永远拉不到）；调大它会线性增加第一遍耗时"),
+    Setting("writeback_approval_expires_minutes", "WRITEBACK_APPROVAL_EXPIRES_MINUTES",
+            INT, 0, "scoring",
+            "回写审批的有效期（分钟，0 = 不过期）。策略判定为 confirm/human 的客户回写"
+            "会进审批队列等人工签字；超过有效期后**拒绝再签**（当时的分数/会话/阈值"
+            "都已经变了），并把该请求就地标成 expired"),
     Setting("public_class_grade_scope", "PUBLIC_CLASS_GRADE_SCOPE", STR, "S,A", "scoring",
             "公开课复核覆盖的等级范围（逗号分隔）"),
 
@@ -214,10 +221,6 @@ SETTINGS: tuple = (
             "运行观测类数据的保留天数（**0 = 不清理**；保留多久是业务决策）"),
 )
 
-#: 键 → Setting 的索引
-BY_KEY: dict = {s.key: s for s in SETTINGS}
-#: .env 键 → Setting 的索引
-BY_ENV: dict = {s.env: s for s in SETTINGS if s.env}
 #: 写侧白名单的**唯一来源**：`(API 键名, app_setting 键名)`。
 #: 写侧不再手写这份清单 —— 与读侧同源，物理上不可能漂移。
 WRITABLE: tuple = tuple((s.api_key, s.key) for s in SETTINGS)
@@ -248,7 +251,3 @@ def by_group() -> dict:
     return out
 
 
-def describe() -> list:
-    """导出为纯 dict 列表（供 API / 文档）。"""
-    return [{"key": s.key, "env": s.env, "type": s.type, "group": s.group,
-             "default": s.default, "desc": s.desc, "risk": s.risk} for s in SETTINGS]

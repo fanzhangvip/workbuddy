@@ -513,8 +513,11 @@ ALTER TABLE eval_case ADD COLUMN IF NOT EXISTS anchor_ts BIGINT;
 ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS rule_checks JSONB;
 -- old_raw_score：上一次有效分数（对比「这次涨了还是跌了」）。F6，①② 记忆段也会用到
 ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS old_raw_score INT;
--- last_notified_grade：上次对外通知过的等级（避免同一等级反复通知）。F6
-ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS last_notified_grade TEXT;
+-- last_notified_grade：**已删除**（2026-10-16 审计）。
+--   当初按 F6 加列「上次通知过的等级」，但本系统**没有任何通知出口**（架构说明书 §7.2
+--   自己也标注「待通知流程，本系统暂无通知出口」）→ 列加了、永远为 NULL、也没有读方。
+--   空列比缺列更坏：读 schema 的人会以为通知功能已经存在。要做通知时**连带建列**。
+ALTER TABLE customer_intent_assessment DROP COLUMN IF EXISTS last_notified_grade;
 
 -- ---------------- E2：当前有效标记（列表去重）----------------
 -- 语义：同一 relationship_key 下**只有最新一条** is_current=true。
@@ -751,6 +754,15 @@ CREATE TABLE IF NOT EXISTS approval_request (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_approval_pending ON approval_request (status, created_at DESC);
+
+-- 回写审批（2026-10-16 接线）：`policy` 判定为 confirm / human 的**回写**要人工签字才放行。
+--   两处放宽/新增的理由：
+--   · `task_id` 原来 NOT NULL —— 但回写审批**不应该阻塞整个评分批次**（`request_approval`
+--     会把任务推到 `waiting_approval`）；它只卡住那一条客户回写，所以 task_id 允许为空。
+--   · `assessment_id` —— 审批对象是"哪一条评估的回写"，没有它就无法在放行时找回要投递的分数。
+ALTER TABLE approval_request ALTER COLUMN task_id DROP NOT NULL;
+ALTER TABLE approval_request ADD COLUMN IF NOT EXISTS assessment_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_approval_assessment ON approval_request (assessment_id);
 
 -- 关联：业务运行记录 → 统一任务（历史数据为 NULL，不破坏兼容）
 ALTER TABLE scoring_run ADD COLUMN IF NOT EXISTS task_id BIGINT;

@@ -52,7 +52,9 @@ _BY_NAME = {
 
     # ---------------- 评估集与门禁 ----------------
     "eval_runner.py": ["test_eval_runner", "test_cb_delta_and_budget",
-                       "test_scoring_start_gate_blocked", "test_engine_window_and_anchor"],
+                       "test_scoring_start_gate_blocked", "test_engine_window_and_anchor",
+                       # baseline_id 落库 + 「0 条样本」检查移进锁内
+                       "test_eval_baseline_written"],
     "eval_case_repo.py": ["test_eval_runner", "test_eval_write_guard"],
     "meta_loop.py": ["test_eval_runner"],
     "review_repo.py": ["test_eval_runner"],
@@ -60,22 +62,28 @@ _BY_NAME = {
     "backfill.py": ["test_backfill"],
 
     # ---------------- 回写与标签 ----------------
-    "outbox.py": ["test_outbox_drain", "test_g6_outbox_survives_watermark"],
-    "writeback_repo.py": ["test_outbox_drain", "test_g6_outbox_survives_watermark"],
+    # ⚠️ 两张表的名字很接近但**不是一回事**：上面是 `outbox`（分数回写待办），
+    #    `grade_tag.py` 是标签链路。审批放行改的是前者。
+    "outbox.py": ["test_outbox_drain", "test_g6_outbox_survives_watermark",
+                  "test_writeback_approval"],
+    "writeback_repo.py": ["test_outbox_drain", "test_g6_outbox_survives_watermark",
+                          "test_writeback_approval"],
     "grade_tag.py": ["test_grade_tag"],
     "failure_worker.py": ["test_batch234"],
 
     # ---------------- 运行时与调度 ----------------
     "job_service.py": ["test_bugfix_p0p1", "test_production_hardening", "test_loop_guard"],
     "scheduler.py": ["test_bugfix_p0p1", "test_production_hardening", "test_sync_window"],
-    "task_runtime.py": ["test_production_hardening"],
+    # 回写审批门控（2026-10-16 接线）：拦下即登记审批 → 批准放行 / 驳回置终态 / 过期拒签
+    "task_runtime.py": ["test_production_hardening", "test_writeback_approval"],
     "retention.py": ["test_batch234"],
     "trace.py": ["test_trace_span"],
 
     # ---------------- 基础设施与接口层 ----------------
     "db.py": ["test_schema_and_defaults", "test_settings_registry", "test_hooks",
               "test_eval_runner"],
-    "schema.sql": ["test_schema_and_defaults", "test_hooks", "test_eval_runner"],
+    "schema.sql": ["test_schema_and_defaults", "test_hooks", "test_eval_runner",
+                   "test_writeback_approval"],
     "settings_registry.py": ["test_settings_registry"],
     "security.py": ["test_security", "test_rbac", "test_login_session"],
     "auth_service.py": ["test_login_session", "test_browser_capability"],
@@ -84,9 +92,24 @@ _BY_NAME = {
     "llm.py": ["test_llm_client", "test_stage_a_acceptance"],
     "idempotency.py": ["test_batch234"],
     "api_common.py": ["test_production_hardening"],
-    "api_eval.py": ["test_eval_runner"],
+    "api_chat.py": ["test_chat_api_filters", "test_frontend_call_chains"],
+    "api_auth.py": ["test_auth_api_guard"],
+    # 前端页面的**安全护栏**（切"真实写入"要确认、停止看返回值、对齐有真执行入口…）
+    "ScoreView.vue": ["test_scoring_ui_guardrails", "test_frontend_call_chains"],
+    "EvalView.vue": ["test_scoring_ui_guardrails", "test_frontend_call_chains"],
+    "ChatView.vue": ["test_scoring_ui_guardrails", "test_frontend_call_chains"],
+    "SyncView.vue": ["test_scoring_ui_guardrails", "test_frontend_call_chains"],
+    # 前端各页的**次要数据源收口**（静默失败 / 深链失效）与共用件
+    "DashboardView.vue": ["test_frontend_call_chains"],
+    "ReviewView.vue": ["test_frontend_call_chains"],
+    "loadFailures.js": ["test_frontend_call_chains"],
+    "PartialLoadBanner.vue": ["test_frontend_call_chains"],
+    "usePolling.js": ["test_scoring_ui_guardrails"],
+    "api_eval.py": ["test_eval_runner", "test_eval_baseline_written"],
     "api_review.py": ["test_eval_runner"],
-    "api_scoring.py": ["test_eval_runner", "test_production_hardening"],
+    "api_scoring.py": ["test_eval_runner", "test_production_hardening",
+                       "test_eval_baseline_written"],
+    "api.js": ["test_frontend_call_chains"],
     "api_sync.py": ["test_sync_window", "test_bugfix_p0p1"],
 }
 

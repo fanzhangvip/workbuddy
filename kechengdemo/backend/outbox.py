@@ -20,7 +20,6 @@
     调用一次微伴接口；这比「永久丢失」可接受得多，且 ``score_writeback`` 不会
     产生重复行。卡在 ``sending`` 超过 ``STUCK_SECONDS`` 的行会在下次 drain 被回收。
 """
-import time
 
 import db
 import assessment_repo
@@ -29,10 +28,6 @@ import writeback_repo                # 回写记账与水位唯一写入口（�
 
 BACKOFF_BASE = 30           # 秒；首次失败后的等待
 BACKOFF_CAP = 3600          # 秒；退避上限
-#: 退避抖动幅度（±30%）。多个待回写任务同时失败时，若退避时长完全相同，
-#: 它们会在同一时刻集体重试 → 把微伴接口再打一次。加抖动把重试摊开。
-BACKOFF_JITTER = 0.30
-DEFAULT_MAX_ATTEMPTS = 8    # 超过即转 dead（终态，待人工）
 STUCK_SECONDS = 600         # sending 超过此时长视为「投递中断」，回收重试
 OFF_DEFER_SECONDS = 600     # 回写被关闭时，任务延后这么久再看（不丢，不刷屏）
 
@@ -202,13 +197,30 @@ def _policy_hold(row) -> bool:
     避免"同步一套、异步另一套"的两套真相。
     查不到（历史数据 / 列未写）时返回 False：**宁可照旧投递，也不要因为查不到就把
     待回写任务永久卡住**（这正是 G6 要避免的"永久丢失"的另一种形态）。
+
+    **人工放行（2026-10-16 接线）**：`approval_request` 里同一 `assessment_id`
+    已有 `approved` 的请求 → 返回 False（放行投递）。
+
+    为什么必须补这一段：改造前这里是"挂起等人工"，但**没有任何地方能把人工的结论
+    送回来** —— `approval_request` 只有测试在写。表现是：策略拦下的回写会**永远**
+    躺在 pending 里，既没投递、也没人知道要去处理，等于静默丢弃（比投递失败更坏，
+    因为 `score_writeback` 里连一行失败记录都没有）。
+
+    驳回（`rejected`）**不算放行**：那是"人工明确说过不写"。此时若行还在 pending，
+    由 `api_scoring` 的审批收尾把它置 `dead`（终态），不再反复延后。
     """
     try:
         import policy
         pa = (db.query_one(
             "SELECT policy_action FROM customer_intent_assessment WHERE assessment_id=%s",
             (row["assessment_id"],)) or {}).get("policy_action")
-        return bool(pa) and pa != policy.AUTO
+        if not (bool(pa) and pa != policy.AUTO):
+            return False
+        appr = db.query_one(
+            """SELECT status FROM approval_request
+                WHERE assessment_id = %s AND status IN ('approved','rejected')
+                ORDER BY request_id DESC LIMIT 1""", (row["assessment_id"],))
+        return (appr or {}).get("status") != "approved"
     except Exception as e:                      # noqa: BLE001
         print(f"[outbox] 读取策略判定失败（按可投递处理）：{e}")
         return False
@@ -255,6 +267,17 @@ def drain(limit: int = 50) -> dict:
         # 处置同 `off`：**延后而不是作废**（保持 pending，等人工确认后仍可投递），
         # 这样 G6「回写不会永久丢失」的不变量依然成立。
         if _policy_hold(row):
+            # 挂起的同时**保证审批队列里有它**（幂等）：改造前只挂起不登记，
+            # 于是"等人工确认"永远等不到 —— 没人知道该确认谁。
+            try:
+                import task_runtime
+                task_runtime.request_writeback_approval(
+                    assessment_id=row["assessment_id"],
+                    relationship_key=row["relationship_key"], staff_id=row["staff_id"],
+                    external_user_id=row["target_id"], score=int(row["score"]),
+                    reason="异步投递时策略要求人工确认")
+            except Exception as e:                  # noqa: BLE001
+                print(f"[outbox] 登记回写审批失败（不影响延后）：{type(e).__name__}: {e}")
             with db.tx() as conn:
                 _defer(conn, row, OFF_DEFER_SECONDS,
                        "策略判定为需人工确认，暂缓投递（未丢弃）")

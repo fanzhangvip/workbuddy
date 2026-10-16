@@ -120,3 +120,38 @@ def writes_today(target_id: str) -> int:
         """SELECT count(*) AS n FROM score_writeback
             WHERE external_user_id=%s AND status='ok'
               AND created_at >= date_trunc('day', now())""", (target_id,))
+
+
+def close_on_reject(assessment_id: int, note: str = "") -> int:
+    """人工**驳回**了这条回写 → 把待办置为终态 `dead`，不再反复延后。
+
+    为什么必须收尾：`outbox._policy_hold()` 对"需人工确认"的行是**延后而不是作废**
+    （G6：宁可留着也不要静默丢）。但驳回是人工明确说过"这条不写" —— 若还留在
+    pending，它会被每轮 drain 反复延后（`next_attempt_at` 一直往后推），
+    表现为"待回写"永远不清零、也没人能解释它为什么还在。
+
+    只动 `pending` / `failed` 的行：已经 `done`（真写成功过）的不改 ——
+    微伴是累加语义，把成功记录改成 dead 会让水位与事实脱节。
+    """
+    # ⚠️ 不动 `next_attempt_at`（NOT NULL DEFAULT now()）：终态是靠 `status='dead'` 表达的，
+    #    `_claim` 只取 `status IN ('pending','failed')`，dead 行自然不再被抢占。
+    return db.execute(
+        """UPDATE writeback_outbox
+              SET status='dead', last_errmsg=%s, updated_at=now()
+            WHERE assessment_id=%s AND status IN ('pending','failed')""",
+        (f"人工驳回：不写入｜{note}"[:300], assessment_id))
+
+
+def release_on_approve(assessment_id: int) -> int:
+    """人工**批准**了这条回写 → 把待办立刻拉回"可投递"。
+
+    为什么需要它：被策略挂起时走的是 `outbox._defer()`，`next_attempt_at` 被推到
+    **10 分钟后**。放行后如果只改判据不改时间，人工批准要再等最多十分钟才生效 ——
+    审批按钮会表现为"点了没反应"。
+
+    只把时间拉回 `now()`，**不在这里投递**：投递由 outbox drain 统一做（它实时读
+    `writeback_mode`，off/dry_run 的语义仍然生效）。API 层因此不持有网络调用。
+    """
+    return db.execute(
+        """UPDATE writeback_outbox SET next_attempt_at = now(), updated_at = now()
+            WHERE assessment_id=%s AND status IN ('pending','failed')""", (assessment_id,))

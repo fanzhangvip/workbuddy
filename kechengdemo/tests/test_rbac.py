@@ -17,7 +17,7 @@ import base64
 import os
 import sys
 
-from _harness import FAILED, PASSED, ROOT, check  # noqa: E402
+from _harness import FAILED, PASSED, check  # noqa: E402
 
 import api_guard      # noqa: E402
 import security       # noqa: E402

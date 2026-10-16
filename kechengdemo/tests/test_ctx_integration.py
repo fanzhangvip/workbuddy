@@ -17,11 +17,13 @@ TIER = "t1"
 
 
 import json
-import os
 import sys
 import time
 
-from _harness import FAILED, PASSED, ROOT, check  # noqa: E402
+# ⚠️ 只为**副作用**导入：_harness 在导入时注入 sys.path（仓库根 + backend/）
+#    并统一 stdout 编码。本文件自己数通过/失败，用不到它的任何名字 ——
+#    但删掉这行会让下面的 `import scoring_service` 直接 ImportError。
+import _harness  # noqa: F401,E402
 
 import db                      # noqa: E402
 import ctx_preprocess          # noqa: E402

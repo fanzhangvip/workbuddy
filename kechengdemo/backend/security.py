@@ -45,8 +45,6 @@ import db                          # 登录会话存库里（跨进程可见、�
 
 #: 未启用鉴权时的审计主体（固定常量，非客户端可控）
 LOCAL_ACTOR = "local"
-#: 认证失败时的 realm 名（浏览器登录框标题）
-REALM = "weiban-scoring"
 #: 自动生成口令的长度
 GEN_LEN = 20
 
@@ -211,15 +209,6 @@ def revoke_session(sid: str | None) -> None:
         db.execute("DELETE FROM login_session WHERE sid=%s", (sid,))
     except Exception:                              # noqa: BLE001
         pass
-
-
-def sessions_overview(limit: int = 20) -> dict:
-    """活跃会话一览（供「谁在用」排查）。**只暴露用户名与时间，不含 sid**。"""
-    rows = db.query(
-        """SELECT username, created_at, last_seen_at, expires_at, client_ip
-             FROM login_session WHERE expires_at > now()
-            ORDER BY last_seen_at DESC LIMIT %s""", (int(limit),))
-    return {"active": len(rows), "items": rows}
 
 
 def accounts() -> list:

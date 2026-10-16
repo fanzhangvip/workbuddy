@@ -168,6 +168,12 @@ def test_refresh_must_not_claim_success():
 
         wb_keepalive.harvest = fake_harvest
         saved_check = ww_chatdata.check_channel
+        # ⚠️ 必须替身**落库**那一步：这个用例会真调 `refresh()` 三次，而 `_record()`
+        #    现在会把结果写进 `app_setting.keepalive_last` —— 不挡掉的话，每跑一次回归
+        #    就伪造一条"最近一次保活"（同步页上直接可见，且 source=test 会被当成真事）。
+        #    `_last_run` 仍照常更新，用例对 status() 的断言不受影响。
+        saved_persist = wb_keepalive._persist_state
+        wb_keepalive._persist_state = lambda rec: None
         try:
             # ① 通道一直不通：必须落 CODE_CHANNEL_DOWN，且**已经试过**清缓存重抓
             ww_chatdata.check_channel = lambda *a, **k: {
@@ -217,6 +223,7 @@ def test_refresh_must_not_claim_success():
                   "正文通道正常" in (res3.get("message") or ""), res3.get("message"))
             check("通道正常时只抓一次（不做无谓重抓）", calls == [False], calls)
         finally:
+            wb_keepalive._persist_state = saved_persist
             ww_chatdata.check_channel = saved_check
             (wb_keepalive.BOOTSTRAP_FILE, wb_keepalive.BACKUP_FILE,
              wb_keepalive.LOG_FILE) = saved_paths

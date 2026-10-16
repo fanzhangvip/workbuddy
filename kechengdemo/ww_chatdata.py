@@ -447,7 +447,3 @@ def plain_text(item: dict) -> str:
         content = inner.get("content")
         return f"[撤回了一条消息]{('：' + content) if content else ''}"
     return json.dumps(item, ensure_ascii=False)
-
-
-def type_name(item: dict) -> str:
-    return TYPE_NAME.get((item or {}).get("msgtype"), "其它")

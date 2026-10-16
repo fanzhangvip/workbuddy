@@ -18,11 +18,10 @@
 TIER = "t1"
 
 
-import os
 import sys
 import time
 
-from _harness import FAILED, PASSED, ROOT, check, delete_rows, purge_run  # noqa: E402
+from _harness import FAILED, PASSED, check, delete_rows, purge_run  # noqa: E402
 
 import db                     # noqa: E402
 import audit                  # noqa: E402

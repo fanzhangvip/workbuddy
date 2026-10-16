@@ -69,10 +69,6 @@ class JobService:
                 return True
         return table_running(self.TABLE)
 
-    def _mark_zombie(self, row_id: int, reason: str) -> None:
-        """把僵尸行标成 failed（**只在仍是 running 时**改，避免覆盖别的进程刚写的终态）。"""
-        mark_zombie(self.TABLE, row_id, reason)
-
     # ---------------- 进度 ----------------
 
     def _accumulate(self, deltas: dict = None, detail: dict = None) -> dict:

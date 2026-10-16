@@ -15,10 +15,9 @@
 TIER = "t1"
 
 
-import os
 import sys
 
-from _harness import ROOT, check, delete_rows, summary  # noqa: E402
+from _harness import check, delete_rows, summary  # noqa: E402
 
 import analyze                   # noqa: E402
 import api_eval                  # noqa: E402

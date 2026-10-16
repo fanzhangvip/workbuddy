@@ -25,7 +25,7 @@ TIER = "t1"
 import sys
 import time
 
-from _harness import ROOT, check, summary  # noqa: E402
+from _harness import check, summary  # noqa: E402
 
 import analyze           # noqa: E402
 import db                # noqa: E402

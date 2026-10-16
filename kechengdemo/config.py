@@ -38,9 +38,6 @@ WEIBAN_BASE = get("WEIBAN_BASE", "https://open.weibanzhushou.com")
 CORP_ID = get("corp_id")
 SECRET = get("secret")
 
-# ---- 数据库（PostgreSQL，待补充）----
-PG_DSN = get("DATABASE_URL") or get("PG_DSN")
-
 # ---- 大模型（DeepSeek）----
 LLM_BASE_URL = get("LLM_BASE_URL")
 LLM_API_KEY = get("LLM_API_KEY")
