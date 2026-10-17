@@ -90,6 +90,8 @@ CLEANABLE_TABLES = frozenset({
     "negative_review", "policy_decision", "request_guard", "score_writeback",
     "scoring_run", "session_failure", "sync_job", "task", "task_step", "login_session",
     "tool_audit", "trace_span", "writeback_ledger", "writeback_outbox",
+    # 兴趣点提取（2026-10-16）：测试也要能按关系键/员工清干净
+    "interest_scan", "interest_run",
 })
 
 

@@ -106,6 +106,13 @@ export const api = {
     http.get('/scoring/writeback/reconcile', { params: { limit } }).then(r => r.data),
   scoringWritebackReconcile: (payload) =>
     http.post('/scoring/writeback/reconcile', payload).then(r => r.data),
+
+  // ---------------- 兴趣点分布（推广选题；与评分完全独立的一条分析链）----------------
+  interestDistribution: (params) => http.get('/interest/distribution', { params }).then(r => r.data),
+  interestCustomers: (params) => http.get('/interest/customers', { params }).then(r => r.data),
+  interestStatus: () => http.get('/interest/status').then(r => r.data),
+  interestStart: (payload = {}) => http.post('/interest/start', payload).then(r => r.data),
+  interestStop: () => http.post('/interest/stop').then(r => r.data),
   // D2-1 等级标签（独立于分数回写）
   scoringGradeTags: () => http.get('/scoring/grade-tags').then(r => r.data),
   scoringGradeTagSync: (payload) => http.post('/scoring/grade-tags/sync', payload).then(r => r.data),

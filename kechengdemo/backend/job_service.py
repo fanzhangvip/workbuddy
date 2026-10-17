@@ -36,7 +36,12 @@ import db
 #: `sync_service.start()` 又要 `import scoring_service` —— 两个模块**互相 import**
 #: （靠函数内延迟 import 才没炸），而「互斥」这个不变量本该由第三方中立处判定。
 #: 委托方与被委托方互相认识，就是典型的循环依赖。
-JOB_TABLES = {"scoring": "scoring_run", "sync": "sync_job"}
+JOB_TABLES = {"scoring": "scoring_run", "sync": "sync_job", "interest": "interest_run"}
+#: 加上 `interest` 之后，**互斥判定仍然是各自的、有指向的**：
+#:   · scoring.start() 检查 "sync" 与 "interest"（都吃模型配额）；
+#:   · interest.start() 只检查 "scoring"（与同步**并行**是安全的：它只读消息，
+#:     不阻塞 20:00 的日常同步）；
+#:   · sync.start() 只检查 "scoring"（未改动）。
 
 #: 绝对超时兜底（分钟）。必须**大于最长批量耗时**（170 个长会话 × ~58 秒 ≈ 2.7 小时）。
 STALE_MINUTES = 240

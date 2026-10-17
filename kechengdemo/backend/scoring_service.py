@@ -320,8 +320,12 @@ class ScoringService(job_service.JobService):
         # ⚠️ 判定走 `job_service.running_kinds()`（查库、跨进程可见），**不再 import
         # sync_service** —— 改造前两边互相 import（靠函数内延迟 import 才没炸），
         # 而「互斥」这个不变量本该由第三方中立处判定。
-        if "sync" in job_service.running_kinds(exclude="scoring"):
+        running_kinds = job_service.running_kinds(exclude="scoring")
+        if "sync" in running_kinds:
             return {"ok": False, "reason": "同步任务进行中，请先等待同步完成再评分（避免读到半截数据）"}
+        # 兴趣点分析也吃模型配额：两者并行会互相限流，且成本不可控（2026-10-16）
+        if "interest" in running_kinds:
+            return {"ok": False, "reason": "兴趣点分析进行中（两者都要调用大模型），请等它跑完再评分"}
         if not config.LLM_API_KEY or not config.LLM_BASE_URL:
             return {"ok": False, "reason": "缺少大模型配置（LLM_BASE_URL / LLM_API_KEY）"}
 

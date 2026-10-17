@@ -182,6 +182,13 @@ table.tbl tbody tr:hover { background: var(--panel-2); }
 .seg > button small { display: block; font-weight: 400; font-size: 11px; color: var(--text-3); margin-top: 3px; }
 .seg > button.on { border-color: var(--brand); background: var(--brand-weak); color: var(--brand); }
 .seg > button.on small { color: #5b7fbf; }
+/* 紧凑变体：**选项多（≥3 个）且标签短**时用。
+   默认形态是「两列大按钮 + 说明小字」，对二选一（回写模式 / 标签模式）正合适；
+   但 6 个等级切片用它会被撑成 3 行、把筛选条顶得很高，所以给同一套配色与选中态
+   加一个"一行小药丸"的排布 —— 复用视觉，只换排布。 */
+.seg.compact { display: flex; gap: 6px; }
+.seg.compact > button { padding: 6px 14px; text-align: center; border-radius: 999px;
+  font-size: 12.5px; }
 
 /* 过滤标签页（带计数徽标） */
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; }

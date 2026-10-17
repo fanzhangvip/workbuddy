@@ -33,11 +33,15 @@ _BY_NAME = {
     "scoring_context.py": ["test_cb_delta_and_budget", "test_ca_key_history",
                            "test_cc_memory_segments", "test_ctx_preprocess",
                            "test_graph_session_parity", "test_ctx_integration",
-                           "test_engine_window_and_anchor"],
+                           "test_engine_window_and_anchor",
+                           # 兴趣链复用它的 customer_only（只看客户发言）
+                           "test_interest_pipeline"],
     "ctx_preprocess.py": ["test_ctx_preprocess", "test_ctx_integration"],
     "scoring_service.py": ["test_loop_guard", "test_run_with_graph", "test_hooks",
                            "test_g0_hardening", "test_graph_session_parity",
-                           "test_observability", "test_scoring_start_gate_blocked"],
+                           "test_observability", "test_scoring_start_gate_blocked",
+                           # start() 里的互斥闸决定「能不能和兴趣分析同时跑」
+                           "test_interest_pipeline"],
     "graph_session.py": ["test_eval_observability", "test_graph_session_parity", "test_run_with_graph",
                          "test_graph_skip_and_failure", "test_hooks",
                          "test_engine_window_and_anchor"],
@@ -76,9 +80,26 @@ _BY_NAME = {
     "grade_tag.py": ["test_grade_tag"],
     "failure_worker.py": ["test_batch234"],
 
+    # ---------------- 兴趣点提取（与评分并列的**第二条模型链**）----------------
+    # 词表是静态数据=代码（同 rules.json 的道理）：改一个 key 会影响契约枚举，
+    # 所以 t0 的归一/校验测试必须跟着跑。
+    "interests.json": ["test_interest_taxonomy", "test_interest_pipeline"],
+    "interest.py": ["test_interest_taxonomy", "test_interest_pipeline"],
+    "interest_repo.py": ["test_interest_pipeline"],
+    "interest_service.py": ["test_interest_pipeline"],
+    "api_interest.py": ["test_interest_pipeline"],
+    # 总览页的分布图（切片 / 进度 / 抽屉证据），与其它页面同样走前端护栏用例
+    "InterestDistribution.vue": ["test_frontend_call_chains"],
+    # echarts 的按需注册点（**漏注册 = 图空白**，改这里必须过一遍前端护栏）
+    "echarts.js": ["test_frontend_call_chains"],
+
     # ---------------- 运行时与调度 ----------------
-    "job_service.py": ["test_bugfix_p0p1", "test_production_hardening", "test_loop_guard"],
-    "scheduler.py": ["test_bugfix_p0p1", "test_production_hardening", "test_sync_window"],
+    # JOB_TABLES 是互斥判定的唯一出处（谁挡谁都在这里定）
+    "job_service.py": ["test_bugfix_p0p1", "test_production_hardening", "test_loop_guard",
+                       "test_interest_pipeline"],
+    # 日常链：scoring 之后追加的 interest 步骤也在这里
+    "scheduler.py": ["test_bugfix_p0p1", "test_production_hardening", "test_sync_window",
+                     "test_interest_pipeline"],
     # 回写审批门控（2026-10-16 接线）：拦下即登记审批 → 批准放行 / 驳回置终态 / 过期拒签
     "task_runtime.py": ["test_production_hardening", "test_writeback_approval"],
     "retention.py": ["test_batch234"],

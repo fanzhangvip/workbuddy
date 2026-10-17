@@ -56,7 +56,7 @@ Python 3.13, 4-space indentation, `snake_case` functions/variables, `PascalCase`
 Tests are self-contained scripts (no pytest) that print PASS/FAIL and exit non-zero on failure. Name them `test_<topic>.py`, mirroring the architecture feature (e.g. `test_confidence.py`, `test_g6_outbox_survives_watermark.py`). Run them directly, or through the unified entry:
 
 ```bat
-.venv\Scripts\python.exe tests\run_all.py                              :: 默认 t0+t1，实测 ~60s
+.venv\Scripts\python.exe tests\run_all.py                              :: 默认 t0+t1，实测 ~80s
 .venv\Scripts\python.exe tests\run_all.py --changed backend\db.py      :: 只跑与被改文件相关的
 .venv\Scripts\python.exe tests\run_all.py --tier t0                    :: 只跑纯逻辑（~5s）
 .venv\Scripts\python.exe tests\run_all.py --t2                         :: 加上真模型/真通道（十几分钟）
@@ -143,12 +143,33 @@ curl -u user:pwd -X POST http://127.0.0.1:8848/api/scoring/rules/publish -H "Con
 **已经补上界面的**（原来只能 curl）：回写审批、批次任务 `/scoring/tasks*`、策略/工具审计、
 规则发布、保留期清理、标签队列投递、评估集运行历史/基线/告警/覆盖度/停用/删除、单会话重评。
 
+## 兴趣点提取（第二条模型链，运维必读）
+
+**总览页首屏正中的「兴趣点分布图」是独立批量**，不与评分共用一轮；口径细节见
+《客户意向评分_架构设计说明书.md》第十四章。运维要知道的四件事：
+
+- **它和评分抢同一份模型配额**：两边同时跑只会互相拖慢，所以 `scoring` 与 `interest`
+  **互斥**（`job_service.running_kinds` 是唯一判定出处）；而**同步与它并行是允许的**
+  —— 它只读消息，不写任何外部系统。
+- **口径：只喂客户自己说的话**（`build_context(customer_only=True)`，员工发言整体剔除）。
+  这条不能改成"喂全对话"：销售话术里塞满课程卖点，模型会把销售的主张读成客户的兴趣。
+  同理，候选闸量的是**客户发言条数**（`interest_min_customer_msgs`，默认 2），
+  员工刷屏凑不出候选 —— 实测门槛 2/5/8 分别覆盖 550/319/210 个会话，想省调用就调高。
+- **首跑很贵**：每个会话 1 次模型调用，当前 685 个有正文的会话 ≈ 5~6 小时。想先小范围试：
+  `POST /api/interest/start` 带 `{"max_sessions": 20}`，或设 `interest_max_sessions`。
+- **撞预算不是失败**：`interest_max_llm_calls`（默认 300）为单轮调用上限，撞上落
+  `partial` 并把原因写进 `interest_run.detail.partial_reason`；水位没推进的会话
+  下一轮自然接着跑，不需要人工干预。
+- **日常链第三步**：`daily-main`(20:00) / `daily-compensate`(03:30) 在评分之后追加
+  `step="interest"`，只受 `interest_auto_run` 控制（关掉 → 只能手动按钮触发）。
+  改 `interests.json` 词表要**重启后端**（静态数据=契约，有 `taxonomy_version` 落库）。
+
 **⚠️ 重建 app 容器会杀掉正在跑的批量。** `docker compose up -d --build app` 是**重建容器**
 （不是热更新代码），它会把 uvicorn 连同同步/评分的后台线程一起终止 —— 那条 `sync_job` /
 `scoring_run` 行会停在 `status='running'`，直到心跳超过 15 分钟被判定为僵尸失败。所以：
 
 1. 重建前先确认没有 running 批次：`SELECT count(*) FROM sync_job WHERE status='running'`
-   （`scoring_run` 同理）；
+   （`scoring_run` / `interest_run` 同理）；
 2. 万一被中断：数据**不会丢**（水位只按已完成的会话推进，重跑幂等），但要重新触发一次；
 3. 只想让**前端**生效（后端不受影响的那种改动）：`frontend/node_modules/.bin/vite.cmd build`
    （在 `frontend/` 下跑）产出的 `dist` 要进镜像才对外可见 —— 也就是说前端改动同样需要重建。

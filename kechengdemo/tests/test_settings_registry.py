@@ -171,6 +171,15 @@ def test_writable_equivalence():
         # 审批队列等人工签字；有效期过后拒绝再签（分数/会话/阈值都可能已变）。
         # 0 = 不过期（默认），需要"隔夜就作废"的口径时在这里调。
         ("writeback_approval_expires_minutes", "writeback_approval_expires_minutes"),
+        # 兴趣点提取（2026-10-16 新增的**第二条模型链**）：是否随日常链跑、
+        # 上下文窗口、最小消息数、单轮会话上限、单轮模型调用预算 —— 前两个是
+        # "花不花钱、花多少"的开关，必须能在设置页现场调（改代码重启不行）。
+        ("interest_auto_run", "interest_auto_run"),
+        ("interest_ctx_limit", "interest_ctx_limit"),
+        ("interest_min_messages", "interest_min_messages"),
+        ("interest_min_customer_msgs", "interest_min_customer_msgs"),
+        ("interest_max_sessions", "interest_max_sessions"),
+        ("interest_max_llm_calls", "interest_max_llm_calls"),
     }
     added = new - old
     check("白名单只比改造前多出**显式声明**的新增项",

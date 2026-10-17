@@ -48,8 +48,13 @@ COPY requirements.txt requirements.lock.txt ./
 RUN pip install --no-cache-dir -i "$PIP_INDEX_URL" -r requirements.lock.txt
 
 # 应用代码（根目录共享模块是 backend 的依赖，必须一起进镜像）
+# ⚠️ **静态数据也是依赖**：`rules.json` / `interests.json` 是代码在运行期直接读的文件
+#   （`rules.load_rules()` / `interest.load_taxonomy()`）。漏拷不会有任何报错 ——
+#   只会看到「词表为空 / 规则为空」这类**静默降级**（实测踩到：容器里词表为空，
+#   兴趣分析直接拒绝启动，而宿主机上跑得好好的）。新增这类文件时**必须**加进来。
 COPY backend/ ./backend/
-COPY analyze.py config.py contracts.py ctx_preprocess.py llm.py rules.py rules.json ./
+COPY analyze.py config.py contracts.py ctx_preprocess.py llm.py rules.py rules.json \
+     interests.json ./
 COPY weiban.py ww_chatdata.py weiban_chat_fetch.py ./
 COPY wb_bootstrap.py wb_keepalive.py wb_chat_export.py wb_staff_export.py ./
 

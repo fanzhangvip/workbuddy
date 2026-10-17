@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import { api, fmtTime, fmtRelative } from '../api'
 import { useLoadFailures } from '../composables/loadFailures'
 import PartialLoadBanner from '../components/PartialLoadBanner.vue'
+// 兴趣点分布图（推广选题用）：单卡三视图，自带取数与下钻 —— 只在这里挂一次
+import InterestDistribution from '../components/InterestDistribution.vue'
 
 // 局部加载失败统一收口（见 composables/loadFailures.js）：总览的统计/搜索失败不再静默
 const { failures, note: noteFail, clear: clearFail } = useLoadFailures()
@@ -85,6 +87,11 @@ onMounted(load)
           <div class="sub">{{ stats.latest_msg_time ? fmtRelative(stats.latest_msg_time) : '尚未同步' }}</div>
         </div>
       </div>
+
+      <!-- 兴趣点分布图：首屏视觉中心（统计条之下、检索之上）。为什么放这里而不是塞进右栏：
+           它是**给推广做选题**用的，是全页唯一"内容侧"结论；放在最显眼处，
+           同时把"数据类"卡片（检索/最近会话/员工）留在下面，阅读顺序 = 业务链路顺序。 -->
+      <InterestDistribution />
 
       <div class="card">
         <div class="card-head">全文检索<span class="muted" style="font-weight:400;font-size:12px">按消息正文模糊匹配</span></div>

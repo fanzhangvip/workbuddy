@@ -453,6 +453,13 @@ def _daily_watch_job():
             print("[scheduler] 日常任务：同步结束（未开启自动分析，链条到此为止）")
             _set_daily_state({})
             return
+        # 链条第③步（兴趣点分析）还在跑时**不能**在这里启动评分：两者互斥，评分会被拒。
+        # 但这种情况**不能**像其它拒绝那样"到此为止" —— 那是在等我们自己链上的活干完，
+        # 该保留状态、下个 tick 再看（否则 20:00 启动的长兴趣分析，会把 03:30 那一轮
+        # 评分静默跳过一整天）。这是本链内部的自阻塞，与"别的批次占着库"不同。
+        import job_service
+        if "interest" in job_service.running_kinds():
+            return
         r = scoring.start(triggered_by=f"schedule-{state.get('phase')}")
         if not r.get("ok"):
             print(f"[scheduler] 日常任务：分析启动被拒：{r.get('reason')}")
@@ -466,7 +473,29 @@ def _daily_watch_job():
     elif step == "scoring":
         if scoring.is_running():
             return
+        # ── 链条第③步：兴趣点增量（2026-10-16）────────────────────────────
+        # 为什么挂在链尾而不是独立 cron：它只读消息、只调模型，天然适合"数据刚更新完
+        # 顺便跑一遍"。开关 `interest_auto_run`（默认开）；关掉就只在总览页手动触发。
+        # ⚠️ 与评分**互斥**（都吃模型配额），所以必须等评分真的结束（上面的 is_running 判断）。
+        if db.setting_bool("interest_auto_run", "INTEREST_AUTO_RUN", True):
+            import interest_service
+            r = interest_service.service.start(triggered_by=f"schedule-{state.get('phase')}")
+            if r.get("ok"):
+                state.update({"step": "interest", "interest_run_id": r.get("run_id"),
+                              "interest_started_at": time.time()})
+                _set_daily_state(state)
+                print(f"[scheduler] 日常任务（{state.get('phase')}）：分析结束 → "
+                      f"已启动兴趣点分析 run={r.get('run_id')}")
+                return
+            print(f"[scheduler] 日常任务：兴趣点分析启动被拒（{r.get('reason')}），链条到此为止")
         print(f"[scheduler] 日常任务（{state.get('phase')}）完成：同步 + 分析都已结束")
+        _set_daily_state({})
+    elif step == "interest":
+        # 等到兴趣点分析跑完才算链条结束（它的耗时随增量大小变，可能几分钟到数小时）
+        import interest_service
+        if interest_service.service.is_running():
+            return
+        print(f"[scheduler] 日常任务（{state.get('phase')}）完成：同步 + 评分 + 兴趣点 均已结束")
         _set_daily_state({})
 
 

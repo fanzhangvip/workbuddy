@@ -800,3 +800,62 @@ CREATE TABLE IF NOT EXISTS login_session (
     client_ip    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_login_session_exp ON login_session (expires_at);
+
+-- ============================================================
+--        兴趣点提取（推广选题用）—— 与评分完全独立的一条分析链
+-- ============================================================
+-- 为什么单独一张表而不是塞进 assessment：兴趣点回答的是「用户关心什么」（选题），
+-- 评分回答的是「这个客户值不值得跟」（转化）。两者的口径、更新频率、失败处置都不同，
+-- 混在一张表里必然互相拖累（任一侧解析失败会连带重跑另一侧）。
+--
+-- 水位设计：`last_msg_time` 是**该会话已被分析到的消息时间**。候选 = 「有正文 且
+-- (没有本行 OR 本行水位 < 会话最新时间)」→ 天然增量、重跑幂等、中断后可继续。
+CREATE TABLE IF NOT EXISTS interest_scan (
+    staff_id        TEXT NOT NULL,
+    session_id      TEXT NOT NULL,
+    relationship_key TEXT NOT NULL,             -- staff_id:target_id（按客户去重的依据）
+    staff_name      TEXT,
+    target_id       TEXT,
+    target_name     TEXT,
+    -- [{primary, secondary, confidence, evidence_message_ids, evidence[:原话], invalid_evidence_ids}]
+    interests       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    summary         TEXT,
+    taxonomy_version TEXT,                      -- 词表版本（跨版本可比性靠它标注）
+    prompt_version  TEXT,                       -- 提示词版本
+    model_name      TEXT,
+    msg_count       INT,
+    last_msg_time   BIGINT NOT NULL DEFAULT 0,  -- 增量水位
+    analyzed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (staff_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_interest_scan_rel ON interest_scan (relationship_key);
+CREATE INDEX IF NOT EXISTS idx_interest_scan_time ON interest_scan (analyzed_at DESC);
+-- JSONB 聚合要用（分布图按一级分类 group by）
+CREATE INDEX IF NOT EXISTS idx_interest_scan_gin ON interest_scan USING gin (interests);
+
+-- 运行行：镜像 scoring_run 的最小列（进度 / 心跳 / 预算 / 停止 / 检查点任务）
+CREATE TABLE IF NOT EXISTS interest_run (
+    id            BIGSERIAL PRIMARY KEY,
+    kind          TEXT NOT NULL DEFAULT 'incremental',
+    status        TEXT NOT NULL DEFAULT 'running',
+    triggered_by  TEXT,
+    session_total INT NOT NULL DEFAULT 0,
+    session_done  INT NOT NULL DEFAULT 0,
+    session_skipped INT NOT NULL DEFAULT 0,
+    session_failed INT NOT NULL DEFAULT 0,
+    llm_calls     INT NOT NULL DEFAULT 0,
+    llm_failed    INT NOT NULL DEFAULT 0,
+    interest_points INT NOT NULL DEFAULT 0,      -- 累计落库的兴趣点条数
+    dropped_points  INT NOT NULL DEFAULT 0,      -- 因「证据回链不上」被丢弃的条数
+    elapsed_sec   REAL,
+    deadline      TIMESTAMPTZ,                  -- 整轮墙钟上限（G3）
+    max_llm_calls INT,                          -- 本轮成本预算（G4），NULL/0 = 不限
+    detail        JSONB,                        -- 进度快照 / 部分完成原因 / 观测计数
+    error         TEXT,
+    stop_requested BOOLEAN NOT NULL DEFAULT false,
+    task_id       BIGINT,                        -- 统一任务运行时的检查点载体
+    started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at   TIMESTAMPTZ,
+    heartbeat_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_interest_run_started ON interest_run (started_at DESC);

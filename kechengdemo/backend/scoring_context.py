@@ -377,7 +377,8 @@ def _render_memory(last: dict) -> tuple:
 
 def build_context(staff_id: str, session_id: str, limit: int = None,
                   session_meta: dict = None, rel_key: str = None,
-                  key_history: bool = True, delta: bool = True) -> dict:
+                  key_history: bool = True, delta: bool = True,
+                  customer_only: bool = False) -> dict:
     """上下文装配（架构 §4.5）：① 档案 + ② 上次明细 + ③ 增量 + ④ 关键历史 + ⑤ 兜底。
 
     分工（§4.5.5）：本函数只决定「**选哪些消息**」与「**放哪些记忆块**」
@@ -389,9 +390,17 @@ def build_context(staff_id: str, session_id: str, limit: int = None,
       且**永不裁剪**（超预算时只砍 ③⑤，宁可略超预算也不退回"只看最近 60 条"）
     - ``delta=False``：展示壳语义「最近 N 条」（``build_conversation`` 用），
       不掺增量、关键历史与记忆块
+    - ``customer_only=True``：**只把客户自己说的话**交给模型（员工发言整体剔除）。
+      给"提取客户兴趣点"这类链路用（``interest_service``）—— 员工话术
+      （"我们这门课…""现在报名有优惠"）会让模型把**销售的主张**当成客户的兴趣，
+      而图上每个点都要能点开客户原话。⚠️ 只支持 ``delta=False``：①②③④ 段混着
+      档案、上次结论与关键历史（不是消息行），按方向筛只会得到半截上下文 ——
+      所以这里的做法是**直接拒绝**，而不是悄悄给出一份错的结果。
     - 选择权在本函数 → 渲染时**把窗口关掉**（``window=0``），否则 ③ 的「200 条软上限」
       会被预处理层的 60 条窗口又剪掉一次；裁剪统一由下面的预算逻辑做
     """
+    if customer_only and delta:
+        raise ValueError("customer_only 只适用于 delta=False（'最近 N 条'这一段）")
     opts = ctx_options()
     if limit:
         opts = replace(opts, window=int(limit))
@@ -400,9 +409,15 @@ def build_context(staff_id: str, session_id: str, limit: int = None,
 
     # ── 展示壳：只取最近 N 条 ────────────────────────────────────────────
     if not delta:
+        rows = recent_rows(staff_id, session_id, window * 8 if customer_only else window * 3)
+        if customer_only:
+            # 判定"谁说的"只有一处实现（`ctx_preprocess.role_of`），这里不另写一份。
+            # 池子放宽再筛：员工刷屏会把客户的话挤出"最近 N 条"，而**限量按客户消息
+            # 条数算**才对 —— 交出去的 token 预算本来就该花在客户自己说的话上。
+            rows = [r for r in rows
+                    if ctx_preprocess.role_of(r.get("direction")) == "客户"][-window:]
         ctx = ctx_preprocess.build_llm_context(
-            recent_rows(staff_id, session_id, window * 3),
-            session_meta=session_meta, opts=opts)
+            rows, session_meta=session_meta, opts=opts)
         st = ctx["stats"]
         st.update({"key_source": None, "key_rules": [], "watermark": None,
                    "seg_delta": 0, "seg_fallback": 0, "seg_profile": 0, "seg_last": 0,

@@ -222,6 +222,24 @@ SETTINGS: tuple = (
     # ---------------- 数据保留（边界4） ----------------
     Setting("data_retention_days", "DATA_RETENTION_DAYS", INT, 0, "retention",
             "运行观测类数据的保留天数（**0 = 不清理**；保留多久是业务决策）", min=0),
+
+    # ---------------- 兴趣点提取（推广选题） ----------------
+    # 与评分独立的一条分析链：只读消息、只调模型，产出一张「用户关心什么」的分布图。
+    Setting("interest_auto_run", "INTEREST_AUTO_RUN", BOOL, True, "interest",
+            "日常任务链（同步→评分）跑完后是否顺带跑一次兴趣点增量（关掉 = 只在总览页手动触发）"),
+    Setting("interest_ctx_limit", "INTEREST_CTX_LIMIT", INT, 300, "interest",
+            "兴趣点分析取多少条**客户消息**（员工发言一律剔除；**固定「最近 N 条」**，"
+            "不随水位变 —— 这样同一会话任何时候重跑结果都一致）；调大会增加单次调用成本",
+            min=1),
+    Setting("interest_min_messages", "INTEREST_MIN_MESSAGES", INT, 8, "interest",
+            "低于该总会话消息数的会话不分析（便宜的粗筛，滤掉只有零星几轮的会话）", min=0),
+    Setting("interest_min_customer_msgs", "INTEREST_MIN_CUSTOMER_MSGS", INT, 2, "interest",
+            "低于该**客户发言**条数的会话不分析：只提取客户自己的兴趣，员工刷屏不算语料。"
+            "实测中位客户只说 4 句，调高会省调用但会漏掉话少的客户", min=1),
+    Setting("interest_max_sessions", "INTEREST_MAX_SESSIONS", INT, 0, "interest",
+            "单轮最多分析多少个会话（**0 = 不限**；首跑全量约几百个会话、数小时）", min=0),
+    Setting("interest_max_llm_calls", "INTEREST_MAX_LLM_CALLS", INT, 300, "interest",
+            "单轮模型调用上限（成本护栏 G4）；撞到落 `partial`，可从检查点续跑", min=0),
 )
 
 #: 写侧白名单的**唯一来源**：`(API 键名, app_setting 键名)`。

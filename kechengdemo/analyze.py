@@ -285,19 +285,29 @@ def _attach_profile_evidence(fields: list, index: dict, labels: dict) -> list:
     return out
 
 
-def _parse_judgment(raw: str):
-    """把原始响应解析成 ``JudgmentOut``；返回 ``(judgment, None)`` 或 ``(None, ValidationError)``。"""
+def parse_model(raw: str, model_cls=None):
+    """把原始响应按给定契约模型解析；返回 ``(obj, None)`` 或 ``(None, ValidationError)``。
+
+    ``model_cls`` 缺省是评分契约 ``JudgmentOut``（**评分链路行为一字不变**）；
+    兴趣点提取传入自己的 ``InterestOut`` —— 提示词内嵌 schema 与客户端校验用的是
+    **同一个模型**，所以"模型看到的字段"和"校验的字段"不可能漂移。
+    """
+    cls = model_cls or contracts.JudgmentOut
     try:
-        return contracts.JudgmentOut.model_validate_json(raw), None
+        return cls.model_validate_json(raw), None
     except ValidationError as err:
         # 容错：模型偶尔会包一层解释文字或 markdown 代码块，截取第一个 { 到最后一个 } 再试
         s, e = raw.find("{"), raw.rfind("}")
         if s >= 0 and e > s:
             try:
-                return contracts.JudgmentOut.model_validate_json(raw[s:e + 1]), None
+                return cls.model_validate_json(raw[s:e + 1]), None
             except ValidationError as err2:
                 return None, err2
         return None, err
+
+
+#: 兼容旧名（改造前叫 `_parse_judgment`，只认评分契约）
+_parse_judgment = parse_model
 
 
 def _repair_prompt(err: Exception) -> str:
@@ -361,8 +371,8 @@ def _chat_with_truncation_recovery(messages: list, chat_kw: dict, max_continuati
         return meta, calls
 
 
-def _judge_with_repair(messages: list, *, temperature, max_tokens, max_repairs,
-                       on_attempt=None, timeout=None):
+def judge_with_repair(messages: list, *, temperature, max_tokens, max_repairs,
+                      on_attempt=None, timeout=None, model_cls=None):
     """调模型 + 契约校验；不合格就把校验错误回灌重来。
 
     这是「校验 → 通过或者重来」这条内循环的落地：改造前校验只决定"丢弃"，
@@ -390,7 +400,7 @@ def _judge_with_repair(messages: list, *, temperature, max_tokens, max_repairs,
         last_raw = meta.get("content") or ""
         if on_attempt:
             on_attempt(total_calls, meta)
-        judgment, err = _parse_judgment(last_raw)
+        judgment, err = parse_model(last_raw, model_cls)
         if judgment is not None:
             return judgment, total_calls, meta
         last_err = err
@@ -428,7 +438,7 @@ def analyze(conversation: str, facts: str, rules: dict, *,
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": build_user_prompt(rules, conversation, facts, current_date)},
     ]
-    judgment, attempts, _meta = _judge_with_repair(
+    judgment, attempts, _meta = judge_with_repair(
         messages, temperature=temperature, max_tokens=max_tokens,
         max_repairs=max_repairs, on_attempt=on_attempt, timeout=timeout)
 
