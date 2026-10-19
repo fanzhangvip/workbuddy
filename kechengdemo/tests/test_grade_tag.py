@@ -480,9 +480,31 @@ def test_persist_integration():
         _cleanup()
 
 
+def test_tag_name_alias():
+    """标签名归一：微伴里既有的是「S级意向」，不能因为名字不同就重复建一套标签。
+
+    为什么重要：`sync_tags` 认不出既有标签 → 判定"缺失" → 走 `tag/add` 建新标签，
+    而 `tag/add` 会把标签**真的打到载体客户身上**。归一错了就是在客户后台留垃圾。
+    """
+    cases = {"S": "S", "s": "S", "S级": "S", "S级意向": "S", " S 级意向 ": "S",
+             "A级意向": "A", "C": "C", "D级": "D",
+             "VIP学员": "", "跟进意向": "", "S级VIP": "", "": ""}
+    bad = {k: (gt.grade_of_tag_name(k), v) for k, v in cases.items()
+           if gt.grade_of_tag_name(k) != v}
+    check("★ 等级标签名归一（S / S级 / S级意向 都认成 S；其它名字不误认）",
+          not bad, str(bad))
+
+
 def main():
     global _AUDIT_MAX
     _AUDIT_MAX = (db.query_one("SELECT coalesce(max(id),0) AS n FROM audit_log") or {}).get("n", 0)
+    # ⚠️ 本文件会改 `grade_tag_*` 设置（模式 / 标签 id / 组名 / 载体客户）。
+    # **先存、跑完恢复** —— 以前只删不恢复：跑一次回归就把操作员配好的「意向标签」组、
+    # tag_id 和 dry_run 模式**清空**，之后标签链路静默变回 off（实测踩到）。
+    # 测试必须能反复跑，且不能改生产配置。
+    _KEYS = ("grade_tag_mode", "grade_tag_ids", "grade_tag_group", "grade_tag_probe_customer")
+    saved = {k: db.get_setting(k) for k in _KEYS}
+    db.execute("DELETE FROM app_setting WHERE key = ANY(%s)", (list(_KEYS),))
     print("=== D2-1 等级标签回写验收（架构 §10 D2-1）===")
     try:
         test_hook()
@@ -494,8 +516,14 @@ def main():
         test_failure_and_dead()
         test_align()
         test_persist_integration()
+        test_tag_name_alias()
     finally:
         _cleanup()
+        for k, v in saved.items():
+            if v is None:
+                db.execute("DELETE FROM app_setting WHERE key = %s", (k,))
+            else:
+                db.set_setting(k, v)
     return summary()
 
 if __name__ == "__main__":

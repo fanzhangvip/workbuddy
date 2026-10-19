@@ -203,9 +203,20 @@ def test_read_equivalence():
     print("\n--- 3. 读侧与改造前默认值等价 ---")
     fn = {reg.INT: db.setting_int, reg.BOOL: db.setting_bool,
           reg.FLOAT: db.setting_float, reg.STR: db.setting}
-    got = {s.api_key: reg.typed_get(s, fn[s.type]) for s in reg.SETTINGS}
-
-    # 只对比「默认值」本身：本用例不写 app_setting，故 setting_* 会自然回落到默认
+    # ⚠️ 本用例验的是「**没有配置时**回落默认值」。操作员在界面上配过的键
+    # （例如 `grade_tag_mode=dry_run`）会让读到的不是默认值 —— 那是**正确行为**，
+    # 不是回退。所以先把这些键从 app_setting 临时摘掉、跑完原样恢复，
+    # 否则「配过一次设置，回归就永远红」（实测踩到：恢复标签配置后本用例变红）。
+    keys = list(_OLD_DEFAULTS)
+    saved = {k: db.get_setting(k) for k in keys}
+    for k in keys:
+        db.execute("DELETE FROM app_setting WHERE key = %s", (k,))
+    try:
+        got = {s.api_key: reg.typed_get(s, fn[s.type]) for s in reg.SETTINGS}
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                db.set_setting(k, v)
     mism = []
     for k, want in _OLD_DEFAULTS.items():
         if k not in got:

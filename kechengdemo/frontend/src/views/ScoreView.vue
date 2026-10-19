@@ -371,6 +371,20 @@ async function validateDraft() {
 
 // ============================================================ 规则发布 / 保留期清理 / 标签队列
 const ruleInfo = ref({})
+//: 写回身份自检结果（只读）：库里的 target_id 是否就是微伴的 external_user_id
+const idCheck = ref(null)
+const idCheckBusy = ref(false)
+
+async function checkIdentity() {
+  idCheckBusy.value = true
+  idCheck.value = null
+  try {
+    // 没选员工 → 后端自动挑"有消息会话最多"的那个做抽查
+    idCheck.value = await api.scoringIdentityCheck({ staff_id: form.value.staff_id || '', limit: 300 })
+  } catch (e) {
+    error.value = '身份自检失败：' + (e?.response?.data?.detail || e?.message || e)
+  } finally { idCheckBusy.value = false }
+}
 
 async function loadRulesInfo() {
   try { ruleInfo.value = await api.scoringRules(); clearFail('rulesinfo') }
@@ -564,6 +578,67 @@ async function rejectMemory(m) {
     msg.value = r.restored ? `已拒绝（回退到上一条）` : '已拒绝'
     await loadMemories(detail.value.relationship_key)
   } catch (e) { error.value = e.message }
+}
+
+// ---------------- 手动动作：重评 / 写等级标签（**只针对这一个客户**） ----------------
+// 为什么放在详情抽屉而不是列表批量按钮：两个动作都会改真实数据 ——
+// 评分花一次模型额度、写标签会改客户身上的标签。绑定到"就是这个客户"的上下文里，
+// 才不会出现"本来想给张三打标签、结果给全库打了"。
+async function scoreAgain(d) {
+  if (!d?.staff_id || !d?.session_id) {
+    error.value = '这条评估缺少会话 id，无法重评'
+    return
+  }
+  if (!window.confirm(`重新评分「${d.target_name || d.target_id}」？\n\n`
+    + '· 会真实调用一次模型（有成本）；\n'
+    + '· 结果落成一条新评估，旧结论保留为历史；\n'
+    + '· 回写仍按当前模式（分数 dry_run/live、标签 off/dry_run/live）。\n\n确定吗？')) return
+  busy.value = true; msg.value = ''
+  try {
+    const r = await api.scoringSession(d.staff_id, d.session_id)
+    if (!r.ok) { error.value = r.reason || '评分失败'; return }
+    const a = r.assessment || {}
+    msg.value = `已重新评分：${a.grade || '-'} 级 / ${a.raw_score ?? '-'} 分`
+    await openDetail(a.assessment_id || d.assessment_id)
+    await refresh()
+  } catch (e) {
+    error.value = '评分失败：' + (e?.response?.data?.detail || e?.message || e)
+  } finally { busy.value = false }
+}
+
+async function writeTag(d) {
+  const rel = d?.relationship_key
+  if (!rel) { error.value = '缺少 relationship_key，无法写标签'; return }
+  const mode = gt.value?.mode || 'off'
+  if (mode === 'off') {
+    error.value = '等级标签回写已关闭（grade_tag_mode=off）—— 先在「等级标签」卡里切到 dry_run 或 live'
+    return
+  }
+  const apply = mode === 'live'
+  const tip = apply
+    ? `把「${d.target_name || d.target_id}」的当前等级（${d.grade}）写成微伴标签？\n\n`
+      + '· 会真写微伴：加新等级标签，并摘下其它等级标签；\n'
+      + '· 标签是覆盖式、可撤销；\n'
+      + '· 会写审计。\n\n确定吗？'
+    : '当前标签模式是 dry_run：只预演，不会写微伴。\n\n继续看预演结果吗？'
+  if (!window.confirm(tip)) return
+  busy.value = true; msg.value = ''
+  try {
+    const r = await api.scoringGradeTagAlign({
+      request_key: newRequestKey('tag-one'), relationship_keys: [rel],
+      dry_run: !apply, remove_all_others: true,
+    })
+    if (!r.ok) { error.value = r.reason || '写标签失败'; return }
+    const p = (r.plan || [])[0] || {}
+    if (p.error) { error.value = '写标签失败：' + p.error; return }
+    msg.value = apply
+      ? '标签已写入微伴（水位见「等级标签」卡）'
+      : (p.skip ? `预演：${p.skip}`
+                : `预演：会加 ${(p.add || []).length} 个、摘 ${(p.remove || []).length} 个标签`)
+    await loadGradeTags()
+  } catch (e) {
+    error.value = '写标签失败：' + (e?.response?.data?.detail || e?.message || e)
+  } finally { busy.value = false }
 }
 
 const STATUS_TAG = { success: 'green', running: 'blue', failed: 'red', stopped: 'orange', partial: 'purple' }
@@ -867,6 +942,39 @@ usePolling(refresh, 3000, { idle: 15000, idleWhen: () => !running.value })
                   : '无法判定（' + gate.reason + '）' }}
               <span class="muted">— 「无法判定」不等于「通过」</span>
             </div>
+
+            <!-- 写回身份自检（只读）：确认库里的 target_id 就是微伴的 external_user_id。
+                 这是评分/标签回写的**地基假设**，之前从未实网验证过。 -->
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span class="muted" style="font-size:11.5px">
+                写回身份自检：核对库里的 <code>target_id</code> 是否就是微伴的
+                <code>external_user_id</code>（只读，不写任何数据）
+              </span>
+              <button class="btn sm" :disabled="idCheckBusy" @click="checkIdentity">
+                <i v-if="idCheckBusy" class="spin"></i>自检
+              </button>
+            </div>
+            <div v-if="idCheck" style="display:grid;gap:4px;font-size:12px">
+              <div v-if="!idCheck.ok" class="alert err">{{ idCheck.reason }}</div>
+              <template v-else>
+                <div>
+                  <span class="tag" :class="idCheck.missing_count ? 'orange' : 'green'">
+                    命中 {{ idCheck.matched }}/{{ idCheck.checked }}
+                  </span>
+                  <span class="muted" style="margin-left:6px">
+                    员工 {{ idCheck.staff_id?.slice(0, 12) }}… · 微伴侧扫描 {{ idCheck.api_scanned }} 个客户
+                  </span>
+                </div>
+                <div class="muted">{{ idCheck.conclusion }}</div>
+                <div v-if="idCheck.missing_count" class="muted" style="font-size:11.5px">
+                  不一致的客户（关系可能已解除，写回会失败）：
+                  <span v-for="m in idCheck.missing.slice(0, 5)" :key="m.target_id"
+                        class="mono" style="margin-right:6px">{{ m.target_id.slice(0, 14) }}…</span>
+                  <span v-if="idCheck.missing_count > 5">等 {{ idCheck.missing_count }} 个</span>
+                </div>
+              </template>
+            </div>
+
 
             <!-- 规则草稿预览：贴整份新 rules.json → 校验 + 差异（不落盘、不发布） -->
             <details style="border-top:1px dashed var(--border);padding-top:8px">
@@ -1291,6 +1399,18 @@ usePolling(refresh, 3000, { idle: 15000, idleWhen: () => !running.value })
           评分详情 · {{ detail.target_name }}
           <span class="tag" :class="gradeTag(detail.grade)" style="margin-left:8px">{{ detail.grade }}</span>
           <button class="btn sm" style="margin-left:auto" @click="detail = null">关闭</button>
+        </div>
+        <!-- 手动动作（只针对这一个客户）：立即评分 / 写入等级标签 -->
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+                    padding:10px 14px;border-bottom:1px solid var(--border)">
+          <button class="btn sm primary" :disabled="busy" @click="scoreAgain(detail)">
+            <i v-if="busy" class="spin"></i>立即评分
+          </button>
+          <button class="btn sm" :disabled="busy" @click="writeTag(detail)">写入等级标签</button>
+          <span class="muted" style="font-size:11.5px">
+            标签模式 <b>{{ gt.mode }}</b>{{ gt.mode === 'live'
+              ? '（会真写微伴）' : gt.mode === 'off' ? '（已关闭）' : '（只预演，不写微伴）' }}
+          </span>
         </div>
         <div class="card-body" style="display:grid;gap:14px">
           <div class="alert info">

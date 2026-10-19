@@ -1,0 +1,8 @@
+# Windows 脚本必须是 CRLF。
+#
+# 为什么单列一条：`.bat` 走 LF-only 时，cmd.exe 会在两处解析错乱（实测踩到）：
+#   · `set HOST=%~1` 之后参数被当成独立命令（`'0.0.0' is not recognized`）；
+#   · `if (...)` 括号块被拆行，甚至把 `exist` 截成 `xist`。
+# 仓库在 Linux/CI 上编辑时默认写 LF，所以用属性把"检出即 CRLF"固化下来。
+*.bat text eol=crlf
+*.ps1 text eol=crlf

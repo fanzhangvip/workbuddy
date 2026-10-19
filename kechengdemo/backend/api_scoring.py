@@ -267,6 +267,72 @@ def grade_tags_sync(payload: dict = Body(default={})):
                                dry_run=bool(payload.get("dry_run", True)))
 
 
+@router.get("/writeback/identity-check")
+def writeback_identity_check(staff_id: str = "", limit: int = 300):
+    """**只读**自检：库里的 `target_id` 是否就是微伴的 `external_user_id`。
+
+    为什么需要它：评分与标签回写都只靠 `staff_id + external_user_id` 定位客户，
+    而"库里存的 `target_id` 等于微伴的 `external_user_id`"一直只是个**假设** ——
+    直到这里才拿同一员工的客户列表逐一对账。它不写任何数据。
+
+    返回：
+      · `matched / checked` —— 两边都有的（这些客户可以安全写回）；
+      · `missing[]` —— 库里有、微伴侧已经没有的（关系被解除/换员工：写回必然失败，
+        重试也只是把 failed 刷一遍，应当先处理掉这些关系）。
+
+    `staff_id` 为空时自动选"有消息会话最多"的员工；`limit` 是检查多少个库内客户。
+    """
+    import weiban
+
+    sid = (staff_id or "").strip()
+    if not sid:
+        top = db.query_one(
+            """SELECT staff_id, count(*) AS n FROM chat_session
+                WHERE target_id IS NOT NULL AND msg_count > 0
+                GROUP BY 1 ORDER BY n DESC, staff_id LIMIT 1""")
+        if not top:
+            return {"ok": False, "reason": "库里没有带正文的会话，无法自检"}
+        sid = top["staff_id"]
+    cap = max(1, min(int(limit or 300), 2000))
+    rows = db.query(
+        """SELECT target_id, count(*) AS sessions, max(last_msg_time) AS last_at
+             FROM chat_session
+            WHERE staff_id = %s AND target_id IS NOT NULL AND msg_count > 0
+            GROUP BY 1 ORDER BY max(last_msg_time) DESC NULLS LAST LIMIT %s""",
+        (sid, cap))
+    if not rows:
+        return {"ok": False, "staff_id": sid, "reason": "该员工名下没有带正文的会话"}
+
+    api_ids, scanned, offset = set(), 0, 0
+    try:
+        while offset < 5000:
+            res = weiban.list_external_users(staff_id=sid, limit=100, offset=offset)
+            if res.get("errcode") not in (0, None):
+                raise RuntimeError(f"errcode={res.get('errcode')} {res.get('errmsg')}")
+            lst = res.get("external_user_list") or []
+            if not lst:
+                break
+            api_ids |= {str(x.get("id")) for x in lst if x.get("id")}
+            scanned += len(lst)
+            offset += 100
+            if len(lst) < 100:
+                break
+    except Exception as e:                      # noqa: BLE001  只读自检：错误原样报出去
+        return {"ok": False, "staff_id": sid, "reason": f"{type(e).__name__}: {e}"}
+
+    missing = [{"target_id": r["target_id"], "sessions": int(r["sessions"]),
+                "last_at": r["last_at"]} for r in rows if r["target_id"] not in api_ids]
+    checked = len(rows)
+    matched = checked - len(missing)
+    return {
+        "ok": True, "staff_id": sid, "checked": checked, "api_scanned": scanned,
+        "matched": matched, "missing_count": len(missing), "missing": missing[:50],
+        "ratio": round(matched / checked, 3) if checked else None,
+        "conclusion": ("一致：库里的 target_id 就是微伴的 external_user_id" if not missing
+                       else "部分不一致：见 missing（关系可能已解除/换员工，写回会失败）"),
+    }
+
+
 @router.post("/grade-tags/align", dependencies=[Depends(api_guard.require("operator", "admin"))])
 def grade_tags_align(payload: dict = Body(default={})):
     """**人工触发**：把当前等级对齐到微伴标签（补历史 / 修正漂移）。

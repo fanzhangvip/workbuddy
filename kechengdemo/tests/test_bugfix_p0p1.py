@@ -174,6 +174,10 @@ def test_grade_tag_probe():
     fake = _FakeWeibanSync()
     orig = weiban
     import sys as _s
+    # ⚠️ 这个用例会临时改 `grade_tag_probe_customer` / `grade_tag_ids`。
+    # **先存、跑完恢复** —— 以前只删不恢复，跑一次回归就把操作员配好的标签 id 清空
+    # （实测踩到：跑完套件后 `grade_tag_ids` 变空，标签链路静默退化成"未就绪"）。
+    saved = {k: db.get_setting(k) for k in ("grade_tag_probe_customer", "grade_tag_ids")}
     _s.modules["weiban"] = fake          # grade_tag 内部 `import weiban` 拿的是这里
     try:
         db.execute("DELETE FROM app_setting WHERE key='grade_tag_probe_customer'")
@@ -194,8 +198,11 @@ def test_grade_tag_probe():
                                  for c in fake.added), str(fake.added[:1]))
     finally:
         _s.modules["weiban"] = orig
-        db.execute("DELETE FROM app_setting WHERE key='grade_tag_probe_customer'")
-        db.execute("DELETE FROM app_setting WHERE key='grade_tag_ids'")
+        for k, v in saved.items():
+            if v is None:
+                db.execute("DELETE FROM app_setting WHERE key = %s", (k,))
+            else:
+                db.set_setting(k, v)
 
 
 # ============================================================ P1-4

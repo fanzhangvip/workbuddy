@@ -41,6 +41,25 @@ import http_client                  # 全项目唯一的退避实现（Reuse Bef
 DEFAULT_TAG_GROUP = "意向等级"
 #: 允许的等级
 GRADES = ("S", "A", "B", "C", "D")
+
+
+def grade_of_tag_name(name: str) -> str:
+    """把标签名归一到等级字母（命中返回 `S/A/B/C/D`，否则空串）。
+
+    为什么要归一：微伴里既有的等级标签叫「S级意向 / A级意向 / B级意向」，
+    而系统只认严格的 `S`。不归一的话，`sync_tags` 会判定"标签不存在"，
+    于是去建一套重复的标签 —— 而这正是最该避免的真副作用。
+
+    接受：`S` / `s` / `S级` / `S级意向` / `S意向`（大小写、空白不敏感）；
+    其它名字（`VIP学员`、`跟进意向`…）一律不匹配。
+    """
+    s = str(name or "").strip().upper().replace(" ", "")
+    if s in GRADES:
+        return s
+    for suffix in ("级意向", "级", "意向"):
+        if s.endswith(suffix) and s[:-len(suffix)] in GRADES:
+            return s[:-len(suffix)]
+    return ""
 #: 标签 id 缓存键（存在 `app_setting`）
 TAG_IDS_KEY = "grade_tag_ids"
 #: 建标签载体配置键（专用测试客户），格式 `staff_id:external_user_id`
@@ -101,9 +120,10 @@ def sync_tags(create_missing: bool = False, dry_run: bool = True) -> dict:
             g = str(t.get("tag_group") or "")
             all_groups.add(g)
             if g == grp:
-                name = str(t.get("tag_name") or "").strip().upper()
-                if name in GRADES and t.get("tag_id"):
-                    found[name] = t["tag_id"]
+                # 归一：既有的「S级意向」也要能认出来，否则会重复建一套标签
+                grade = grade_of_tag_name(t.get("tag_name"))
+                if grade and t.get("tag_id") and grade not in found:
+                    found[grade] = t["tag_id"]
     except Exception as e:                       # noqa: BLE001
         return {"ok": False, "reason": f"{type(e).__name__}: {e}", "group": grp}
 

@@ -241,6 +241,27 @@ def test_stale_recovery_and_approval():
     db.execute("DELETE FROM task WHERE task_id IN (%s,%s)", (tid, tid2))
 
 
+def test_deploy_scripts():
+    """部署脚本：局域网版必须**复用** `start_backend.bat`，而不是复制一份启动命令。
+
+    为什么钉住：批处理不能 import，复制是最省事的写法 —— 但"换 Python 路径 / 加启动参数"
+    就要改两处，漏一处就会出现"本机能起、局域网版起不来"。参数化 + 薄封装是唯一不复制
+    实现的办法；这条护栏防止有人把它改回两份。
+    """
+    from pathlib import Path
+    from _harness import ROOT
+    base = (Path(ROOT) / "start_backend.bat").read_text(encoding="utf-8")
+    lan = (Path(ROOT) / "start_backend_lan.bat").read_text(encoding="utf-8")
+    check("start_backend.bat 支持监听地址参数（默认只绑 127.0.0.1）",
+          "set HOST=%~1" in base and 'if "%HOST%"=="" set HOST=127.0.0.1' in base
+          and "--host %HOST%" in base, base[:120])
+    check("★ 局域网版复用 start_backend.bat（没有第二份 uvicorn 命令）",
+          'call "%~dp0start_backend.bat" 0.0.0.0' in lan and "-m uvicorn" not in lan,
+          lan[:160])
+    check("对外监听时打印口令/HTTPS 警告（不能悄悄对局域网开放）",
+          "[警告]" in base and "HTTPS" in base and "API_PASSWORD" in base)
+
+
 def main():
     print("=== 生产化加固验收（硬伤 3 / 4 / 5）===")
     test_policy_tiers()
@@ -250,6 +271,7 @@ def main():
     test_state_machine()
     test_task_lifecycle()
     test_stale_recovery_and_approval()
+    test_deploy_scripts()
     print(f"\n===== {len(PASSED)} passed / {len(FAILED)} failed =====")
     if FAILED:
         print("失败：" + ", ".join(FAILED))

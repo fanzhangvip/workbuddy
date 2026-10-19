@@ -54,7 +54,7 @@ _BY_NAME = {
     # ---------------- 同步与外部链路 ----------------
     "sync_service.py": ["test_sync_window", "test_dedup_semantics", "test_g0_hardening",
                         "test_bugfix_p0p1"],
-    "weiban.py": ["test_sync_window", "test_dedup_semantics"],
+    "weiban.py": ["test_sync_window", "test_dedup_semantics", "test_writeback_identity"],
     "ww_chatdata.py": ["test_channel_check", "test_dedup_semantics"],
     "wb_keepalive.py": ["test_channel_check"],
     "wb_bootstrap.py": ["test_channel_check"],
@@ -145,7 +145,9 @@ _BY_NAME = {
     "api_eval.py": ["test_eval_runner", "test_eval_baseline_written"],
     "api_review.py": ["test_eval_runner", "test_writeback_unknown_and_correction"],
     "api_scoring.py": ["test_eval_runner", "test_production_hardening",
-                       "test_eval_baseline_written"],
+                       "test_eval_baseline_written",
+                       # 写回身份自检（target_id == external_user_id）
+                       "test_writeback_identity"],
     "api.js": ["test_frontend_call_chains"],
     "api_sync.py": ["test_sync_window", "test_bugfix_p0p1"],
 }
