@@ -128,6 +128,73 @@ def _index(rules: dict) -> dict:
     return idx
 
 
+def diff_rules(old: dict, new: dict) -> dict:
+    """两份规则表的差异（**纯函数**，给"发布前先看清改了什么"用）。
+
+    为什么要它：`rules.json` 是静态数据，改错一个分值编译器不报错、单测也不会响，
+    只能在真实评分里静默算错。发布闸（闸6）只回答"指标有没有下降"，回答不了
+    "我到底改了什么"。这个函数把差异摊开：新增/删除/改分值/改维度/改阈值/改上下限。
+
+    返回结构刻意做成**前端可直接渲染**的短列表（不做嵌套树）：
+      ``{version, same_version, added[], removed[], changed[], thresholds, bounds,
+         policy_changed, summary}``
+    """
+    old_idx, new_idx = _index(old or {}), _index(new or {})
+
+    def _scores(r):
+        return sorted(int(o.get("score") or 0) for o in (r.get("options") or []))
+
+    def _criteria(r):
+        return {int(o.get("score") or 0): (o.get("criteria") or "").strip()
+                for o in (r.get("options") or [])}
+
+    def _brief(rid, r):
+        return {"rule_id": rid, "polarity": r.get("polarity"),
+                "dimension": r.get("dimension") or "",
+                "scores": _scores(r)}
+
+    added = [_brief(rid, r) for rid, r in new_idx.items() if rid not in old_idx]
+    removed = [_brief(rid, r) for rid, r in old_idx.items() if rid not in new_idx]
+    changed = []
+    for rid in sorted(set(old_idx) & set(new_idx)):
+        a, b = old_idx[rid], new_idx[rid]
+        fields = [k for k in ("polarity", "dimension", "conflict_priority")
+                  if (a.get(k) or "") != (b.get(k) or "")]
+        sa, sb = _scores(a), _scores(b)
+        ca, cb = _criteria(a), _criteria(b)
+        crit_changed = sorted(s for s in set(ca) & set(cb) if ca[s] != cb[s])
+        if fields or sa != sb or crit_changed:
+            changed.append({"rule_id": rid,
+                            "dimension": b.get("dimension") or "",
+                            "fields": fields,
+                            "scores_added": sorted(set(sb) - set(sa)),
+                            "scores_removed": sorted(set(sa) - set(sb)),
+                            "criteria_changed_scores": crit_changed})
+
+    def _thresholds(r):
+        return [{"min": int(t.get("min") or 0), "grade": t.get("grade")}
+                for t in (r.get("grade_thresholds") or [])]
+
+    return {
+        "version": {"current": (old or {}).get("rule_version"),
+                    "draft": (new or {}).get("rule_version")},
+        # 版本没变 = 闸6 不触发、旧结论也不会重评（规则悄悄变了、分数没变）
+        "same_version": (old or {}).get("rule_version") == (new or {}).get("rule_version"),
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "thresholds": {"changed": _thresholds(old) != _thresholds(new),
+                       "current": _thresholds(old), "draft": _thresholds(new)},
+        "bounds": {"changed": (old or {}).get("score_bounds") != (new or {}).get("score_bounds"),
+                   "current": (old or {}).get("score_bounds") or {},
+                   "draft": (new or {}).get("score_bounds") or {}},
+        "policy_changed": (old or {}).get("scoring_policy") != (new or {}).get("scoring_policy"),
+        "summary": {"added": len(added), "removed": len(removed),
+                    "changed": len(changed),
+                    "rules_before": len(old_idx), "rules_after": len(new_idx)},
+    }
+
+
 def validate_items(items: list, rules: dict, expect_polarity: str = None) -> tuple:
     """校验并规范化模型返回的命中项。
 

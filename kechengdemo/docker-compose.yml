@@ -71,6 +71,12 @@ services:
       - ./backups:/app/backups
       - ./导出:/app/导出
       - ./eval:/app/eval
+      # 规则/词表是**静态数据=代码**，但改它们不该要求"重建镜像"：
+      # `rules.load_rules()` / `interest.load_taxonomy()` 每次调用都读文件（无缓存），
+      # 所以挂进来之后，「改文件 → POST /rules/publish → 下一轮生效」即可，
+      # 不重建、不重启、不打断正在跑的批量。只读挂载防止容器误改宿主机文件。
+      - ./rules.json:/app/rules.json:ro
+      - ./interests.json:/app/interests.json:ro
     healthcheck:
       # ⚠️ 用 python 而不是 curl：镜像里**没装 curl**（见 Dockerfile 的取舍说明）。
       #    注意 compose 的 healthcheck 会**覆盖** Dockerfile 里的同名声明，

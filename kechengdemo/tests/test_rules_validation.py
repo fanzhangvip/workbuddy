@@ -149,12 +149,71 @@ def test_load_raises_on_invalid_file():
             check("★ 非法规则表 → 抛 RulesInvalidError", False, f"{type(e).__name__}: {e}")
 
 
+def test_diff_rules():
+    """发布前预览：`diff_rules` 必须把"新增/删除/改档/改阈值"都摊开。
+
+    为什么值得单测：这是**给人看差异**的唯一入口 —— 它漏报一条"分值改了"，
+    业务就会在"看起来没变"的错觉里发布一次口径变更。
+    """
+    base = copy.deepcopy(R.load_rules())
+    same = R.diff_rules(base, copy.deepcopy(base))
+    check("两份一样的表 → 无差异", same["summary"] == {"added": 0, "removed": 0, "changed": 0,
+                                                     "rules_before": same["summary"]["rules_before"],
+                                                     "rules_after": same["summary"]["rules_after"]}
+          and not same["thresholds"]["changed"] and not same["bounds"]["changed"]
+          and same["same_version"], str(same["summary"]))
+
+    draft = copy.deepcopy(base)
+    draft["rule_version"] = "v9.9"
+    # ① 新增一条规则
+    draft["positive_rules"].append({
+        "rule_id": "zz_new_rule", "dimension": "新维度", "options": [
+            {"score": 3, "criteria": "测试用", "examples": {"positive": [], "negative": [], "ambiguous": []}}]})
+    # ② 删一条
+    draft["negative_rules"] = [r for r in draft["negative_rules"]
+                               if r["rule_id"] != base["negative_rules"][0]["rule_id"]]
+    # ③ 改一条的分值档
+    first = draft["positive_rules"][0]
+    first["options"] = [{"score": 5, "criteria": "改了档",
+                         "examples": {"positive": [], "negative": [], "ambiguous": []}}]
+    # ④ 改阈值 + 上下限
+    draft["grade_thresholds"][0]["min"] = 7
+    draft["score_bounds"]["max"] = 20
+
+    d = R.diff_rules(base, draft)
+    check("★ 新增规则被识别", [x["rule_id"] for x in d["added"]] == ["zz_new_rule"], str(d["added"]))
+    check("★ 删除规则被识别（含维度名，方便人看）",
+          len(d["removed"]) == 1 and d["removed"][0]["dimension"] == base["negative_rules"][0]["dimension"],
+          str(d["removed"]))
+    ch = next(x for x in d["changed"] if x["rule_id"] == first["rule_id"])
+    check("★ 改分值档：旧档被记进 removed、新档记进 added",
+          ch["scores_added"] == [5] and ch["scores_removed"] == sorted(
+              int(o["score"]) for o in base["positive_rules"][0]["options"]), str(ch))
+    check("阈值 / 上下限变化都被标出来",
+          d["thresholds"]["changed"] and d["bounds"]["changed"], str(d["thresholds"]))
+    check("版本号变化被识别（same_version=False）", d["same_version"] is False)
+    check("版本没升时会提示（避免「规则悄悄变、分数没变」）",
+          R.diff_rules(base, {**copy.deepcopy(base)})["same_version"] is True)
+
+
+def test_compose_mounts_static_data():
+    """静态数据必须**挂进容器**：否则改规则要重建镜像（"简单替换"就不成立了）。"""
+    from pathlib import Path
+    from _harness import ROOT
+    text = (Path(ROOT) / "docker-compose.yml").read_text(encoding="utf-8")
+    missing = [f for f in ("./rules.json:/app/rules.json", "./interests.json:/app/interests.json")
+               if f not in text]
+    check("★ rules.json / interests.json 以只读卷挂进 app 容器", not missing, str(missing))
+
+
 def main():
     print("=== 静态规则数据合法性校验（INV-12 / INV-13）===")
     test_real_data_is_valid()
     test_injected_faults_are_caught()
     test_validator_is_not_trigger_happy()
     test_load_raises_on_invalid_file()
+    test_diff_rules()
+    test_compose_mounts_static_data()
     print(f"\n===== {len(PASSED)} passed / {len(FAILED)} failed =====")
     if FAILED:
         print("失败：" + ", ".join(FAILED))

@@ -91,6 +91,17 @@ Most tests need PostgreSQL on 5433; they create and clean up their own rows.
 
 ## 规则变更与门禁（运维必读）
 
+**改 `rules.json` 不需要重建镜像**（它以只读卷挂进容器，`load_rules()` 每次调用都读文件）：
+
+```bat
+:: 1) 改 rules.json（务必 bump rule_version）；2) 发布前预览差异（不落盘）
+curl -u user:pwd -X POST http://127.0.0.1:8848/api/scoring/rules/validate ^
+     -H "Content-Type: application/json" -d "{\"rules\": <整份新 rules.json>}"
+:: 3) 发布（走闸6）→ 4) 下一轮评分生效
+```
+
+评分中心「规则草稿预览」是同一个接口的界面版：贴草稿 → 校验 + 看新增/删除/改档/改阈值。
+
 **改了 `rules.json` 就一定要走发布接口**，否则会被闸6 挡住**日常评分**：
 
 ```bat
@@ -179,7 +190,8 @@ curl -u user:pwd -X POST http://127.0.0.1:8848/api/scoring/rules/publish -H "Con
   下一轮自然接着跑，不需要人工干预。
 - **日常链第三步**：`daily-main`(20:00) / `daily-compensate`(03:30) 在评分之后追加
   `step="interest"`，只受 `interest_auto_run` 控制（关掉 → 只能手动按钮触发）。
-  改 `interests.json` 词表要**重启后端**（静态数据=契约，有 `taxonomy_version` 落库）。
+  改 `interests.json` 词表**不用重启**（只读卷 + 按 mtime 重载），但必须 bump
+  `taxonomy_version` —— 它随结果落库，是新旧结果能否区分开的唯一依据。
 
 **⚠️ 重建 app 容器会杀掉正在跑的批量。** `docker compose up -d --build app` 是**重建容器**
 （不是热更新代码），它会把 uvicorn 连同同步/评分的后台线程一起终止 —— 那条 `sync_job` /

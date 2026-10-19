@@ -89,6 +89,8 @@ export const api = {
   scoringAssessments: (params) => http.get('/scoring/assessments', { params }).then(r => r.data),
   scoringAssessment: (assessment_id) => http.get('/scoring/assessment', { params: { assessment_id } }).then(r => r.data),
   scoringRules: (rule_version = '') => http.get('/scoring/rules', { params: { rule_version } }).then(r => r.data),
+  // 发布前预览：校验草稿 + 与当前版本的差异（不落盘）
+  scoringRulesValidate: (payload) => http.post('/scoring/rules/validate', payload).then(r => r.data),
   scoringSession: (staff_id, session_id) => http.post('/scoring/session', { staff_id, session_id }).then(r => r.data),
   scoringSchedule: () => http.get('/scoring/schedule').then(r => r.data),
   scoringSetSchedule: (minutes) => http.post('/scoring/schedule', { interval_minutes: minutes }).then(r => r.data),

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """客户意向评分接口（评分中心：可观测 / 可评估）。"""
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 import config
 import db
@@ -15,6 +15,7 @@ import api_common
 import api_guard
 import audit
 import policy
+import rules as rules_mod            # 规则表校验 + 差异（发布前预览）
 import task_runtime
 import writeback_repo                 # 回写待办的水位/放行/关闭（唯一写入口）
 from scoring_service import service
@@ -349,6 +350,32 @@ def rules_publish(payload: dict = Body(default={})):
                 "warning": None if dec.get("decidable") else dec.get("reason")}
 
     return idempotency.run_once(key, "rules.publish", _do)
+
+
+@router.post("/rules/validate",
+             dependencies=[Depends(api_guard.require("operator", "admin"))])
+def rules_validate(payload: dict = Body(default={})):
+    """**发布前预览**：校验一份规则草稿并返回它跟当前版本的差异（不落盘、不发布）。
+
+    为什么需要它：`rules.json` 是静态数据 —— 分值放错档、漏了 options，编译器与单测都
+    不会响，只有在真实评分里静默算错。闸6 只回答"指标有没有下降"，回答不了"我改了什么"。
+    这里把两件事一次做完：加载期校验（`validate_rules`）+ 差异（`diff_rules`）。
+
+    用法：把整份新 `rules.json` 作为 `{"rules": {...}}` 传进来（不需要先覆盖文件）。
+    """
+    draft = payload.get("rules")
+    if not isinstance(draft, dict):
+        raise HTTPException(status_code=400, detail="rules 必须是一份完整的规则对象")
+    errs = rules_mod.validate_rules(draft)
+    cur = rules_mod.load_rules()
+    out = {"ok": not errs, "errors": errs,
+           "current_version": cur.get("rule_version"),
+           "draft_version": draft.get("rule_version"),
+           "diff": rules_mod.diff_rules(cur, draft) if not errs else None}
+    # 版本没升 = 闸6 不触发、旧结论也不会重评（规则悄悄变了、分数没变）
+    out["warnings"] = (["rule_version 没变：发布不会触发闸6 门禁，已评会话也不会重评"]
+                       if not errs and out["diff"]["same_version"] else [])
+    return out
 
 
 @router.get("/sa-review")

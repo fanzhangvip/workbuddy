@@ -348,6 +348,27 @@ async function loadAudit() {
   } catch (e) { noteFail('audit', '审计留痕', e) }
 }
 
+// ---------------- 规则草稿预览（发布前看清"改了什么"） ----------------
+// 为什么在界面里做：`rules.json` 改错一个分值，编译器和单测都不会响；发布闸只回答
+// "指标有没有下降"，回答不了"我改了什么"。这里把整份草稿贴进来，先校验再 diff，
+// **不落盘**；确认无误后再走「发布规则」（那条路才写库 + 审计）。
+const draftJson = ref('')
+const draftRes = ref(null)
+const draftBusy = ref(false)
+
+async function validateDraft() {
+  draftRes.value = null
+  let parsed
+  try { parsed = JSON.parse(draftJson.value) }
+  catch (e) { error.value = 'JSON 解析失败：' + (e.message || e); return }
+  draftBusy.value = true
+  try {
+    draftRes.value = await api.scoringRulesValidate({ rules: parsed })
+  } catch (e) {
+    error.value = '校验失败：' + (e?.response?.data?.detail || e?.message || e)
+  } finally { draftBusy.value = false }
+}
+
 // ============================================================ 规则发布 / 保留期清理 / 标签队列
 const ruleInfo = ref({})
 
@@ -846,6 +867,76 @@ usePolling(refresh, 3000, { idle: 15000, idleWhen: () => !running.value })
                   : '无法判定（' + gate.reason + '）' }}
               <span class="muted">— 「无法判定」不等于「通过」</span>
             </div>
+
+            <!-- 规则草稿预览：贴整份新 rules.json → 校验 + 差异（不落盘、不发布） -->
+            <details style="border-top:1px dashed var(--border);padding-top:8px">
+              <summary style="cursor:pointer;font-size:12.5px">
+                规则草稿预览（发布前先看清改了哪几条）
+              </summary>
+              <div style="display:grid;gap:8px;margin-top:8px">
+                <textarea v-model="draftJson" class="input" rows="6"
+                          placeholder="把整份新的 rules.json 粘贴到这里（含 rule_version）。只校验，不落盘。"
+                          style="font-family:ui-monospace,monospace;font-size:11.5px"></textarea>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <button class="btn sm primary" :disabled="draftBusy" @click="validateDraft">
+                    <i v-if="draftBusy" class="spin"></i>校验并看差异
+                  </button>
+                  <span class="muted" style="font-size:11.5px">
+                    校验通过 ≠ 门禁通过；发布仍会走闸6
+                  </span>
+                </div>
+                <div v-if="draftRes">
+                  <div v-if="draftRes.errors.length" class="alert err" style="font-size:12px">
+                    <b>不合法（{{ draftRes.errors.length }} 处）</b>
+                    <ul style="margin:4px 0 0 16px">
+                      <li v-for="(e, i) in draftRes.errors" :key="i">{{ e }}</li>
+                    </ul>
+                  </div>
+                  <div v-else class="alert ok" style="font-size:12px">
+                    校验通过（结构合法、分值/档位/阈值都满足约束）
+                    <span v-for="(w, i) in (draftRes.warnings || [])" :key="i" class="tag orange"
+                          style="margin-left:6px">{{ w }}</span>
+                  </div>
+                  <div v-if="draftRes.diff" style="display:grid;gap:6px;font-size:12px">
+                    <div class="muted">
+                      版本 {{ draftRes.diff.version.current || '-' }} →
+                      <b>{{ draftRes.diff.version.draft || '-' }}</b>
+                      · 规则 {{ draftRes.diff.summary.rules_before }} → {{ draftRes.diff.summary.rules_after }} 条
+                    </div>
+                    <div v-if="draftRes.diff.added.length">
+                      <b>新增 {{ draftRes.diff.added.length }}</b>：
+                      <span v-for="r in draftRes.diff.added" :key="r.rule_id" class="tag blue"
+                            style="margin:0 4px 4px 0">{{ r.dimension || r.rule_id }}（{{ r.scores.join('/') }}）</span>
+                    </div>
+                    <div v-if="draftRes.diff.removed.length">
+                      <b>删除 {{ draftRes.diff.removed.length }}</b>：
+                      <span v-for="r in draftRes.diff.removed" :key="r.rule_id" class="tag red"
+                            style="margin:0 4px 4px 0">{{ r.dimension || r.rule_id }}</span>
+                    </div>
+                    <div v-if="draftRes.diff.changed.length">
+                      <b>修改 {{ draftRes.diff.changed.length }}</b>：
+                      <div v-for="c in draftRes.diff.changed" :key="c.rule_id" class="muted"
+                           style="margin-left:10px">
+                        {{ c.dimension || c.rule_id }}：
+                        <span v-if="c.fields.length">字段 {{ c.fields.join('/') }} </span>
+                        <span v-if="c.scores_added.length">+档 {{ c.scores_added.join('/') }} </span>
+                        <span v-if="c.scores_removed.length">-档 {{ c.scores_removed.join('/') }} </span>
+                        <span v-if="c.criteria_changed_scores.length">
+                          判据改了 {{ c.criteria_changed_scores.join('/') }} 档
+                        </span>
+                      </div>
+                    </div>
+                    <div v-if="draftRes.diff.thresholds.changed" class="tag orange">等级阈值有变化</div>
+                    <div v-if="draftRes.diff.bounds.changed" class="tag orange">分数上下限有变化</div>
+                    <div v-if="draftRes.diff.policy_changed" class="tag orange">scoring_policy 文案有变化</div>
+                    <div v-if="!draftRes.diff.summary.added && !draftRes.diff.summary.removed
+                              && !draftRes.diff.summary.changed && !draftRes.diff.thresholds.changed
+                              && !draftRes.diff.bounds.changed && !draftRes.diff.policy_changed"
+                         class="muted">与当前版本没有实质差异</div>
+                  </div>
+                </div>
+              </div>
+            </details>
 
             <div class="alert info" style="font-size:12px" v-if="retention && retention.enabled">
               <b>边界4 保留期</b>（{{ retention.days }} 天）：只清运行观测表 ——

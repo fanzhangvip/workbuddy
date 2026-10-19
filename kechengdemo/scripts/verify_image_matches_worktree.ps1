@@ -36,9 +36,19 @@ Write-Host "一致 $same 个 | 不一致 $($diff.Count) 个 | 容器多出 $($ex
 $diff  | ForEach-Object { Write-Host "  ✗ $_" -ForegroundColor Red }
 $extra | ForEach-Object { Write-Host "  ? 仅容器有：$_" -ForegroundColor Yellow }
 
-$localJs  = (Get-ChildItem "$RepoRoot\frontend\dist\assets\*.js" -ErrorAction SilentlyContinue |
-             Sort-Object Name | Select-Object -Last 1).Name
-$remoteJs = (docker exec $Container sh -c 'ls /app/frontend/dist/assets/*.js | xargs -n1 basename' | Select-Object -Last 1)
+# ⚠️ 不能拿"assets 目录里字典序最后一个 js"当依据：历史构建残留（或大小写不敏感的排序）
+#    会让它指向一个**已经没人引用**的旧文件，于是"刚构建完也报不一致"（实测踩到）。
+#    判据应当是 **index.html 实际引用的那个资源** —— 那才是浏览器真正加载的东西。
+function Get-EntryAsset([string]$html) {
+    if (-not $html) { return "" }
+    $m = [regex]::Match($html, 'assets/(index-[A-Za-z0-9_-]+\.js)')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ""
+}
+$localHtml  = Get-Content "$RepoRoot\frontend\dist\index.html" -Raw -ErrorAction SilentlyContinue
+$localJs    = Get-EntryAsset $localHtml
+$remoteHtml = (docker exec $Container sh -c 'cat /app/frontend/dist/index.html')
+$remoteJs   = Get-EntryAsset ($remoteHtml -join "`n")
 Write-Host "=== 前端产物 ==="
 Write-Host "工作区 $localJs | 容器 $remoteJs"
 
