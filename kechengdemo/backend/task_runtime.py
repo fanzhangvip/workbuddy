@@ -194,6 +194,28 @@ def heartbeat(task_id: int) -> None:
         pass
 
 
+def record_cost(task_id: int, *, calls: int = 0, tokens: int = 0) -> None:
+    """累加任务成本（`cost_calls` / `cost_tokens`）。
+
+    为什么需要它：这两列建表起就有、任务页也展示，但**从来没有人写** —— 页面上的
+    "预算消耗"永远是 0，等于给了个假仪表。现在由真正调模型的地方（评分/兴趣点）在
+    每次尝试后累加；`budget_calls` 仍只是"计划值"（强制点仍在服务级的
+    `hooks.guard_reason`，见架构 15.2）。
+
+    观测失败**不能影响跑批**：写不进去就打印一行，批次继续。
+    """
+    if not task_id or (not calls and not tokens):
+        return
+    try:
+        db.execute(
+            """UPDATE task SET cost_calls = cost_calls + %s,
+                              cost_tokens = cost_tokens + %s
+                WHERE task_id=%s""",
+            (int(calls), int(tokens), int(task_id)))
+    except Exception as e:                      # noqa: BLE001
+        print(f"[task] 累计成本失败（不影响跑批）：{type(e).__name__}: {e}")
+
+
 def _progress_snapshot(task_id: int) -> dict:
     """读 `task.progress` 并归一成 dict。
 

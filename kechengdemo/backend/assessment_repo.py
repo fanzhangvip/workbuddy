@@ -28,16 +28,16 @@ import db
 # ---------------- 读 ----------------
 
 def last_assessment(rel_key: str) -> dict:
-    """该客户**最近一次**评估（② 段记忆的数据源）。无记录 → 空 dict。
+    """该客户**最近一次**评估（② 段记忆 + ① 段"本次是否提及"的数据源）。无记录 → 空 dict。
 
-    本函数**不建新表** —— `customer_memory`（记忆方案 M0）尚未落地，按已拍板决议
-    先用最新评估拼「准档案」。等 M0 落地后，① 段改读 `customer_memory`，
-    ② 段仍读这里（语义不同：前者是"现在是什么"，后者是"上次判了什么"）。
+    与 `customer_memory` 的分工：① 段读**跨次稳定事实**（`memory_repo.active_rows`），
+    ② 段读这里的"上次判了什么"。`profile_struct` 一并取出，是为了在 ① 里标注
+    "这条事实上次会话没提到"（记忆不因此失效，只是提示模型别当成新信息）。
     """
     row = db.query_one(
         """SELECT assessment_id, raw_score, positive_total, negative_total, grade,
                   positive_items, negative_items, profile_summary, sales_strategy,
-                  msg_count, last_msg_time, rule_version, analyzed_at
+                  profile_struct, msg_count, last_msg_time, rule_version, analyzed_at
              FROM customer_intent_assessment
             WHERE relationship_key = %s
             ORDER BY assessment_id DESC LIMIT 1""",

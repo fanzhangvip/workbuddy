@@ -355,11 +355,18 @@ class SyncService(job_service.JobService):
         return int((row or {}).get("mx") or 0)
 
     def _sync_sessions_of(self, staff_id: str, session_types: list,
-                          stop_before: int = 0) -> tuple:
+                          stop_before: int = 0, limit: int = 0) -> tuple:
         """拉某员工的会话并落库。返回 ``(会话列表, stats)``。
 
         ``stop_before``：增量模式下传该员工已有的最大水位。会话列表按最近活跃
         降序返回，一旦整页都早于水位即可停止翻页，省掉大量无效请求。
+
+        ``limit``：每个员工最多要多少个会话（= `max_sessions_per_staff`）。
+        **翻到这么多就不再翻** —— 反正调用方随后会 `sess[:limit]` 丢掉多余的。
+        不加这道闸的实测后果（2026-10-19 复盘）：297/308 个员工没有会话级游标，
+        `stop_before` 接近 0，每轮都要翻十几二十页（单轮 2779 页、约 27 分钟），
+        而**日常同步窗口只有 20 分钟** —— 第一遍就把窗口吃光，第二遍（真正拉消息）
+        一次都没跑到：连续 3 天 `sync_job.session_done` 都是 0。
 
         ``stats`` = ``{pages, stopped_early, truncated}``：
         · `pages` —— 实际翻了几页（这个数直接决定第一遍的耗时，必须看得见）
@@ -383,6 +390,8 @@ class SyncService(job_service.JobService):
                 offset += PAGE
                 if len(batch) < PAGE:
                     break
+                if limit and len(out) >= limit:
+                    break                 # 够数了：再翻下去的会话调用方本来也不要
                 if stop_before and all((s.get("last_msg_time") or 0) <= stop_before
                                        for s in batch):
                     early += 1
@@ -393,6 +402,8 @@ class SyncService(job_service.JobService):
                     print(f"[sync] ⚠️ 员工 {staff_id[:12]}… 的会话列表在 {cap} 条处截断"
                           f"（`sync_session_page_cap`）：更旧的会话本次拉不到")
                     break
+            if limit and len(out) >= limit:
+                break
         if out:
             db.execute_many(SQL_UPSERT_SESSION, [(
                 staff_id, s["id"], s.get("session_type") or "ext_user",
@@ -557,7 +568,8 @@ class SyncService(job_service.JobService):
                                            "sessions_found": len(todo)})
                 try:
                     sess, sc = self._sync_sessions_of(
-                        sid, session_types, stop_before=staff_watermark.get(sid, 0))
+                        sid, session_types, stop_before=staff_watermark.get(sid, 0),
+                        limit=max_sessions)
                     pages_total += sc["pages"]
                     early_total += sc["stopped_early"]
                     if sc["truncated"]:

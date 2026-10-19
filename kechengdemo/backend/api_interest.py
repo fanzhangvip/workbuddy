@@ -4,7 +4,7 @@
 读接口公开（登录即可）；写接口（开始 / 停止）要求 `operator, admin`
 —— 它们会真调大模型（花钱）且改变图上数据，与 `/api/scoring/start` 同档。
 """
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 import api_guard
 import idempotency
@@ -13,6 +13,39 @@ import interest_repo
 from interest_service import service
 
 router = APIRouter(prefix="/api/interest", tags=["interest"])
+
+#: 允许的切片值 —— 传错（`scope=s`、`scope=all `）时给 400，
+#: 而不是返回一张空图让人以为"这个员工名下真的没有兴趣点"。
+_SCOPES = {"all", "S", "A", "B", "C", "D"}
+
+
+def _scope(value: str) -> str:
+    v = (value or "all").strip()
+    if v not in _SCOPES:
+        raise HTTPException(status_code=400,
+                            detail=f"scope 只能是 all/S/A/B/C/D，收到 {value!r}")
+    return v
+
+
+def _int(payload: dict, key: str) -> int:
+    """从 body 里取整数，**非法值给 400 而不是 500**。
+
+    `int("abc")` 抛 ValueError → 500 + 堆栈，看起来像系统坏了；而这是调用方传错。
+    """
+    try:
+        return int(payload.get(key) or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{key} 必须是整数") from None
+
+
+def _staff_ids(payload: dict):
+    """`staff_ids` 只接受字符串数组（单个字符串会让 `= ANY(...)` 直接报类型错）。"""
+    v = payload.get("staff_ids")
+    if v in (None, "", []):
+        return None
+    if not isinstance(v, list) or not all(isinstance(x, str) and x.strip() for x in v):
+        raise HTTPException(status_code=400, detail="staff_ids 必须是非空字符串数组")
+    return [x.strip() for x in v]
 
 
 @router.get("/distribution")
@@ -23,7 +56,7 @@ def distribution(scope: str = "all", staff_id: str = "", top: int = 8,
     `scope`：`all` 或等级（`S`/`A`/`B`/`C`/`D`，按客户**当前有效**的评估结论切片）；
     `staff_id`：只看某个员工的客户。
     """
-    out = interest_repo.distribution(scope=scope, staff_id=staff_id, top=top,
+    out = interest_repo.distribution(scope=_scope(scope), staff_id=staff_id, top=top,
                                      secondary_top=secondary_top)
     out["taxonomy"] = {"version": interest.load_taxonomy().get("taxonomy_version"),
                        "names": interest.primary_names(),
@@ -40,7 +73,8 @@ def customers(primary: str = "", secondary: str = "", scope: str = "all",
     ⚠️ 返回里带**客户原话片段**（仅限内部选题参考，不得直接对外发布）。
     """
     return {"items": interest_repo.customers(primary=primary, secondary=secondary,
-                                             scope=scope, staff_id=staff_id, limit=limit)}
+                                             scope=_scope(scope), staff_id=staff_id,
+                                             limit=limit)}
 
 
 @router.get("/status")
@@ -59,15 +93,18 @@ def start(payload: dict = Body(default={})):
     · `staff_ids`：限定员工；
     · `request_key`：幂等键（前端重试/手抖双击安全）。
     """
+    # 参数校验放在幂等之前：坏请求不该占用 request_key（否则改正后重试会被"重放"）
+    kind = str(payload.get("kind") or "incremental")
+    ids = _staff_ids(payload)
+    max_sessions = _int(payload, "max_sessions")
+    min_messages = _int(payload, "min_messages")
+    min_customer_msgs = _int(payload, "min_customer_msgs")
     return idempotency.run_once(
         payload.get("request_key"), "interest.start",
-        lambda: service.start(
-            kind=str(payload.get("kind") or "incremental"),
-            staff_ids=payload.get("staff_ids") or None,
-            max_sessions=int(payload.get("max_sessions") or 0),
-            min_messages=int(payload.get("min_messages") or 0),
-            min_customer_msgs=int(payload.get("min_customer_msgs") or 0),
-            triggered_by="manual"))
+        lambda: service.start(kind=kind, staff_ids=ids, max_sessions=max_sessions,
+                              min_messages=min_messages,
+                              min_customer_msgs=min_customer_msgs,
+                              triggered_by="manual"))
 
 
 @router.post("/stop", dependencies=[Depends(api_guard.require("operator", "admin"))])

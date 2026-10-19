@@ -141,6 +141,13 @@ export const api = {
   scoringAuditStats: (days = 30) => http.get('/scoring/audit/stats', { params: { days } }).then(r => r.data),
   scoringAuditTool: (params) => http.get('/scoring/audit/tool', { params }).then(r => r.data),
 
+  // ---------------- 记忆治理（客户级稳定事实） ----------------
+  // 读：评分详情抽屉用；写：人工改判（模型再也覆盖不了 source='human' 的值）
+  memoryList: (relationship_key, history = 0) =>
+    http.get(`/memory/${encodeURIComponent(relationship_key)}`, { params: { history } }).then(r => r.data),
+  memorySet: (payload) => http.post('/memory', payload).then(r => r.data),
+  memoryReject: (memory_id) => http.post(`/memory/${memory_id}/reject`, {}).then(r => r.data),
+
   // ---------------- 负分人工复核 ----------------
   reviewStats: () => http.get('/review/stats').then(r => r.data),
   reviewList: (params) => http.get('/review/list', { params }).then(r => r.data),

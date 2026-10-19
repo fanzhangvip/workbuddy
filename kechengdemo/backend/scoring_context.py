@@ -344,13 +344,21 @@ def _clip(text, cap: int = _MEM_TEXT_CAP) -> str:
     return s if len(s) <= cap else s[:cap] + "…"
 
 
-def _render_memory(last: dict) -> tuple:
-    """渲染 ①② 两段「记忆块」（架构 §4.5.3）。
+def _render_memory(last: dict, memories: list = None) -> tuple:
+    """渲染 ①② 两段「记忆块」（架构 4.3）。
 
     **口径要点**：①② 是"上一次评估的结论"，**不是本次证据** —— 因此：
     - 用 ``【】`` 段标，**不带 ``#编号``** → 不参与 ``index``，模型无法把它们当证据回链（决议 M-C）；
     - 段标里明写「仅供参考、非本次证据」，与 §4.5.6 的提示词说明呼应（双保险）；
     - ①② 由调用方保证**永不裁剪**（超预算时照原样发送，只砍 ③⑤）。
+
+    ``memories``：该客户的**跨次稳定事实**（`memory_repo.active_rows`）。给了就用它渲染
+    "已知事实"块（这是 M0 之后的主路径）；没给/为空则退回"只读上次评估"的老行为，
+    保证老库（记忆表为空）也能正常评分。
+
+    ⚠️ "上次会话未提及"的标注：事实来自更早的会话、而**最近一次评估**对该槽位说的是
+    "未提及" —— 说明客户这次没再提，但**不等于事实失效**。标注出来是为了让模型别把它
+    当成本轮的新信息，也让人一眼看出"这条是旧结论"。
     """
     if not last:
         return "", ""
@@ -364,6 +372,23 @@ def _render_memory(last: dict) -> tuple:
     prof = [f"【客户状态档案】（读回自上次评估 {when}，仅供参考、非本次证据）",
             f" 上次等级={grade}｜上次总分={_fmt_score(raw)}｜"
             f"上次评估消息数={last.get('msg_count') or '未知'}｜规则版本={last.get('rule_version') or '未知'}"]
+    if memories:
+        # 最近一次评估里"未提及"的槽位 —— 这些事实这次没被复述，但仍有效
+        missed = {str(r.get("slot")) for r in _as_items(last.get("profile_struct"))
+                  if str(r.get("value") or "").strip() in ("", "未提及")}
+        prof.append(" 已知事实（来自历史会话，客户本次没提也仍然有效）：")
+        for m in memories[:8]:
+            label = m.get("slot_cn") or m.get("slot")
+            conf = float(m.get("confidence") or 0)
+            tags = []
+            if m.get("source") == "human":
+                tags.append("人工确认")
+            elif conf <= 0.4:
+                tags.append("无原话")
+            if m.get("slot") in missed:
+                tags.append("上次会话未提及")
+            prof.append(f"   {label}：{_clip(m.get('value'), 60)}"
+                        + (f"（{'；'.join(tags)}）" if tags else ""))
     if last.get("profile_summary"):
         prof.append(f" 上次画像摘要：{_clip(last['profile_summary'])}")
     if last.get("sales_strategy"):
@@ -478,7 +503,15 @@ def build_context(staff_id: str, session_id: str, limit: int = None,
     # ①② 用【】段标、**不带 #编号** → 不参与 index，模型无法把它们当证据（决议 M-C）。
     seg1 = seg2 = ""
     if db.setting_bool("ctx_memory", "CTX_MEMORY", True):
-        seg1, seg2 = _render_memory(last_assessment(rel))
+        # ① 的两种来源（开关 `ctx_memory_source`）：
+        #   · table      —— 读 `customer_memory`（跨次稳定事实，M0 默认）
+        #   · assessment —— 退回"只读上次评估"（零代码回滚；老库/排查时用）
+        # 无论哪种，语义都不变：记忆不是证据、不带编号、不进 index。
+        mems = None
+        if str(db.setting("ctx_memory_source", "CTX_MEMORY_SOURCE", "table")).lower() == "table":
+            import memory_repo
+            mems = memory_repo.active_rows(rel)
+        seg1, seg2 = _render_memory(last_assessment(rel), mems)
 
     def compose(msg_text: str) -> str:
         """把记忆块与消息行拼成最终 text。**①② 永远在最前，且不参与任何裁剪。**"""

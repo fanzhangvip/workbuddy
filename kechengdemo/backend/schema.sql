@@ -546,6 +546,43 @@ UPDATE customer_intent_assessment a SET is_current = false
 -- profile_summary 保留为「自由文本补充」，本列才是可查询、可跨次对比的那一份。
 ALTER TABLE customer_intent_assessment ADD COLUMN IF NOT EXISTS profile_struct JSONB;
 
+-- ---------------- 记忆治理层 M0：客户级稳定事实 ----------------
+-- 为什么需要它：`profile_struct` 是**每次评估一份**的快照（"这次聊到了什么"），
+-- 而"这个客户是谁、预算多少、在哪个城市"应当跨会话稳定。没有这张表时，① 段只能
+-- 读回自由文本 `profile_summary`（截 400 字、不可查询、不可纠错、无法识别"这次没提"）。
+--
+-- 语义与铁律：
+--   · 每客户每槽位**只有一条 active**（部分唯一索引）；历史值保留为 `superseded`，
+--     所以"客户从北京搬到上海"可追溯；
+--   · `source`：`llm`（评分链路写入）< `human`（人工改判，**不会被模型覆盖**）；
+--   · `evidence_message_ids` 是**回链后的 message_id**（不是 `#001` 编号），
+--     `evidence_text` 是站内展示的一条原话；
+--   · 记忆**不是证据**：装配时用【】段标、不带 `#编号`、不进 `index` → 模型不能拿它
+--     当 `evidence_ids` 回链（与决议 M-C 一致）；
+--   · `expires_at`：预算/排期这类事实会变，过期记忆不再进上下文（默认 180 天，可配）。
+CREATE TABLE IF NOT EXISTS customer_memory (
+    memory_id        BIGSERIAL PRIMARY KEY,
+    relationship_key TEXT NOT NULL,              -- staff_id:target_id
+    slot             TEXT NOT NULL,              -- 固定 8 槽位之一（contracts.PROFILE_SLOTS）
+    value            TEXT NOT NULL,              -- 客户原话归纳（"未提及"不落库）
+    value_norm       TEXT,                       -- 归一后的比较键（判"是不是同一件事"）
+    confidence       REAL NOT NULL DEFAULT 0.6,
+    source           TEXT NOT NULL DEFAULT 'llm',-- llm / human
+    evidence_message_ids TEXT[] NOT NULL DEFAULT '{}',
+    evidence_text    TEXT,                       -- 一条原话（≤200 字）
+    status           TEXT NOT NULL DEFAULT 'active', -- active/superseded/rejected/expired
+    first_seen       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at       TIMESTAMPTZ,
+    version          INT NOT NULL DEFAULT 1,
+    updated_by       TEXT,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- 同一客户同一槽位只能有一条 active（历史靠 superseded 留痕）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_active
+    ON customer_memory (relationship_key, slot) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_memory_rel ON customer_memory (relationship_key, slot);
+
 -- ---------------- 闸1/F5：规则可机读化 ----------------
 -- examples：每个分值档的 positive / negative / ambiguous 三档示例（钉住边界）
 -- conflict_priority：两条规则同时像命中时先算哪条（替代提示词里硬编码的冲突说明）

@@ -61,8 +61,13 @@ function nameOf(key) {
   return (dist.value?.taxonomy?.names || {})[key] || key
 }
 
+//: 树图用**全部**一级分类（`primaries_all`），条形只画 Top-8。
+//: ⚠️ 之前树图也用 `primaries`（= Top-8）：10 个类里少画 2 个（实测少掉
+//: `city_region` 31 客户、`certificate_exam` 6 客户），而且百分比按"可见的 8 个"
+//: 做分母 → 每一块的占比都偏大。少画一类而不说，是最容易被当成"数据没问题"的错。
+const allPrimaries = computed(() => (dist.value?.primaries_all || []).filter(p => p.customers > 0))
 const primaries = computed(() => (dist.value?.primaries || []).filter(p => p.customers > 0))
-const totalCustomers = computed(() => primaries.value.reduce((s, p) => s + p.customers, 0))
+const totalCustomers = computed(() => allPrimaries.value.reduce((s, p) => s + p.customers, 0))
 
 /** 这一类占了多少客户（条形右端的百分比文案用）。 */
 function pct(p) {
@@ -105,7 +110,7 @@ function treemapOption() {
       // 挂上去会让"面积 ∝ 客户数"不再成立 —— 宁可少一层，也不能画一张读不出数的图
       label: { show: true, color: '#fff', fontWeight: 600, fontSize: 13, lineHeight: 17,
                formatter: p => `${p.name}\n${p.value} 客户 · ${pct(p.data?.raw || {})}%` },
-      data: primaries.value.map(p => ({
+      data: allPrimaries.value.map(p => ({
         name: nameOf(p.primary), key: p.primary, value: p.customers, raw: p,
         itemStyle: { color: colorOf(p.primary) },
       })),
@@ -173,7 +178,7 @@ function instanceFor(el, inst, onPick) {
 
 function draw() {
   nextTick(() => {
-    if (!primaries.value.length) return          // 空态：容器不在 DOM 里
+    if (!allPrimaries.value.length) return       // 空态：容器不在 DOM 里
     if (mapEl.value) {
       mapChart = instanceFor(mapEl.value, mapChart, p => p.data?.key && open(p.data.key))
       mapChart.setOption(treemapOption(), true)
@@ -235,7 +240,7 @@ function refresh() { load(); loadStatus() }
 async function start(mode = 'incremental') {
   const cov = dist.value?.coverage || {}
   const text = mode === 'full'
-    ? `全量重跑：会重新分析**全部**有正文的会话（当前 ${cov.sessions_available || 0} 个）。\n\n`
+    ? `全量重跑：会重新分析「全部」有正文的会话（当前 ${cov.sessions_available || 0} 个）。\n\n`
       + `· 每条一次大模型调用，可能数小时；\n· 同一条会话的内容没变的话，结果本来也不会变。\n\n确定吗？`
     : `增量分析：只跑"没分析过"或"有新消息"的会话（当前待分析 ${cov.sessions_pending || 0} 个）。\n\n`
       + `· 每条一次大模型调用；\n· 结果落在库里，随时可以重跑。\n\n确定开始吗？`
@@ -345,7 +350,7 @@ defineExpose({ refresh })
       <div v-if="msg" class="alert ok" style="font-size:12.5px">{{ msg }}</div>
 
       <!-- 空态 -->
-      <div v-if="!primaries.length" class="empty" style="padding:26px">
+      <div v-if="!allPrimaries.length" class="empty" style="padding:26px">
         <div class="big">🧭</div>
         还没有兴趣点数据
         <div class="muted" style="font-size:12px;margin-top:6px">
@@ -364,7 +369,7 @@ defineExpose({ refresh })
         </div>
 
         <div class="side">
-          <div class="block-title">一级分类（按客户数 · 长度才读得准）</div>
+          <div class="block-title">一级分类 Top-8（按客户数 · 长度才读得准）</div>
           <div ref="barEl" class="chart" :style="{ height: BAR_H + 'px' }"></div>
           <div class="block-title">二级标签（话题发现层，前 40 · 半径 ∝ √客户数）</div>
           <div ref="cloudEl" class="chart" :style="{ height: CLOUD_H + 'px' }"></div>
@@ -372,7 +377,7 @@ defineExpose({ refresh })
       </div>
 
       <div class="muted" style="font-size:11.5px;line-height:1.7;border-top:1px dashed var(--border);padding-top:8px">
-        ⚠️ 证据原话来自客户真实聊天记录，**仅限内部选题参考，不得直接对外发布**；
+        ⚠️ 证据原话来自客户真实聊天记录，<b>仅限内部选题参考，不得直接对外发布</b>；
         图形口径：树图面积 / 条形长度 ∝ 客户数，气泡半径 ∝ √客户数（面积读不准，需要精确比较看条形）。
       </div>
     </div>

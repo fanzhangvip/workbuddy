@@ -143,8 +143,39 @@ def t_request_payload():
         llm.urllib.request.urlopen = original_open
 
 
+def t_timeout_never_unbounded():
+    """★ `timeout=0/None` 必须回落到默认 120s，而不是"不限时"。
+
+    为什么单列一条：批量的 deadline 只在**会话之间**检查，一次挂死的 HTTP 连接
+    可以让整轮停在原地（实测 interest run#84 就这样挂了 16 小时才被 deadline 收尾，
+    期间评分被互斥闸挡着、整晚没跑）。`llm_timeout_sec=0` 在设置页写着"用默认 120s"，
+    代码却把它翻成了 `urlopen(timeout=None)` —— 文档与实现相反。
+    """
+    seen = []
+
+    def _open(req, timeout=None):
+        seen.append(timeout)
+        return FakeResp({"choices": [{"message": {"content": '{"a":1}'},
+                                      "finish_reason": "stop"}]})
+
+    original = llm.urllib.request.urlopen
+    llm.urllib.request.urlopen = _open
+    try:
+        for given in (0, None):
+            seen.clear()
+            llm.chat([{"role": "user", "content": "x"}], timeout=given)
+            check(f"timeout={given!r} → 实际用默认 {llm.TIMEOUT}s（不会无限阻塞）",
+                  seen == [llm.TIMEOUT], str(seen))
+        seen.clear()
+        llm.chat([{"role": "user", "content": "x"}], timeout=7)
+        check("显式 timeout 原样生效", seen == [7], str(seen))
+    finally:
+        llm.urllib.request.urlopen = original
+
+
 def main():
-    for fn in (t_http_classification, t_response_shapes, t_request_payload):
+    for fn in (t_http_classification, t_response_shapes, t_request_payload,
+               t_timeout_never_unbounded):
         print(f"\n--- {fn.__name__} ---")
         fn()
     print(f"\n===== {len(PASSED)} passed / {len(FAILED)} failed =====")

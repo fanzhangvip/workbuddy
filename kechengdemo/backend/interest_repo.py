@@ -122,24 +122,38 @@ def candidates(*, min_messages: int = 8, min_customer_msgs: int = 2,
 
 
 def coverage(*, session_type: str = "ext_user", min_messages: int = 8,
-             min_customer_msgs: int = 2) -> dict:
+             min_customer_msgs: int = 2, scope: str = "all", staff_id: str = "") -> dict:
     """覆盖度：**可分析的会话**里分析了多少、还剩多少、涉及多少客户。
 
     ⚠️ 分母与 `candidates` 同口径（同一段 `_CUSTOMER_MSGS`）：否则"客户一句话没说过"
     的会话会永远算在"待分析"里，界面上那条进度条永远到不了 100%。
+
+    带上 `scope` / `staff_id` 时**四个数字一起跟着切片**：卡片头的"已分析 N/M"
+    必须和下面这张图看的是同一批客户 —— 否则切到某个员工后，图变了而口径没变，
+    读者会以为那个员工名下真的有 M 个会话。
     """
-    base = """FROM chat_session c
-               WHERE c.session_type=%s AND c.target_id IS NOT NULL AND c.msg_count >= %s
-                 AND """ + _CUSTOMER_MSGS + """ >= %s"""
-    params = (session_type, int(min_messages or 0), max(int(min_customer_msgs or 0), 1))
+    sess_where, p_sess = _filter_sql(scope=scope, staff_id=staff_id, alias="c",
+                                     rel_expr="c.staff_id || ':' || c.target_id")
+    scan_where, p_scan = _filter_sql(scope=scope, staff_id=staff_id, alias="t")
+    params = {"session_type": session_type,
+              "min_msgs": int(min_messages or 0),
+              "min_cust": max(int(min_customer_msgs or 0), 1), **p_sess}
+    base = f"""FROM chat_session c
+               WHERE c.session_type = %(session_type)s AND c.target_id IS NOT NULL
+                 AND c.msg_count >= %(min_msgs)s
+                 AND {_CUSTOMER_MSGS} >= %(min_cust)s
+                 AND {sess_where}"""
     total = db.query_one(f"SELECT count(*) AS n {base}", params) or {}
     pending = db.query_one(
         f"""SELECT count(*) AS n {base}
               AND NOT EXISTS (SELECT 1 FROM interest_scan sc
                                WHERE sc.staff_id=c.staff_id AND sc.session_id=c.session_id
                                  AND sc.last_msg_time >= c.last_msg_time)""", params) or {}
-    done = db.query_one("SELECT count(*) AS n FROM interest_scan") or {}
-    cust = db.query_one("SELECT count(DISTINCT relationship_key) AS n FROM interest_scan") or {}
+    done = db.query_one(
+        f"SELECT count(*) AS n FROM interest_scan t WHERE {scan_where}", p_scan) or {}
+    cust = db.query_one(
+        f"""SELECT count(DISTINCT t.relationship_key) AS n FROM interest_scan t
+             WHERE {scan_where}""", p_scan) or {}
     return {"sessions_available": int(total.get("n") or 0),
             "sessions_analyzed": int(done.get("n") or 0),
             "sessions_pending": int(pending.get("n") or 0),
@@ -148,19 +162,25 @@ def coverage(*, session_type: str = "ext_user", min_messages: int = 8,
 
 # ============================================================ 读（分布图）
 
-def _filter_sql(*, scope: str = "all", staff_id: str = "", alias: str = "t") -> tuple:
+def _filter_sql(*, scope: str = "all", staff_id: str = "", alias: str = "t",
+                rel_expr: str = None) -> tuple:
     """按等级 / 员工切片。
 
     等级取自**当前有效**的评估结论（客户级，与评分中心同口径）—— 分布图的价值一半在
     「S/A 客户关心什么 vs C/D 客户关心什么」，那是排选题优先级最直接的依据。
+
+    ``rel_expr``：`relationship_key` 的 SQL 表达式。扫描表（`interest_scan`）直接用列，
+    而**会话表**没有这一列（要在 `chat_session` 上按等级切片就只能现拼
+    `c.staff_id || ':' || c.target_id`）—— 传进来而不是在调用方复制一份判定。
     """
+    rel = rel_expr or f"{alias}.relationship_key"
     cond, params = ["1=1"], {}
     if staff_id:
         cond.append(f"{alias}.staff_id = %(staff)s")
         params["staff"] = staff_id
     if scope and scope != "all":
-        cond.append("""EXISTS (SELECT 1 FROM customer_intent_assessment a
-                                WHERE a.relationship_key = t.relationship_key
+        cond.append(f"""EXISTS (SELECT 1 FROM customer_intent_assessment a
+                                WHERE a.relationship_key = {rel}
                                   AND a.is_current AND a.grade = %(grade)s)""")
         params["grade"] = scope
     return " AND ".join(cond), params
@@ -189,14 +209,18 @@ def distribution(*, scope: str = "all", staff_id: str = "", top: int = 8,
              GROUP BY 1,2
              ORDER BY customers DESC, mentions DESC, secondary ASC
              LIMIT %(sec_top)s""", {**params, "sec_top": int(secondary_top or 40)})
+    # 等级分布也要跟当前切片走：否则切到某个员工/某个等级时，这一块仍是全量数字
     by_grade = db.query(
-        """SELECT COALESCE(a.grade, '-') AS grade,
-                  count(DISTINCT t.relationship_key) AS customers
-             FROM interest_scan t
-             LEFT JOIN customer_intent_assessment a
-                    ON a.relationship_key = t.relationship_key AND a.is_current
-            GROUP BY 1 ORDER BY 1""")
-    last = db.query_one("SELECT max(analyzed_at) AS at, count(*) AS n FROM interest_scan") or {}
+        f"""SELECT COALESCE(a.grade, '-') AS grade,
+                   count(DISTINCT t.relationship_key) AS customers
+              FROM interest_scan t
+              LEFT JOIN customer_intent_assessment a
+                     ON a.relationship_key = t.relationship_key AND a.is_current
+             WHERE {where}
+             GROUP BY 1 ORDER BY 1""", params)
+    last = db.query_one(
+        f"""SELECT max(t.analyzed_at) AS at, count(*) AS n
+              FROM interest_scan t WHERE {where}""", params) or {}
     def _p(r):
         return {"primary": r["prim"], "customers": int(r["customers"] or 0),
                 "mentions": int(r["mentions"] or 0)}
@@ -210,7 +234,7 @@ def distribution(*, scope: str = "all", staff_id: str = "", top: int = 8,
             "primaries_all": plist,
             "secondaries": [_s(r) for r in secondaries],
             "by_grade": by_grade,
-            "coverage": coverage(),
+            "coverage": coverage(scope=scope, staff_id=staff_id),
             "analyzed_at": last.get("at"),
             "scans": int(last.get("n") or 0)}
 
@@ -222,17 +246,22 @@ def customers(*, primary: str = "", secondary: str = "", scope: str = "all",
     这是"图上每个数字都能核对"的关键：点开就能看到是哪些客户、他们原话怎么说。
     """
     where, params = _filter_sql(scope=scope, staff_id=staff_id)
-    extra, match_cond = "", ["TRUE"]
+    # ⚠️ 一级 + 二级必须落在**同一条**兴趣点上：写成两个 `@>` 条件时，JSONB 的数组
+    # 包含判定允许**不同元素**各满足一个（A 条命中 primary、B 条命中 secondary），
+    # 于是"按二级标签下钻"会捞到根本没提过这个标签的客户，而下面取证据的子查询
+    # （要求同一个 x 同时满足）返回空 —— 抽屉里出现一条只有客户名、没有原话的记录。
+    # 正确做法：拼成一个对象一次性包含（`[{p,s}] @> [{p,s}]` 要求同一元素含全部键）。
+    want = {}
     if primary:
-        extra += " AND t.interests @> %(pjson)s::jsonb"
-        params["pjson"] = db.as_json([{"primary": primary}])
-        match_cond.append("x->>'primary' = %(primary)s")
-        params["primary"] = primary
+        want["primary"] = primary
     if secondary:
-        extra += " AND t.interests @> %(sjson)s::jsonb"
-        params["sjson"] = db.as_json([{"secondary": secondary}])
-        match_cond.append("x->>'secondary' = %(secondary)s")
-        params["secondary"] = secondary
+        want["secondary"] = secondary
+    extra = ""
+    if want:
+        extra = " AND t.interests @> %(want)s::jsonb"
+        params["want"] = db.as_json([want])
+        params.update(want)
+    match_cond = [f"x->>'{k}' = %({k})s" for k in want] or ["TRUE"]
     matched = " AND ".join(match_cond)
     return db.query(
         f"""SELECT t.staff_id, t.session_id, t.staff_name, t.target_id, t.target_name,

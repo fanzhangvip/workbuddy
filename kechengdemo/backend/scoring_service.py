@@ -38,6 +38,7 @@ import llm                          # noqa: E402  异常分层：可重试 vs �
 # 等级 → 微伴标签（决策 D2 第 1 条，独立链路，与分数回写完全分开）
 import grade_tag                    # noqa: E402
 import outbox                       # noqa: E402  回写 outbox（修 G6：回写与评分解耦）
+import memory_repo                  # noqa: E402  记忆治理层（结论同事务写稳定事实）
 import http_client                  # noqa: E402  统一退避（抖动 + Retry-After）
 import audit                        # noqa: E402  工具调用审计（五问 + 脱敏）
 import assessment_repo              # noqa: E402  评估结果表唯一写入口（P3）
@@ -666,6 +667,9 @@ class ScoringService(job_service.JobService):
                                  ("completion_tokens", "completion_tokens"),
                                  ("total_tokens", "total_tokens")):
                     self._progress[key] = self._progress.get(key, 0) + int(usage.get(src) or 0)
+            # 任务级成本（任务页的"消耗"）：每次模型尝试计 1 次调用 + 实际 token。
+            task_runtime.record_cost(self._task_id, calls=1,
+                                     tokens=int(usage.get("total_tokens") or 0))
 
         last_err = None
         for i in range(attempts):
@@ -996,6 +1000,13 @@ class ScoringService(job_service.JobService):
             # → 列表出现重复行，正是 E2 要消除的问题。
             # 语义：只有最新一条是「当前有效」，历史行保留（可追溯客户是怎么变的）。
             assessment_repo.supersede_previous(conn, rel, aid)
+
+            # 记忆治理层（M0）：把本次评估的 8 个结构化槽位归并进 `customer_memory`。
+            # **同一事务**：结论写成功而记忆没写（或反之）都会让 ① 段与实际不符。
+            # "未提及"不会覆盖旧值；人工值不会被模型覆盖（规则见 memory_repo.apply_in）。
+            memory_repo.apply_in(conn, rel=rel,
+                                 profile_struct=db.as_list(res.get("profile_struct")),
+                                 assessment_id=aid)
 
             # 仅 live + 有正分才入队（dry_run / off 走同步记账，与改造前行为一致）
             if (score["positive_total"] >= 1 and mode == "live"

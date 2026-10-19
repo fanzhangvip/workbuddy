@@ -25,6 +25,11 @@ const settings = ref({ writeback_mode: 'dry_run' })
 const scInterval = ref(null)
 const filters = ref({ grade: '', q: '', review_status: '', page: 1, page_size: 15 })
 const detail = ref(null)
+//: 该客户的**结构化记忆**（8 个固定槽位，跨次稳定事实）。与 `profile_summary` 的区别：
+//: 那个是"这次聊出来的摘要"，这个是"系统长期记得的事"，人工可改、模型覆盖不了。
+const memories = ref([])
+//: 记忆读取失败单独提示（不走页面横幅：那里的"重试"重载的是列表，不会重载记忆）
+const memErr = ref('')
 // busy / error / msg 由 composable 提供（模板里的 `busy` / `error` / `msg` 用法不变）。
 // ⚠️ 这里把 `run` 重命名成 `act`：本文件已经有一个 `run`（当前任务的 computed），
 //    同名会直接构建失败 —— 变量命名冲突在复用时要显式躲开，别硬碰。
@@ -497,7 +502,48 @@ async function setMode(mode) {
 function search() { filters.value.page = 1; refresh() }
 function goto(p) { filters.value.page = p; refresh() }
 
-async function openDetail(id) { try { detail.value = await api.scoringAssessment(id) } catch (e) { error.value = e.message } }
+async function openDetail(id) {
+  try {
+    detail.value = await api.scoringAssessment(id)
+    memories.value = []
+    await loadMemories(detail.value?.relationship_key)
+  } catch (e) { error.value = e.message }
+}
+
+// ---------------- 记忆治理（客户级稳定事实） ----------------
+// 只展示 active；人工改判写 `source='human'`，之后模型再也覆盖不了这条。
+async function loadMemories(rel) {
+  if (!rel) return
+  memErr.value = ''
+  try { memories.value = (await api.memoryList(rel)).items || [] } catch (e) {
+    // 记忆读失败不该把评分详情也弄成错误态：给一行提示，详情照常看
+    memories.value = []
+    memErr.value = '记忆读取失败：' + (e?.message || e)
+  }
+}
+
+async function editMemory(m) {
+  const v = window.prompt(`修改「${m.slot_cn}」（人工确认后模型不会再覆盖）`, m.value || '')
+  if (v == null || !v.trim()) return
+  try {
+    const r = await api.memorySet({ relationship_key: detail.value.relationship_key,
+      slot: m.slot, value: v.trim(), note: '界面人工修改' })
+    if (!r.ok) { error.value = r.reason || '保存失败'; return }
+    msg.value = `已更新「${m.slot_cn}」`
+    await loadMemories(detail.value.relationship_key)
+  } catch (e) { error.value = e.message }
+}
+
+async function rejectMemory(m) {
+  if (!window.confirm(`拒绝「${m.slot_cn}：${m.value}」？\n\n`
+    + '· 拒绝后它不再进上下文；有上一条历史值会回退到那一条。\n\n确定吗？')) return
+  try {
+    const r = await api.memoryReject(m.memory_id)
+    if (!r.ok) { error.value = r.reason || '拒绝失败'; return }
+    msg.value = r.restored ? `已拒绝（回退到上一条）` : '已拒绝'
+    await loadMemories(detail.value.relationship_key)
+  } catch (e) { error.value = e.message }
+}
 
 const STATUS_TAG = { success: 'green', running: 'blue', failed: 'red', stopped: 'orange', partial: 'purple' }
 const STATUS_CN = { success: '成功', running: '运行中', failed: '失败', stopped: '已停止', partial: '部分完成' }
@@ -1197,6 +1243,39 @@ usePolling(refresh, 3000, { idle: 15000, idleWhen: () => !running.value })
           <div>
             <div class="lbl">客户画像</div>
             <div class="alert info" style="white-space:pre-wrap">{{ detail.profile_summary || '-' }}</div>
+          </div>
+          <!-- 记忆治理：跨次稳定事实（8 个固定槽位）。与上面"客户画像"的分工：
+               画像是**本次**聊出来的摘要；这里是**系统长期记得**的事，人工可改。 -->
+          <div>
+            <div class="lbl">
+              已知事实（记忆）
+              <span class="muted" style="font-weight:400;font-size:11px;margin-left:6px">
+                人工改过的不再被模型覆盖 · 到期自动失效
+              </span>
+            </div>
+            <div v-if="memErr" class="alert err" style="font-size:12px">{{ memErr }}</div>
+            <div v-else-if="!memories.length" class="muted" style="font-size:12px">
+              还没有记忆（跑一次评分后自动写入；也可以在这里手动补）
+            </div>
+            <div v-for="m in memories" :key="m.memory_id" class="item">
+              <span class="tag" :class="m.source === 'human' ? 'green' : 'blue'">
+                {{ m.slot_cn }}
+              </span>
+              <div style="flex:1">
+                <div style="font-size:12.5px">{{ m.value }}</div>
+                <div class="muted" style="font-size:11px">
+                  {{ m.source === 'human' ? '人工确认' : '模型提取' }} ·
+                  {{ m.last_seen ? fmtTime(toEpoch(m.last_seen)) : '-' }}
+                  <span v-if="m.source !== 'human' && (m.confidence || 0) <= 0.4">· 无原话，置信度低</span>
+                </div>
+                <div v-if="(m.evidence_text || '').length" class="muted" style="font-size:11px;
+                     border-left:2px solid var(--border);padding-left:6px;margin-top:2px">
+                  {{ m.evidence_text }}
+                </div>
+              </div>
+              <button class="btn sm" @click="editMemory(m)">改</button>
+              <button class="btn sm danger" @click="rejectMemory(m)">拒</button>
+            </div>
           </div>
           <div>
             <div class="lbl">销售策略</div>

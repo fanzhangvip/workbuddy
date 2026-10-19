@@ -180,6 +180,10 @@ def test_writable_equivalence():
         ("interest_min_customer_msgs", "interest_min_customer_msgs"),
         ("interest_max_sessions", "interest_max_sessions"),
         ("interest_max_llm_calls", "interest_max_llm_calls"),
+        # 记忆治理层（2026-10-19）：① 段的来源开关（table/assessment 可零代码回滚）
+        # 与记忆有效期（预算/排期会变，过期记忆不能继续进提示词）。
+        ("ctx_memory_source", "ctx_memory_source"),
+        ("memory_ttl_days", "memory_ttl_days"),
     }
     added = new - old
     check("白名单只比改造前多出**显式声明**的新增项",

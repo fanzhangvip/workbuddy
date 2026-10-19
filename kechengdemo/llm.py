@@ -140,10 +140,15 @@ def chat(messages: list, temperature: float = 0.0, json_mode: bool = False,
         传 ``json_schema`` 会得到 ``This response_format type is unavailable now``，
         所以 **schema 强约束只能靠提示词 + 客户端校验**（见 contracts.py）。
     :param max_tokens: 输出上限。``None`` 时用 :data:`DEFAULT_MAX_TOKENS`，避免静默截断。
+    :param timeout: 单次调用超时秒数。``0/None`` 一律回落到 :data:`TIMEOUT`（120s）——
+      **"不限时"在这里不是可选项**：`urlopen(timeout=None)` 会一直阻塞在挂起的 TCP 连接上，
+      而批量的 deadline 只在会话之间检查，救不了一次卡死的调用（实测 interest run#84
+      就这样挂了 16 小时才被 deadline 收尾）。
     """
     if not config.LLM_BASE_URL or not config.LLM_API_KEY:
         raise FatalLLMError("缺少大模型配置：请在 .env 中设置 LLM_BASE_URL 与 LLM_API_KEY")
 
+    timeout = TIMEOUT if not timeout else int(timeout)
     url = config.LLM_BASE_URL.rstrip("/") + "/chat/completions"
     body = {
         "model": config.LLM_MODEL,

@@ -35,13 +35,17 @@ _BY_NAME = {
                            "test_graph_session_parity", "test_ctx_integration",
                            "test_engine_window_and_anchor",
                            # 兴趣链复用它的 customer_only（只看客户发言）
-                           "test_interest_pipeline"],
+                           "test_interest_pipeline",
+                           # ① 段渲染记忆（已知事实/未提目标注/不带编号）
+                           "test_memory"],
     "ctx_preprocess.py": ["test_ctx_preprocess", "test_ctx_integration"],
     "scoring_service.py": ["test_loop_guard", "test_run_with_graph", "test_hooks",
                            "test_g0_hardening", "test_graph_session_parity",
                            "test_observability", "test_scoring_start_gate_blocked",
                            # start() 里的互斥闸决定「能不能和兴趣分析同时跑」
-                           "test_interest_pipeline"],
+                           "test_interest_pipeline",
+                           # persist 同一事务写记忆 + 任务成本累加
+                           "test_memory"],
     "graph_session.py": ["test_eval_observability", "test_graph_session_parity", "test_run_with_graph",
                          "test_graph_skip_and_failure", "test_hooks",
                          "test_engine_window_and_anchor"],
@@ -66,7 +70,7 @@ _BY_NAME = {
     "meta_loop.py": ["test_eval_runner"],
     "review_repo.py": ["test_eval_runner", "test_writeback_unknown_and_correction"],
     "assessment_repo.py": ["test_eval_runner", "test_backfill",
-                         "test_writeback_unknown_and_correction"],
+                         "test_writeback_unknown_and_correction", "test_memory"],
     "backfill.py": ["test_backfill"],
 
     # ---------------- 回写与标签 ----------------
@@ -93,6 +97,11 @@ _BY_NAME = {
     # echarts 的按需注册点（**漏注册 = 图空白**，改这里必须过一遍前端护栏）
     "echarts.js": ["test_frontend_call_chains"],
 
+    # ---------------- 记忆治理层（customer_memory） ----------------
+    # 归并规则 / 人工改判 / 过期 / ① 段渲染都在这一个文件里
+    "memory_repo.py": ["test_memory"],
+    "api_memory.py": ["test_memory"],
+
     # ---------------- 运行时与调度 ----------------
     # JOB_TABLES 是互斥判定的唯一出处（谁挡谁都在这里定）
     "job_service.py": ["test_bugfix_p0p1", "test_production_hardening", "test_loop_guard",
@@ -101,7 +110,8 @@ _BY_NAME = {
     "scheduler.py": ["test_bugfix_p0p1", "test_production_hardening", "test_sync_window",
                      "test_interest_pipeline"],
     # 回写审批门控（2026-10-16 接线）：拦下即登记审批 → 批准放行 / 驳回置终态 / 过期拒签
-    "task_runtime.py": ["test_production_hardening", "test_writeback_approval"],
+    "task_runtime.py": ["test_production_hardening", "test_writeback_approval",
+                        "test_memory"],
     "retention.py": ["test_batch234"],
     "trace.py": ["test_trace_span"],
 

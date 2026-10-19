@@ -113,7 +113,9 @@ curl -u user:pwd -X POST http://127.0.0.1:8848/api/scoring/rules/publish -H "Con
 - **定期体检**：`eval_regression_cron`（每周一，默认 09:00）跑一次回归；异常看
   `GET /api/eval/alerts`（门禁回退 / 单规则误报率 / 复核积压 / 凭据与同步新鲜度）。
 - **保活状态**：`wb_keepalive` 现在把上次结果写进 `app_setting.keepalive_last`（改造前只写内存，
-  重启即失）。`GET /api/sync/keepalive` 可查。
+  重启即失）。`GET /api/sync/keepalive` 可查。**容器里的 `credential-keepalive` job 必然失败**
+  （没有 Chrome），保活必须由宿主机的计划任务跑 `python wb_keepalive.py` —— 不配的话每 3~7 天
+  同步会因凭据过期断一次（2026-10-19 实际发生过）。
 
 ## 回写审批队列（运维必读）
 
@@ -143,6 +145,20 @@ curl -u user:pwd -X POST http://127.0.0.1:8848/api/scoring/rules/publish -H "Con
 **已经补上界面的**（原来只能 curl）：回写审批、批次任务 `/scoring/tasks*`、策略/工具审计、
 规则发布、保留期清理、标签队列投递、评估集运行历史/基线/告警/覆盖度/停用/删除、单会话重评。
 
+## 记忆治理（`customer_memory`，运维/开发必读）
+
+**评分时模型看到的"已知事实"来自 `customer_memory`，不是自由文本画像。**
+
+- **写入**：每次评估落库的**同一事务**里归并 8 个槽位（岗位/公司/城市/需求/预算/时间/顾虑/竞品）。
+  同值只刷新 `last_seen`；变值把旧行标 `superseded` 再插新行；**"未提及"不删记忆**。
+- **人工改判**：评分中心 → 评分详情 → 「已知事实」→ 改/拒。人工值 `source='human'`，
+  **模型再也覆盖不了**；拒绝会回退到上一条历史值；所有改动写 `audit_log`。
+- **到期**：默认 180 天（`memory_ttl_days`），过期不进上下文；读侧惰性过滤 + `expire_due()` 清账。
+- **回滚**：`ctx_memory_source=assessment` → ① 段退回"只读上次评估"（零代码回滚）；
+  `ctx_memory=false` → 整段记忆都不进上下文。
+- **一次性回填**（新库 / 老库升级后跑一次）：`python -m backend.memory_backfill`（dry-run）
+  → 加 `--apply` 真正写入。只处理还没有 active 记忆的客户，不会覆盖人工值。
+
 ## 兴趣点提取（第二条模型链，运维必读）
 
 **总览页首屏正中的「兴趣点分布图」是独立批量**，不与评分共用一轮；口径细节见
@@ -155,8 +171,9 @@ curl -u user:pwd -X POST http://127.0.0.1:8848/api/scoring/rules/publish -H "Con
   这条不能改成"喂全对话"：销售话术里塞满课程卖点，模型会把销售的主张读成客户的兴趣。
   同理，候选闸量的是**客户发言条数**（`interest_min_customer_msgs`，默认 2），
   员工刷屏凑不出候选 —— 实测门槛 2/5/8 分别覆盖 550/319/210 个会话，想省调用就调高。
-- **首跑很贵**：每个会话 1 次模型调用，当前 685 个有正文的会话 ≈ 5~6 小时。想先小范围试：
-  `POST /api/interest/start` 带 `{"max_sessions": 20}`，或设 `interest_max_sessions`。
+- **首跑很贵**：每个会话 1 次模型调用。当前可分析 **551** 个会话，实测 **~6 秒/会话 ≈ 1 小时**
+  （早期"5~6 小时"是还在喂全对话时的数字；只喂客户发言后上下文小了 5 倍）。
+  想先小范围试：`POST /api/interest/start` 带 `{"max_sessions": 20}`，或设 `interest_max_sessions`。
 - **撞预算不是失败**：`interest_max_llm_calls`（默认 300）为单轮调用上限，撞上落
   `partial` 并把原因写进 `interest_run.detail.partial_reason`；水位没推进的会话
   下一轮自然接着跑，不需要人工干预。

@@ -127,8 +127,28 @@ class InterestService(job_service.JobService):
         if self._run_id:
             db.execute("UPDATE interest_run SET stop_requested=true WHERE id=%s",
                        (self._run_id,))
+        else:
+            # 跨进程/重启后：本进程没有 `_run_id`，但库里可能仍有 running 行
+            # （与 `scoring_service.stop` / `sync_service.stop` 同一套做法 —— 只设
+            # 进程内标志的话，点「停止」会得到"已发出"却什么也没停）。
+            db.execute("""UPDATE interest_run SET stop_requested=true
+                           WHERE id = (SELECT id FROM interest_run
+                                        WHERE status='running' ORDER BY id DESC LIMIT 1)""")
         return {"ok": True, "stopped": True,
                 "message": "已发出停止信号，将在当前会话处理完后退出"}
+
+    def _should_stop(self, run_id) -> bool:
+        """停止判据：**进程内标志 + 库内 stop_requested**（与 `sync_service` 同口径）。
+
+        只看 `self._stop` 的话，停止信号只能来自"同一个进程里调 start() 的那个对象"；
+        而日常链/脚本可以在别处启动，`POST /stop` 便形同虚设。
+        """
+        if self._stop:
+            return True
+        row = db.query_one("SELECT stop_requested FROM interest_run WHERE id=%s", (run_id,))
+        if row and row.get("stop_requested"):
+            self._stop = True
+        return self._stop
 
     def status(self) -> dict:
         job = db.query_one("SELECT * FROM interest_run ORDER BY id DESC LIMIT 1") or {}
@@ -228,7 +248,7 @@ class InterestService(job_service.JobService):
                        detail={"stage": f"开始分析（共 {len(cands)} 个会话）"})
 
             for i, cand in enumerate(cands, 1):
-                if self._stop:
+                if self._should_stop(run_id):
                     break
                 guard = hooks.guard_reason(deadline_ts, max_llm_calls,
                                            self._progress.get("llm_calls", 0))
@@ -244,7 +264,10 @@ class InterestService(job_service.JobService):
                         step_id = task_runtime.step_begin(
                             self._task_id, str(cand["session_id"]),
                             input_ref={"kind": "interest"})
-                    except Exception:               # noqa: BLE001
+                    except Exception as e:          # noqa: BLE001
+                        # 检查点是"可观测性"，不是分析的前置条件 —— 但**不能静默**：
+                        # 否则"任务详情里少了这一步"永远没人能解释（排查时会以为是别的问题）。
+                        print(f"[interest] 写检查点 start 失败（继续分析）：{e}")
                         step_id = None
                 try:
                     r = self._analyze_one(run_id, cand, taxonomy, ctx_limit,
@@ -261,8 +284,8 @@ class InterestService(job_service.JobService):
                     if step_id:
                         try:
                             task_runtime.step_end(step_id, False, error=str(e)[:500])
-                        except Exception:           # noqa: BLE001
-                            pass
+                        except Exception as e2:     # noqa: BLE001
+                            print(f"[interest] 写检查点 end 失败（该步会留在 running）：{e2}")
 
             if self._task_id:
                 try:
@@ -295,8 +318,8 @@ class InterestService(job_service.JobService):
                 try:
                     import task_runtime as tr
                     tr.transition(self._task_id, "failed", reason=str(e)[:500])
-                except Exception:                   # noqa: BLE001
-                    pass
+                except Exception as e2:             # noqa: BLE001
+                    print(f"[interest] 任务转 failed 失败（run 行仍是可信来源）：{e2}")
 
     def _analyze_one(self, run_id, cand, taxonomy, ctx_limit, temperature, max_tokens,
                      max_repairs, timeout) -> str:
@@ -336,6 +359,13 @@ class InterestService(job_service.JobService):
             with self._lock:
                 for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
                     self._progress[k] = self._progress.get(k, 0) + int(usage.get(k) or 0)
+            # 任务级成本（与评分链同一口径）：每次模型尝试 1 次调用 + 实际 token
+            try:
+                import task_runtime
+                task_runtime.record_cost(self._task_id, calls=1,
+                                         tokens=int(usage.get("total_tokens") or 0))
+            except Exception as e:                  # noqa: BLE001  观测失败不影响分析
+                print(f"[interest] 累计任务成本失败（继续分析）：{e}")
 
         self._bump(run_id, llm_calls=1)
         out = interest.extract(text, temperature=temperature, max_tokens=max_tokens,

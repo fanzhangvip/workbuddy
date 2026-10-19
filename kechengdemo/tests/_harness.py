@@ -92,6 +92,8 @@ CLEANABLE_TABLES = frozenset({
     "tool_audit", "trace_span", "writeback_ledger", "writeback_outbox",
     # 兴趣点提取（2026-10-16）：测试也要能按关系键/员工清干净
     "interest_scan", "interest_run",
+    # 记忆治理层（2026-10-19）：按 relationship_key 清理
+    "customer_memory",
 })
 
 

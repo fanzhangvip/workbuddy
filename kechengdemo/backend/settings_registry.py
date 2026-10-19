@@ -240,6 +240,14 @@ SETTINGS: tuple = (
             "单轮最多分析多少个会话（**0 = 不限**；首跑全量约几百个会话、数小时）", min=0),
     Setting("interest_max_llm_calls", "INTEREST_MAX_LLM_CALLS", INT, 300, "interest",
             "单轮模型调用上限（成本护栏 G4）；撞到落 `partial`，可从检查点续跑", min=0),
+
+    # ---------------- 记忆治理层（customer_memory） ----------------
+    Setting("ctx_memory_source", "CTX_MEMORY_SOURCE", STR, "table", "memory",
+            "① 段「已知事实」的来源：table = 读 customer_memory（跨次稳定事实，默认）；"
+            "assessment = 退回只读上次评估（回滚开关，改完立即生效）"),
+    Setting("memory_ttl_days", "MEMORY_TTL_DAYS", INT, 180, "memory",
+            "记忆的有效期（天）。到期后不再进上下文：预算/排期这类事实会变，"
+            "过期记忆比没有更危险；读取时惰性过滤，不影响历史行", min=1),
 )
 
 #: 写侧白名单的**唯一来源**：`(API 键名, app_setting 键名)`。

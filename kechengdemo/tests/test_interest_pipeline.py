@@ -346,6 +346,42 @@ def test_distribution_scope():
           _where(staff_id="ZINTP:someone_else")["primaries"] == [],
           str(_where(staff_id="ZINTP:someone_else")["primaries"]))
 
+    # ★ 覆盖度与等级分布也必须跟着切片走：否则切到某个员工后，图变了而口径没变
+    mine = interest_repo.coverage(min_messages=0, min_customer_msgs=1, staff_id=STAFF)
+    check("★ 覆盖度按员工切片：只数这个员工名下的 2 个会话",
+          mine["sessions_available"] >= 2 and mine["customers"] == 1, str(mine))
+    check("等级分布按员工切片：别的员工不会混进来",
+          sum(g["customers"] for g in _where(staff_id=STAFF)["by_grade"]) == 1,
+          str(_where(staff_id=STAFF)["by_grade"]))
+
+    # ★ 一级 + 二级必须落在**同一条**兴趣点上（JSONB 数组包含的经典陷阱）
+    other = {"primary": "price_promo", "secondary": "想分期", "confidence": 0.9,
+             "evidence_message_ids": ["x"], "evidence": ["#001 客户: 能分期吗"]}
+    interest_repo.upsert_scan(
+        staff_id=STAFF, session_id=SESS2, relationship_key=REL2, staff_name="ZINTP",
+        target_id=TARGET2, target_name="ZINTP 客户", interests=[other], summary="",
+        taxonomy_version="i1.0", prompt_version="t", model_name="stub",
+        msg_count=NMSG, last_msg_time=0)
+    try:
+        cross = interest_repo.customers(primary="career_change", secondary="想分期",
+                                        staff_id=STAFF)
+        check("★ 一级+二级下钻不能跨条目匹配（否则抽屉里只有客户名、没有原话）",
+              cross == [], f"命中了 {len(cross)} 条")
+        same = interest_repo.customers(primary="career_change", secondary="想转行做算法",
+                                       staff_id=STAFF)
+        check("同一个兴趣点上的组合仍然能下钻", len(same) >= 1, str(len(same)))
+    finally:
+        # 恢复 s2 的原始结果，后面的用例还要用
+        interest_repo.delete_scan(STAFF, SESS2)
+        interest_repo.upsert_scan(
+            staff_id=STAFF, session_id=SESS2, relationship_key=REL2, staff_name="ZINTP",
+            target_id=TARGET2, target_name="ZINTP 客户",
+            interests=[{"primary": "career_change", "secondary": "想转行做算法",
+                        "confidence": 0.9, "evidence_message_ids": ["m"],
+                        "evidence": ["#002 客户: 我想转行做算法"]}],
+            summary="", taxonomy_version="i1.0", prompt_version="t", model_name="stub",
+            msg_count=NMSG, last_msg_time=T0)
+
     items = interest_repo.customers(primary="career_change", staff_id=STAFF)
     row = next((x for x in items if x["session_id"] == SESS1), None)
     check("下钻能拿到客户 + 二级标签",

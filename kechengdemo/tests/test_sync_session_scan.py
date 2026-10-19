@@ -94,6 +94,25 @@ def main():
         check("撞上翻页上限 → stats.truncated 为真", st3["truncated"] is True, str(st3))
         check("撞上限即停（200 条 / 2 页，不会悄悄继续翻）",
               st3["pages"] == 2 and len(out3) == 200, f"{st3['pages']}/{len(out3)}")
+
+        # ---------------- ⑥ 够数就不再翻（`max_sessions_per_staff` 的翻页闸）----------------
+        # 为什么必须钉住：调用方随后会 `sess[:200]` 丢掉多余的，而"翻完再丢"的代价是
+        # 每员工十几二十页外部请求 —— 实测单轮 2779 页、27 分钟，把日常同步窗口
+        # （20 分钟）整个吃光，第二遍拉消息一次都没跑到（连续 3 天 session_done=0）。
+        db.execute("DELETE FROM app_setting WHERE key='sync_session_page_cap'")
+        many2 = [_page(100, T - i * 100_000) for i in range(6)]
+        ss.weiban.list_sessions = _with_pages(many2)
+        out4, st4 = ss.service._sync_sessions_of(STAFF, ["ext_user"], stop_before=0,
+                                                 limit=200)
+        check("★ 给了 limit=200 → 翻 2 页就停（不再为「翻完再丢」付外部请求）",
+              st4["pages"] == 2 and len(out4) == 200, f"{st4['pages']}/{len(out4)}")
+        check("limit 不改变结果：拿到的就是调用方要的前 200 条",
+              out4[0]["last_msg_time"] == many2[0][0]["last_msg_time"]
+              and out4[-1]["last_msg_time"] == many2[1][-1]["last_msg_time"],
+              f"{out4[0]['last_msg_time']} … {out4[-1]['last_msg_time']}")
+        check("没有 limit 的老行为不变（仍然翻到底）",
+              ss.service._sync_sessions_of(STAFF, ["ext_user"], stop_before=0)[1]["pages"] == 6,
+              "limit 缺省时不该改变语义")
     finally:
         ss.weiban.list_sessions = orig
         if saved_cap:
